@@ -8,6 +8,38 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — S68.11: where the checkpoints are missed — the rig's draw of the next plan and a request's build, both without a poll
+
+**Build.** `8227c6d` with a diagnostic patch, not kept: the rig names the
+section each mutator is in (the draw of the next plan, from the poll after a
+request's end to the next start; a phase's advance; the poll; the tail of the
+build; the end), and the Δ-test counts each missed checkpoint against the
+section its mutator stood in. One 60 s cell of `web-heap` each, 46.78 ms, two
+mutators, `cap-1`.
+
+| member cap | missed | in the draw of the next plan | in a phase's advance | elsewhere | longest pause by kind, ms |
+|---|---|---|---|---|---|
+| 1M | 118 | 84 | 34 | 0 | no checkpoint 47.5, second refusal 4.4 |
+| 64k | 105 | 70 | 32 | 3 | past the cap 148.2, no checkpoint 33.4, second refusal 3.2 |
+
+The draw is the rig's own bookkeeping — a lognormal count of median 10k
+objects capped at 400k, placed and sorted — and touches no entity of the
+runtime's heap; the advance builds every birth placed before its point on
+the timeline without a poll, as compiled code would not. The stretches
+longer than 2 ms by section (the S68.9 entry's 548 and 370) are not the
+misses: 1,075 and 1,166 such stretches in these cells against 118 and 105
+misses.
+
+**The S68.10 lane cells by the posting's kind** (`dev/BENCHMARKS.md`, the
+S68.9 entry's lane table, one cell each at the 64k cap): the longest
+collection over P of a set past the cap 141.7 / 151.6 / 102.5 ms with the
+release, two X and the waits kept; of a no-checkpoint set 69.1 / 48.0 /
+195.4 ms; of a second refusal 7.1 / 6.9 / 13.7 ms; the application's longest
+3.1 / 4.3 / 8.6 ms. In the release's cell the collector freed 31.8M members
+and the owner's collections 8.6M.
+
+---
+
 ## 2026-10-04 — S68.9, the second reading: the blocking stretch takes seven missed checkpoints in eight; the past-the-cap sets and the rest still pause the owner, and the garbage stays two to three times the default's
 
 **Builds.** `232cdec`, release test binaries: A the default build (its waits'

@@ -622,64 +622,61 @@ the ring loads (`partly-overlapping` and the churn loads) at `K` = 1, 2 and
 it is rewritten onto `K`: the longest lane goes back at the `K`-th X turn
 and not before. A case for `K` = 1 keeps today's behaviour reachable.
 
-### 5d. The sets that still fall to the owner: S68.11 (the plan, before the code)
+### 5d. The sets that still fall to the owner: S68.11 (the plan, before the code; revised after the Critic of its first draft)
 
-**What was read** (`dev/BENCHMARKS.md`, the S68.9 second reading and the
-lane cells of S68.10, 60 s cells of `web-heap`). The collector frees about
-four members of cyclic garbage in five (31.8M against the owner's 8.6M in a
-cell at the 64k cap) and the mutator's CPU is 17–22 % below the default
-build's, but the longest owner pause is 70–195 ms, and every such pause is a
-set the design sends the exact way whole:
-- *past the cap* (`PAST_THE_CAP`): 102–152 ms at the 64k cap; none at 1M;
-- *no checkpoint* (`NO_CHECKPOINT`): 48–195 ms at 64k, 43–93 ms at 1M;
-- *a second refusal* (`SECOND_REFUSAL`): 7–14 ms;
-- and the application of the collector's frees: 3.1–8.6 ms.
-The probe's 400k-member ring, taken by the collector, pauses its owner
-0.07 ms (objects) and 0.33 ms (arrays): what §8 estimated. The pauses over
-5 ms are the fallbacks, not the scheme.
+**What was read** (`dev/BENCHMARKS.md`, "S68.11: where the checkpoints are
+missed", and the S68.9 second reading). The probe's 400k-member ring, taken
+by the collector, pauses its owner 0.07 ms (objects) and 0.33 ms (arrays),
+what §8 estimated; the owner pauses over 5 ms on `web-heap` are sets the
+design sends the exact way whole — past the cap (144–167 ms at 64k, none at
+1M), without a checkpoint (33–195 ms), a second refusal (3–14 ms) — and the
+application of the collector's frees (3.1–8.6 ms). Of 105–118 missed
+checkpoints a cell, 70–84 fell while the mutator ran the rig's draw of the
+next request's plan and 32–34 in a request's build between two of its
+polls: the rig's code, not the runtime's.
 
-**What each costs to remove.**
-1. *The cap.* The Sage ruled the commit is not an owner pause (§5b, item 7):
-   a recall blocks nothing. The cap bounds only the act, which no take
-   waited on at 1M (longest commit 8.7–12.0 ms). The mutator's record of
-   its writes is what proves the set; the set's size proves nothing more.
-   Proposed: no cap by default, the knob kept for the runs.
-2. *The application in slices.* A poll applies at most `APPLY_STRIDE` blocks'
-   chains and drops of the frees word and leaves the rest standing for the
-   next poll; P is read only once the word is empty, as today. Every path
-   that gives P back unread still applies the whole word first. Proposed:
-   `APPLY_STRIDE` from the rig's application rate, so that one slice stays
-   under 1 ms.
-3. *The checkpoint where the load does not poll.* The misses are stretches
-   of the mutator's own code longer than the Δ-test's 2 ms wait: 548 a cell
-   in the release of a request's graph and 370 in a request's build. Two
-   answers:
-   - *(a) the runtime's teardown answers an ask.* `ll_entity_die` answers a
-     standing ask every `POLL_STRIDE` deaths: the checkpoint's CAS alone,
-     not a poll — no frees applied, no arming, no user code of its own, the
-     blocking stretch's form. Sound by §7.16 as the bulk release's poll is:
-     the cascade holds no uncounted reference to a live entity, only to
-     entities whose count reached zero, which no completed mark proposes as
-     a member live.
-   - *(b) the rig's build polls where compiled code would.* The rig stands
-     for compiled code, whose polls the compiler places; a build step that
-     runs 2 ms without one is the rig's choice, not the scheme's. The build
-     polls every `BUILD_POLL_STRIDE` objects built.
-4. *A set without a checkpoint takes the second chance.* `NoCheckpoint`
-   refuses the set as `Touched` does (§5a, S68.6c, item 4): its potentially
-   unreachable roots go back into R `Unwalked`, the next batch reads them
-   again, and only a second refusal goes the exact way. The owner pays a
-   collection only for a set that missed two checkpoints in a row.
+**The first draft's items and what became of them** (the Critic, 2026-10-05):
+- *A checkpoint answered inside the runtime's teardown* is dropped. On
+  `web-heap` no teardown runs where the misses fall, and §4.7 rules a
+  checkpoint under a closed gate out: inside a teardown the runtime holds
+  references it has not counted. Retracting that premise is the Sage's to
+  rule, and nothing measured asks for it now.
+- *The application in slices* and *a set without a checkpoint taking the
+  second chance* wait for the reading below. As drafted, the slice lost the
+  held drops a destructor's refused allocation stands on the record
+  (`stand_the_held` under a slice's put-back), its time had no bound, and
+  the second-chance bit would have meant a touch, a recall's unwalked root
+  and a miss at once.
+- *No cap at all* is not built: the commit reads no recall, so a take under
+  pressure, the explicit fire and a second mutator's grant held by the same
+  collector wait the whole act, which the gate counts.
 
-**To be read after the build**, by the gate (§9): the longest owner pause by
-the posting's kind, at 1M, with 1–4 together and each alone; the garbage,
-since a refused set waits a batch longer; missed checkpoints by the rig's
-section.
+**What is built.**
+1. *The rig polls where compiled code would.* (a) The draw of a plan touches
+   no entity of the runtime's heap, so it runs inside a blocking stretch, as
+   the waits do (`sleep_without_poll`): the rig's own bookkeeping, not the
+   program's. (b) A request's advance stops after `BIRTHS_AN_ADVANCE` births
+   (`POLL_STRIDE`), as it stops after `REGISTRATIONS_AN_ADVANCE`
+   registrations, and the caller polls before the next: a build's loop polls
+   on its back-edge. Every arm runs the same rig, so A's figures move too
+   and are read again beside B's.
+2. *The default cap 1M.* At 1M no `web-heap` set went past it, the longest
+   commit read 8.7–12.0 ms and no take waited on one.
 
-**Tests.** A teardown of more than `POLL_STRIDE` entities answers a standing
-ask and takes no frees; a no-checkpoint set's roots come back `Unwalked`
-with the second-chance bit, and a second miss posts it whole; a poll with a
-frees word above the stride leaves the rest standing and P unread.
+**Then read**, by the gate (§9), five 96 s cells of A and of B at 1M: the
+longest owner pause by the posting's kind, missed checkpoints by the rig's
+section, the application's longest, the garbage. What remains over 5 ms
+decides whether the slices, the second chance for a miss, or a cap derived
+from a time budget come next.
+
+**For the Sage, not built**: whether the commit, which after the Δ-test
+reads and writes members of W alone, can run after the grant is released,
+so that no take waits on it and no cap is needed.
+
+**Tests.** An advance of a plan with more births than `BIRTHS_AN_ADVANCE`
+returns before the plan's place, and the next advance goes on from it; the
+draw's stretch is entered and left around the draw, and a draw under a
+closed gate enters none.
 
 ## 6. The owner's poll
 
