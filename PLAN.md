@@ -170,15 +170,17 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       with the loom model's cases and the posting's kind in the rig; the
       exported bracket (`ll_gc_blocking_call`) after the re-reading, on the
       Sage's condition; the cap read at 64k and 1M; then S68.8's runs again.
-- [ ] S68.10 The deferred lanes under turns by X alone (design §5c): every
-      X turn hands back every lane, and under the record scan every turn is
-      an X turn, so no root read live waits; the rule read again, through
-      the Critic and the Sage, before S68.8's runs.
-- [ ] S68.11 The sets that still fall to the owner (design §5d): no member
-      cap by default, the application in slices, a checkpoint answered
-      inside the runtime's teardown and the rig's build, and a set without a
-      checkpoint given the second chance; through the Critic and the Sage,
-      before S68.10's build.
+- [ ] S68.10 The deferred lanes under turns by X alone (design §5c, the
+      Sage 2026-10-05): the one-X bound kept, the lanes re-offered into a
+      tail each batch takes a fixed share from; first a column proving the
+      cause (a zero-count entry's age at its reading), then the tail, read
+      in A and B against their kept waits.
+- [ ] S68.11 The sets that still fall to the owner (design §5d, the Sage
+      2026-10-05): (a) the rig's draw in a blocking stretch and its build
+      polling every `POLL_STRIDE` births; (b) the member cap 1M by default;
+      (c) a second refusal reads live; (d) the application in slices; each
+      with its Critic; then five 96 s cells of A and B and a take-on-commit
+      cell.
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the

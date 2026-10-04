@@ -622,6 +622,16 @@ the ring loads (`partly-overlapping` and the churn loads) at `K` = 1, 2 and
 it is rewritten onto `K`: the longest lane goes back at the `K`-th X turn
 and not before. A case for `K` = 1 keeps today's behaviour reachable.
 
+**The Sage's ruling (2026-10-05)**, which overrides the proposal above.
+The one-X bound stands as `EPOCH_INTERVAL`'s contract writes it. At an X
+turn the lanes go to a re-offer tail, and each batch takes a fixed share of
+its roots from it — not only when R is empty, which starves the tail under
+steady load and loses the bound. Kept on two readings: a column that proves
+the cause (the age of a zero-count entry at its reading, or R's length
+ahead of it), and A and B with the tail against their kept waits (63–71 and
+62–72 MB). `K` may be an embedder's knob, default 1. The protocol's drain
+gate and its 12 s stay.
+
 ### 5d. The sets that still fall to the owner: S68.11 (the plan, before the code; revised after the Critic of its first draft)
 
 **What was read** (`dev/BENCHMARKS.md`, "S68.11: where the checkpoints are
@@ -690,14 +700,28 @@ next; none of the queued items touches the second refusals (3–14 ms), the
 application (3.1–8.6 ms) or a take's wait on a commit, and the second chance
 for a miss would add to the first.
 
-**For the Sage, not built**: whether the commit and its publication can
-leave the grant. Under the token today the frees word, P's verdicts and the
-posted set each have one writer; a commit after the release would race a
-mutator's `stand_the_held` on the frees word (a plain store over the
-collector's publication, C's drops and chains lost). And whether §4.7's
-premise — inside a teardown the runtime holds references it has not counted
-— still stands, since no such reference was found in the runtime's own
-cascade frames; it decides whether a checkpoint may ever be answered there.
+**The Sage's ruling (2026-10-05)**, which overrides the above where they
+differ (`dev/DECISIONS.md`, the same date).
+- Items 1 and 2 are built. `MEMBER_CAP`'s doc reads "the bound of a take's
+  wait"; the take-on-commit cell is judged against `token_wait_longest_us`,
+  and if it fails there the knob for that configuration goes to Edmond.
+- The commit and its publication stay under the grant.
+- §4.7's premise is qualified: the reset and the collection keep it; in a
+  teardown only a compiled destructor's frame remains, under §7.16. A
+  checkpoint inside a teardown is sound on the Critic's confirmation that
+  every decrement to zero on its entries goes through `refcount_store`; not
+  built.
+- *A second refusal reads live* (§5a, S68.6c, item 4 amended): U's roots
+  read live, U recoloured out of W as at the first refusal, S stays proved;
+  `SECOND_REFUSAL` removed; a member whose address cannot be recovered goes
+  the exact way.
+- *The application in slices* (§5a, S68.6b, "the application", and §6,
+  item 12, amended): the chains spliced and the registered members counted
+  in the first slice; the drops `POLL_STRIDE` a poll; the rest put back by a
+  splice behind what stands, never a store; P read after the last slice.
+  `FreesStand` refusals read before and after; if they rise, the frees word
+  becomes a list (the collector pushes, the owner takes).
+- *Then read* adds the owner's freed members by posting kind.
 
 **Tests.** `advance_at_most` of a plan with more births than the bound
 stops at the bound and the next call goes on from it, the events in the

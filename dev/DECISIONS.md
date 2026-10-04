@@ -9,6 +9,62 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-05 — the sets that still fall to the owner: the rig's own work leaves the mutator, the cap bounds a take's wait, a second refusal reads live, the application is sliced; the lanes keep their one-X bound behind a re-offer tail
+
+**Decided (the Sage, 2026-10-05, after two Critic rounds on S68.11 and one
+on S68.10; design §5c, §5d).**
+- *The rig.* `Plan::draw` runs inside a blocking stretch: it writes no
+  count, slot or tag and touches no runtime entity, and is harness time the
+  protocol already subtracts. What it removes from the missed checkpoints
+  counts for nothing toward the condition for `ll_gc_blocking_call`, which
+  is read on the misses left. The build advances within a slice in steps of
+  at most `POLL_STRIDE` births, a poll after each: a compiled loop polls on
+  its back-edge, and `POLL_STRIDE` is the runtime's own stride for a loop it
+  cannot see inside.
+- *The member cap* bounds a take's wait on a commit and nothing else; it was
+  never a soundness device. Default 1M, a knob: at 64k a past-the-cap set
+  certainly pauses its owner 144–167 ms, at 1M a take may wait up to the
+  commit's 8.7–12.0 ms, on paths slow by construction.
+- *The commit and its publication stay under the grant.* After a release a
+  new consent could trace into W through a registered member mid-commit; the
+  owner's collection over R, the exit and a block return are what the token
+  keeps off the blocks the commit writes; and the frees word, P and the
+  posted set are single-writer under it. A resumable commit hands the rest
+  to the owner, the pause again.
+- *§4.7's premise is qualified, not retracted.* The runtime's own teardown
+  frames hold the dying entity, at count zero and in no W, and children a
+  slot still counts; only a compiled destructor's frame remains, under §7.16
+  like any other. The premise stands for the reset and the collection. A
+  checkpoint inside a teardown is sound on the Critic's confirmation that
+  every decrement to zero on the teardown's entries goes through
+  `refcount_store`, and is not built: no miss falls there.
+- *A second refusal reads live.* A garbage set is refused by a true touch at
+  most once; refused in two windows running, it was written in the second.
+  Its U's roots are read live and S stays proved; no exact walk, the kind
+  `SECOND_REFUSAL` removed. A member whose address cannot be recovered still
+  goes the exact way.
+- *The application is sliced.* Chains and registered members in the first
+  slice, drops `POLL_STRIDE` a poll, the rest put back by a splice behind
+  what stands (never a store), P read after the last slice; `FreesStand`
+  refusals read before and after, and a list-shaped frees word is the
+  fallback if they rise.
+- *The lanes.* The one-X bound stands (`EPOCH_INTERVAL`'s contract). At an X
+  turn the lanes go to a re-offer tail each batch takes from in a fixed
+  share — not only when R is empty, which starves it. Kept on two readings:
+  a column proving the cause (a zero-count entry's age at its reading, or
+  R's length ahead of it), and A and B with the tail against their kept
+  waits. A lane count `K` may be a knob, default 1. The protocol's drain
+  gate stays absolute.
+
+**Rejected.** No cap (a take waits the whole act); a checkpoint inside the
+teardown now (no miss there); a no-checkpoint set taking the second chance
+(the bit would mean a touch, a recall's unwalked root and a miss at once);
+the lanes' waits kept across X (the drain gate fails in every cell); a
+re-offer after the new epoch's first proving batch (under the record scan
+no turn is by proofs).
+
+---
+
 ## 2026-10-04 — an idle mutator answers T by a park, and the gate's owner pause is what stops a mutator
 
 **Decision (the Sage, Fable, on the S68.9 plan after two Critic rounds;
