@@ -103,13 +103,14 @@ const _: () = assert!(size_of::<SetBlock>() <= LINE_SIZE);
 pub(crate) mod kind {
     /// No root of the batch read potentially unreachable: no Δ-test.
     pub(crate) const NOT_TESTED: u8 = 0;
-    /// S, proved by its tags.
+    /// S, marked proved by its tags.
     pub(crate) const PROVED_S: u8 = 1;
-    /// W whole, proved, the split dropped by a refusal other than the cap.
-    pub(crate) const DROPPED: u8 = 2;
-    /// No checkpoint within the bound.
+    /// W whole, marked proved: the split dropped by a refusal other than
+    /// the cap.
+    pub(crate) const PROVED_WHOLE: u8 = 2;
+    /// No checkpoint within the bound: unmarked.
     pub(crate) const NO_CHECKPOINT: u8 = 3;
-    /// W whole, proved, past the member cap.
+    /// W whole, marked proved, past the member cap.
     pub(crate) const PAST_THE_CAP: u8 = 4;
     /// Touched: W, U out, unmarked.
     pub(crate) const TOUCHED: u8 = 5;
@@ -117,9 +118,16 @@ pub(crate) mod kind {
     pub(crate) const SECOND_REFUSAL: u8 = 6;
     /// A weakly-held member: unmarked.
     pub(crate) const WEAKLY_HELD: u8 = 7;
+    /// The batch's trace or scan cut short: its set posted at the stop.
+    pub(crate) const CUT: u8 = 8;
+    /// W whole, unmarked: a closure of the split stopped.
+    pub(crate) const UNMARKED_WHOLE: u8 = 9;
+    /// Marked proved, and the mark lost at the publication — the pool closed
+    /// the set short, or its walk left a member out.
+    pub(crate) const MARK_LOST: u8 = 10;
     /// The kinds.
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) const KINDS: usize = 8;
+    pub(crate) const KINDS: usize = 11;
 }
 
 /// The addresses `block` holds.
@@ -271,8 +279,10 @@ impl Writer {
             internal_edges: 0,
             #[cfg(feature = "recycler-over-counts")]
             frees: None,
+            // A batch whose trace or scan was cut posts at the stop and notes
+            // no kind of its own.
             #[cfg(feature = "recycler-over-counts")]
-            kind: kind::NOT_TESTED,
+            kind: kind::CUT,
         }
     }
 
@@ -366,6 +376,9 @@ impl Writer {
     pub(crate) fn mark_proved_by_its_tags(&mut self, internal_edges: usize) {
         self.proved_by_its_tags = !self.closed && !self.left_one_out;
         self.internal_edges = internal_edges;
+        if !self.proved_by_its_tags {
+            self.kind = kind::MARK_LOST;
+        }
     }
 
     /// Carry what the collector freed itself to the release, which publishes

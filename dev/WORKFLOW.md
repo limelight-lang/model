@@ -880,12 +880,18 @@ RMW's value over the store's — an outcome the C11 model forbids whichever
 comes first (2026-10-04: a store of 7 and a compare-and-swap of 6 to 0,
 read 0 after both). A model whose final reading follows such a race writes
 the store as a swap, which takes the same position and is ordered; the
-three older models have no such reading (audited 2026-10-04). Nor does it
-schedule every interleaving of a loop that loads a value and then
-compares-and-swaps from it: with the load ahead, a write landing between the
-two was never tried (2026-10-04, the checkpoint byte's withdrawal); a loop
-that starts from a guessed value, its first failure reading the value, is the
-same protocol and is explored whole. Write the model so
+three older models have no such reading (audited 2026-10-04). Nor, in one
+case reproduced on 2026-10-04 (loom 0.7.2, `loom::model`'s default builder,
+`LOOM_MAX_PREEMPTIONS` unset), did it schedule a write landing between a
+load and a compare-and-swap from the loaded value: a thread asking (`0 → 1`)
+then withdrawing (`1 → 0`), each as a load and a compare-and-swap, against a
+thread that loads `1` and swaps in `2`, never ended at `2`, which the C11
+model allows; the same loops started from a guessed value, the first failure
+reading the value — one protocol — ended there. Whether that is a gap in loom
+or a reduction it is entitled to is not settled; the checkpoint model writes
+its loops from a guess, and `free_path_model`, whose consent and withdrawal
+load and then compare-and-swap, is green on cases that may not have been
+explored whole — its pinned defects still panic. Write the model so
 that the defective configurations stay pinned as `should_panic` tests:
 that is the half of the run that proves something.
 

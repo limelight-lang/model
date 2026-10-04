@@ -557,7 +557,26 @@ poll, as a worker blocked in `accept` does — and of the sets past the cap.
    - The rig attributes the longest collection over P by the posting's
      kind: proved S, unmarked whole, no checkpoint, past the cap, second
      refusal, weakly held.
-8. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
+8. *Built* (S68.9, against the Critic of the code).
+   - The Δ-test takes an ask a stretch answered as reached whatever the
+     byte reads after, a stretch that ends before the wait's first reading
+     erasing the ask.
+   - *The Sage's first condition, read path by path*: no thread but the
+     owner writes a live header of its heap. A remote free writes a dead
+     slot's free-list link and its block's remote stack; a body's remote
+     post a dead chunk; the collector's stale clear and its commit touch
+     members of W, garbage the owner cannot reach; the collector's stamps
+     write byte 6 of live entities, which is no count, no slot and no tag.
+     No debug assertion checks it: a header names no owner cheaply on the
+     hot path; the argument stands here.
+   - The clear of a stale stretch at a poll or a consent is a mitigation,
+     not a guard: a skipped leave followed by count writes and an ask under
+     the grant already standing, before the next poll, takes the stale
+     stretch as T. The rig cannot skip a leave; the exported bracket, which
+     leaves on every way out, is what closes it.
+   - The posting's kinds separate a cut batch, a whole set marked from one
+     unmarked, and a mark lost at the publication.
+9. *Not in S69.9*: the record scan's `ReadLive` count, two and a half times
    the heap scan's from S68.4 on, whose cause neither the root's tag nor the
    epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
    S68.9's re-reading measures what remains of the garbage first.
@@ -578,7 +597,12 @@ poll, as a worker blocked in `accept` does — and of the sets past the cap.
     ARC-cancelled retain/release pair never spans a poll) — and a runtime
     entry that polls inside itself is one: `ll_release_vector` calls the
     full poll every `POLL_STRIDE` elements, so no uncounted reference may be
-    live across a call to it either.
+    live across a call to it either. A blocking stretch is a checkpoint too
+    (§5b): no uncounted reference is live across a call to
+    `ll_gc_blocking_call`, its argument and everything native code holds
+    across the stretch are held by counted references, and the compiler
+    emits no stretch of its own; a callback from native code into compiled
+    code leaves the stretch on entry and enters it again on return.
 17. The store barrier receives the holder (`ll_store_*_in(ctx, owner_cat,
     holder, slot, new)`): an ABI change, enforced — under the feature the
     untagged `ll_store_ptr`/`_box`/`_owned` names are not exported, so an

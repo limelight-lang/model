@@ -538,3 +538,106 @@ fn leaving_against_an_ask() {
 fn checkpoint_model_leaving_against_an_ask_leaves_nothing() {
     loom::model(leaving_against_an_ask);
 }
+
+/// An ask a stretch answers, the stretch left before the first reading: the
+/// ask's own answer is the checkpoint, as `delta_test` takes it, and the tag
+/// before the stretch is read.
+fn an_ask_answered_then_left() {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let reached = ask(&shared) || wait(&shared);
+            let tag = shared.tag.load(Ordering::Relaxed);
+            withdraw(&shared, false);
+            reached.then_some(tag)
+        })
+    };
+
+    let _ = shared.tag.swap(WINDOW, Ordering::Relaxed);
+    enter(&shared, Ordering::AcqRel);
+    leave(&shared);
+
+    if collector.join().unwrap() == Some(0) {
+        panic!("a stretch left early hid the tag before it");
+    }
+}
+
+#[test]
+fn checkpoint_model_an_ask_a_stretch_answered_stands_after_the_stretch_ends() {
+    loom::model(an_ask_answered_then_left);
+}
+
+/// A stale stretch cleared at a poll against an ask and its withdrawal: the
+/// byte ends holding nothing, the clear moving an asked stretch to the ask.
+fn a_stale_stretch_cleared_against_an_ask() {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _ = ask(&shared) || wait(&shared);
+            withdraw(&shared, false);
+        })
+    };
+
+    enter(&shared, Ordering::AcqRel);
+    // The poll's clear, `TraceToken::clear_a_stale_blocking`.
+    let mut seen = BLOCKING;
+    loop {
+        let cleared = match seen {
+            BLOCKING => NONE,
+            BLOCKING_ASKED => ASKED,
+            _ => break,
+        };
+        match shared
+            .checkpoint
+            .compare_exchange(seen, cleared, Ordering::AcqRel, Ordering::Acquire)
+        {
+            Ok(_) => break,
+            Err(now) => seen = now,
+        }
+    }
+    collector.join().unwrap();
+
+    if shared.checkpoint.load(Ordering::Relaxed) != NONE {
+        panic!("a cleared stretch left the byte holding something");
+    }
+}
+
+#[test]
+fn checkpoint_model_a_stale_stretch_cleared_leaves_nothing() {
+    loom::model(a_stale_stretch_cleared_against_an_ask);
+}
+
+/// A leave with no stretch — the gate refused the entry — against a live ask:
+/// the ask stands until the collector withdraws it.
+fn a_leave_without_a_stretch_against_an_ask() {
+    let shared = shared(0);
+
+    let collector = {
+        let shared = shared.clone();
+        thread::spawn(move || {
+            let _ = ask(&shared);
+            while shared.token.load(Ordering::Acquire) == 0 {
+                thread::yield_now();
+            }
+            let standing = shared.checkpoint.load(Ordering::Acquire);
+            withdraw(&shared, false);
+            standing
+        })
+    };
+
+    leave(&shared);
+    shared.token.store(1, Ordering::Release);
+
+    if collector.join().unwrap() == NONE {
+        panic!("a leave with no stretch erased a live ask");
+    }
+}
+
+#[test]
+fn checkpoint_model_a_leave_without_a_stretch_keeps_the_ask() {
+    loom::model(a_leave_without_a_stretch_against_an_ask);
+}

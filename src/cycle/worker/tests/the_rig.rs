@@ -3231,8 +3231,9 @@ impl CellReading {
                 self.verdict_collections.longest.as_micros().to_string(),
             ),
             // By the kind of set read (`crate::cycle::posted_set::kind`):
-            // not tested, proved S, dropped, no checkpoint, past the cap,
-            // touched, second refusal, weakly held, none.
+            // not tested, proved S, proved whole, no checkpoint, past the
+            // cap, touched, second refusal, weakly held, cut, unmarked whole,
+            // mark lost, none.
             (
                 "verdict_collection_longest_by_kind_us",
                 self.verdict_collections

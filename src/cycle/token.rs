@@ -652,7 +652,7 @@ impl TraceToken {
 
     /// Clear a blocking stretch the mutator did not leave — met at a poll or a consent,
     /// where a blocking thread cannot stand — so that it answers no later ask:
-    /// the release build's guard, a debug build asserting first
+    /// the release build's mitigation, a debug build asserting first
     /// (`enter_blocking_on_this_thread`). Answers whether there was one.
     #[cfg(feature = "recycler-over-counts")]
     fn clear_a_stale_blocking(&self) -> bool {

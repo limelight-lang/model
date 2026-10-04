@@ -3062,7 +3062,7 @@ unsafe fn split_and_free(
         if unsafe { split::close_over_the_record(arena) }.is_break() {
             unsafe { split::clear_the_marks(arena) };
             split::note(split::Counted::Dropped);
-            return (Posting::Unmarked, kind::DROPPED);
+            return (Posting::Unmarked, kind::UNMARKED_WHOLE);
         }
         if unsafe { posts.a_marked_root_spent_its_second_chance() } {
             s_proved = false;
@@ -3105,7 +3105,7 @@ unsafe fn split_and_free(
 
     unsafe { split::mark_the_seeds(mutator, arena) };
     if unsafe { split::close_over_the_record(arena) }.is_break() {
-        return whole(arena, kind::DROPPED);
+        return whole(arena, kind::PROVED_WHOLE);
     }
     if !unsafe { split::any_unmarked(arena) } {
         // C is empty: S is W, U out, as S68.6a took it.
@@ -3150,7 +3150,7 @@ unsafe fn split_and_free(
             let why = if _reason == collector_frees::NotFreed::PastTheCap {
                 kind::PAST_THE_CAP
             } else {
-                kind::DROPPED
+                kind::PROVED_WHOLE
             };
             whole(arena, why)
         }

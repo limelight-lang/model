@@ -136,10 +136,16 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
 ) -> TagTest {
     let token = &mutator.token;
     let from = Instant::now();
-    if token.ask_for_the_checkpoint() {
+    // A blocking stretch the ask found is the checkpoint, whatever the byte
+    // reads after: the stretch may end before the wait's first reading, and
+    // its end erases the ask (`checkpoint_model`, "an ask a stretch answers,
+    // the stretch left before the first reading").
+    let reached = if token.ask_for_the_checkpoint() {
         ASKS_A_BLOCKING_ANSWERED.fetch_add(1, Ordering::Relaxed);
-    }
-    let reached = wait_for_the_checkpoint(token, from, || arena.read_the_recall_now().is_break());
+        true
+    } else {
+        wait_for_the_checkpoint(token, from, || arena.read_the_recall_now().is_break())
+    };
     token.withdraw_the_checkpoint();
     let waited = from.elapsed().as_nanos() as u64;
     WAITED_NANOS.fetch_add(waited, Ordering::Relaxed);
