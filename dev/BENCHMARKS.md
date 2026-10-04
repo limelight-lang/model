@@ -58,6 +58,24 @@ application of the collector's frees passed 5 ms in two cells of five (7.0
 and 8.2 ms). The garbage is 2–3 times A's in every cell of the feature,
 the first reading's finding unchanged by the stretch.
 
+**Where the garbage is not, and where it is** (60 s cells at `232cdec`,
+diagnostic arms not kept):
+- *Not the scan.* Both scans run over the same batch — the record's, then
+  the rows restored and the heap's — agree on every root's verdict over
+  3,000 batches (736k live, 1.30M potentially unreachable, no disagreement);
+  3,270 rows read live by the record alone. The excess `ReadLive` is in which
+  roots reach the batches, not in how a batch reads them.
+- *Not a retirement left waiting.* Arming the retirement pass at every
+  application that counted a registered member moved the garbage not at all
+  (168 / 171 MB against 159 / 159).
+- *Split between the steps.* The member cap set to 0, so that the collector
+  frees nothing and every proved set goes the owner's way, two cells each,
+  alternated: A 102 / 78 MB, the feature at cap 0 145 / 139 MB, at 64k
+  164 / 176 MB. The collector's own frees add about 25 MB and take about a
+  sixth of the mutator's CPU (35.5 / 35.0 s against 43.6 / 41.8 s at cap 0
+  and 42.6 / 43.5 s in A); the 40–60 MB before them is the record scan's and
+  the Δ-test's, the steps S68.4 and S68.5 of the first reading's table.
+
 ---
 
 ## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
