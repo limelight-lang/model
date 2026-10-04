@@ -8,6 +8,77 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-04 — S68.8, first reading: on `web-heap` the arm spends less mutator CPU but holds twice the garbage, and neither arm keeps the owner's pause under 5 ms
+
+**Builds.** `c024dc0` (S68.6c and its Critic's fixes), release test
+binaries: A the default build, B `recycler-over-counts`; the knobs' cells at
+`341ab14` (the rig's `LL_RIG_MEMBER_CAP`, `LL_RIG_CHECKPOINT_WAIT_US`). A
+four-core cloud box, no PMU, nothing else running.
+
+**`web-heap`, the gate's load.** 46.78 ms interarrival, two mutators on
+CPUs 1–2, cap 1 on CPU 3, 10 s warm-up, 12 s drain, 116 s cells, three
+repeats rotated A B, B A, A B. The `tag_*`, `frees_*` and `split_*`
+columns count over the whole process.
+
+| | A | B |
+|---|---:|---:|
+| mutator CPU in the loop, s | 82.8 / 85.5 / 85.5 | 72.0 / 71.7 / 78.7 |
+| collector CPU, s | 48.7 / 49.6 / 50.2 | 47.9 / 47.7 / 50.6 |
+| longest collection over P, ms | 169 / 163 / 160 | 144 / 163 / 176 |
+| longest application of the collector's frees, ms | — | 4.9 / 0.7 / 2.7 |
+| longest commit (the act a recall waits for), ms | — | 5.2 / 5.0 / 6.2 |
+| garbage mean, MB | 86 / 154 / 116 | 200 / 194 / 270 |
+| garbage peak, MB | 384 / 472 / 466 | 444 / 424 / 542 |
+| collections over P | 4,240 / 4,281 / 4,083 | 1,630 / 1,642 / 1,593 |
+| Δ-tests proved / touched / no checkpoint | — | 3,503 / 40 / 1,684 · 3,491 / 64 / 1,683 · 3,615 / 39 / 1,625 |
+| sets the collector freed / members | — | 3,459 / 36.1M · 3,456 / 36.1M · 3,575 / 36.9M |
+| past the 64k cap | — | 67 / 74 / 70 |
+| U re-queued / second refusals | — | 35 / 5 · 53 / 11 · 38 / 1 |
+| epoch turns by proofs / by X | 25 / 17 · 20 / 22 · 24 / 18 | 0 / 39 in each |
+
+**Where the garbage comes from.** Two cells each of A and B built with
+`debug-journal` (60 s, A B, B A): B posts `ReadLive` 0.94–0.99M times against
+A's 0.29–0.42M, every one deferred from P to the lanes until the epoch turns,
+and B's epoch turns by X alone. That is the record's cost the design named
+(§3, "What the record costs in held garbage"): an entity a live holder
+dropped during the trace reads live through the holder's recorded run,
+where the heap scan saw it at zero. The S68.6c plan left the taint unbuilt
+to measure this first; this is the measurement.
+
+**Where the pause comes from.** One 60 s cell of B each:
+
+| knob | longest collection over P, ms | garbage mean, MB | no checkpoint | wait in all, s | longest act, ms | p99.9 latency, ms |
+|---|---:|---:|---:|---:|---:|---:|
+| cap 1M, wait 2 ms | 95 | 156 | 838 | 2.3 | 9.4 | 252 |
+| cap 64k, wait 20 ms | 153 | 399 | 205 | 8.8 | 7.4 | 940 |
+| cap 1M, wait 20 ms | 160 | 371 | 243 | 9.2 | 7.7 | 436 |
+
+A cap past every set takes the past-the-cap sets off the owner and leaves
+the pauses of the sets that go the exact way for want of a checkpoint; a
+longer wait finds more checkpoints and costs the collector its time, and the
+garbage doubles again. What would take those sets off the owner is a T an
+idle mutator can answer — the parked byte (§4.7, "Open").
+
+**The probe** (`what_the_split_costs`, release, one run each, median of
+three rounds, ms; `LL_PROBE_SHAPE`):
+
+| shape, 400k members | one thread (A) | owner's pause A | B cap 64k: owner | B cap 1M: collector | B cap 1M: owner |
+|---|---:|---:|---:|---:|---:|
+| objects (a ring) | 65.5 | 51.2 | 62.4 | 53.0 | 0.07 |
+| arrays (a ring of vectors) | 148.1 | 143.1 | 128.5 | 92.1 | 0.33 |
+| held (a clean ring over 200k destructed leaves) | 70.1 | 60.3 | 58.9 | 44.6 | 7.0 |
+
+In `held` the batch's root stands in C, so S is not posted and the leaves
+die by counting at the application — 200k destructors on the owner, which
+no split can move off it.
+
+**Reading.** The gate is not met: mutator CPU (−6 to −15 %) and Δ-refusals
+(about 1 %) pass; the owner's longest pause fails in both arms, and held
+garbage fails in B. The two failures have separate causes, each named
+above.
+
+---
+
 ## 2026-10-04 — S68.6b: the collector frees the proved ring itself — the owner's pause over 400k members falls from 49 ms to 0.11 ms
 
 **The probe.** `what_the_split_costs::measure_one_thread_against_the_split`,
