@@ -41,9 +41,17 @@ on, in part: missed checkpoints fell from 1,625–1,684 to 181–234 a cell. But
 the longest pause at 1M is still a no-checkpoint set (43–93 ms), so the
 condition is not met and the bracket is not built. What misses now is not
 read yet: not a request's synthetic CPU, which polls every 50 µs (`SLICE`);
-the candidates, unverified, are a mutator inside a collection of its own,
-whose polls the closed gate keeps from answering, and a request's build
-between two polls. At 64k the
+what it is, read afterwards with three diagnostic patches (not kept), one
+60 s cell of C each: no poll saw an ask under a closed gate (0 of 96 misses),
+so it is not a mutator inside a collection of its own; of the stretches
+longer than 2 ms between two answers, 75–94 were mostly the poll's own work
+after its answer (the application, a collection) and 775–935 the rig's code
+between polls; by the rig's section that ran longest in each, 548 fell
+after a request completed — its graph released between requests, with no
+poll — 370 in a request's build between two of its polls, 73 in a poll
+before its answer and 17 in the timed spin. So the misses are the load's
+stretches without a poll, not blocking waits: what answers them is a poll
+inside them, or a longer wait. At 64k the
 longest pause is the past-the-cap set's; at 1M those go to the collector,
 whose longest commit reads 8.7–12.0 ms, which no take waited on. The
 application of the collector's frees passed 5 ms in two cells of five (7.0
