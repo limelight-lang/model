@@ -1,7 +1,8 @@
 //! A root read live waits longer the more live readings it has survived
 //! (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held, carried at
 //! the stages' close"): 1, 3 and 7 epoch turns in three lanes; a turn the X arm
-//! made releases every wait; the stamp's epoch is sixteen wide, so a silently
+//! made releases every wait where the collector has caught up with the
+//! thread, and is a turn like any where it has not; the stamp's epoch is sixteen wide, so a silently
 //! dead ring read after a wait of eight or twelve turns is traced and freed,
 //! where two bits would read its members' stamps as current and prune at them.
 //!
@@ -81,28 +82,90 @@ fn a_root_waits_longer_after_each_live_reading() {
 }
 
 /// A turn the X arm made hands every lane back at the next poll, the longest
-/// wait included. Red with the X mirror unread.
+/// wait included, on a thread the collector has caught up with: R below the
+/// soft threshold. Red with the X mirror unread.
 #[test]
-fn an_x_turn_releases_every_lane() {
+fn an_x_turn_releases_every_lane_where_the_collector_caught_up() {
     let _g = test_guard();
     reset_lanes();
     let _ = a_nonzero_epoch();
     let mut arena = Arena::new();
     let ring = unsafe { a_kept_ring(&mut arena, "ReleasedByX") };
-    for _ in 1..WAITS.len() {
-        let _ = a_reading_and_its_wait();
-    }
-
-    // The last reading a lane takes puts the root in the longest lane this
-    // build keeps.
-    a_reading();
-    assert_eq!(deferred_count(), 1);
+    in_the_longest_lane();
     assert!(!reoffer_deferred_if_epoch_moved(), "no turn yet");
     unsafe { &*record() }.note_an_x_turn();
     assert!(reoffer_deferred_if_epoch_moved(), "the X turn released it");
     assert_eq!((candidate_count(), deferred_count()), (1, 0));
 
     unsafe { free_the_ring(&mut arena, ring) };
+}
+
+/// On a thread whose R stands at the soft threshold an X turn is a turn like
+/// any: the longest lane waits its seven, X turns counting, and goes back at
+/// the seventh. Red with every X turn releasing every lane.
+#[test]
+fn an_x_turn_under_a_standing_r_is_a_turn_like_any() {
+    let _g = test_guard();
+    reset_lanes();
+    let _ = a_nonzero_epoch();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_kept_ring(&mut arena, "KeptAcrossX") };
+    in_the_longest_lane();
+    let standing = unsafe { a_standing_r(&mut arena) };
+    let longest = *WAITS.last().expect("waits") as usize;
+    for turn in 1..longest {
+        turn_this_threads_cell();
+        unsafe { &*record() }.note_an_x_turn();
+        assert!(!reoffer_deferred_if_epoch_moved(), "X turn {turn} kept it");
+    }
+    turn_this_threads_cell();
+    unsafe { &*record() }.note_an_x_turn();
+    assert!(reoffer_deferred_if_epoch_moved(), "its own wait ran out");
+    assert_eq!(deferred_count(), 0);
+
+    for object in standing {
+        unsafe { crate::refcount::ll_release(object as *mut RcHeader) };
+    }
+    reset_lanes();
+    unsafe { free_the_ring(&mut arena, ring) };
+}
+
+/// Put the case's root in the longest lane this build keeps: a reading for
+/// each wait, the last one deferring it.
+fn in_the_longest_lane() {
+    for _ in 1..WAITS.len() {
+        let _ = a_reading_and_its_wait();
+    }
+    a_reading();
+    assert_eq!(deferred_count(), 1);
+}
+
+/// The soft threshold's worth of registered objects in R, each held by one
+/// reference the case gives back.
+///
+/// # Safety
+/// Under `test_guard`, on a thread with a record.
+unsafe fn a_standing_r(arena: &mut Arena) -> Vec<*mut crate::object::Object> {
+    let class = crate::class::ClassBuilder::new("StandingInR").build();
+    let mut context = crate::memory::context::LLContext { arena };
+    let objects: Vec<_> = (0..crate::cycle::worker::SOFT_THRESHOLD)
+        .map(|_| {
+            let object = unsafe {
+                crate::object::new_constructed(
+                    &mut context,
+                    class,
+                    crate::refcount::MemoryCategory::GcHeap,
+                )
+            };
+            unsafe {
+                crate::refcount::ll_retain(object as *mut RcHeader);
+                assert!(!crate::refcount::ll_release(object as *mut RcHeader));
+            }
+            object
+        })
+        .collect();
+    assert!(candidate_count() >= crate::cycle::worker::SOFT_THRESHOLD);
+    objects
 }
 
 /// A lane whose mirror stands ahead of the collector's byte — the byte a

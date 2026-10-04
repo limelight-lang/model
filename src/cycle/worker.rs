@@ -136,8 +136,11 @@
 //! stores nothing into its clock, so a thread whose batches prove nothing,
 //! and one that registers nothing, turns over at X like any other, and a
 //! component that became garbage behind one of its deferred roots waits
-//! about one X and the next round's take of the merged lane rather than
-//! until pressure or exit; the re-offer arms no collection of the mutator's
+//! about one X and the next round's take of the merged lane on a thread the
+//! collector has caught up with, and at most its lane's wait of seven turns
+//! on one whose R stands at the threshold, rather than until pressure or
+//! exit (`dev/DECISIONS.md`, "an X turn releases every lane only on a thread
+//! the collector has caught up with"); the re-offer arms no collection of the mutator's
 //! (`crate::cycle::queue`, "What the poll does for this module"). The first
 //! visit of a life stamps the instant and advances nothing, X being counted
 //! from a reading and never from the record's birth, unless the registry
@@ -358,8 +361,10 @@ const FALLBACK_INTERVAL_MAX: Duration = Duration::from_secs(1);
 
 /// The longest a mutator's epoch stands before its collector advances it,
 /// on the collector's own clock: the bound on how long a component that
-/// became garbage behind a deferred root waits on a thread whose batches
-/// prove nothing, or too little to turn it first ("The epoch clock"). 8 s,
+/// became garbage behind a deferred root waits on a quiet thread, whose
+/// batches prove nothing and whose R the collector has caught up with, and
+/// a seventh of it on a thread whose R stands at the threshold, where the
+/// longest lane waits seven turns ("The epoch clock"). 8 s,
 /// borrowed from V8's memory reducer, which collects a mutator that went quiet
 /// after the same delay; not measured here, and the field runs from that to
 /// Go's two minutes (`dev/RESEARCH.md`, "the idle-GC timers of five runtimes").

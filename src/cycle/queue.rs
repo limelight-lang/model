@@ -270,7 +270,8 @@ struct MutatorCycleState {
     /// beside [`Self::deferred`], which holds roots
     /// read live once; each goes back into R after its own wait
     /// ([`LANE_WAITS`]), mirrored in `older_mirrors`, or at an X turn its
-    /// `x_mirrors` entry has not seen ([`reoffer_deferred_if_epoch_moved`]).
+    /// `x_mirrors` entry has not seen where the collector has caught up with
+    /// the thread ([`reoffer_deferred_if_epoch_moved`]).
     /// Every reader of the lane reads them too ([`Self::for_each_lane`]).
     older: [UnsafeCell<Chain>; LANES - 1],
     older_mirrors: [Cell<u8>; LANES - 1],
@@ -1551,12 +1552,21 @@ pub(crate) fn reoffer_deferred_if_epoch_moved() -> bool {
 
 /// Hand back into R every lane whose wait the
 /// collector's byte `byte` has passed since the lane filled, and every lane
-/// filled before an X turn it did not see; answers whether any moved. The
+/// filled before an X turn it did not see where R holds fewer than the soft
+/// threshold's entries — the collector caught up with this thread — or
+/// before as many X turns as its wait; answers whether any went back. Under load
+/// a lane re-offered at every X would send each live root through R once an
+/// X and lengthen the queue every fresh root waits in (`dev/DECISIONS.md`,
+/// "an X turn releases every lane only on a thread the collector has caught
+/// up with"). The
 /// difference is read signed, so a byte a racing advance left behind the
 /// mirror (`crate::cycle::mutator_record::MutatorRecord::advance_the_epoch`)
 /// reads as not yet due rather than as 255 turns late.
 fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
-    let x_turns = this_thread_record_ref().x_turns();
+    let record = this_thread_record_ref();
+    let x_turns = record.x_turns();
+    // Read once, at the first lane an X turn makes a candidate.
+    let mut caught_up = None;
     let mut moved = false;
     for index in 0..LANES {
         let lane = mutator_state.lane(index);
@@ -1565,8 +1575,18 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
         }
 
         let behind = byte.wrapping_sub(mutator_state.lane_mirror(index).get()) as i8;
-        if behind < LANE_WAITS[index] as i8 && x_turns == mutator_state.x_mirrors[index].get() {
-            continue;
+        if behind < LANE_WAITS[index] as i8 {
+            // An X turn releases the lane where the collector has caught up
+            // with this thread, or where as many X turns as its wait passed:
+            // the X count only grows, so this also bounds a lane whose
+            // turnover byte wrapped past its mirror.
+            let x_behind = x_turns.wrapping_sub(mutator_state.x_mirrors[index].get());
+            let released_by_x = x_behind != 0
+                && (x_behind >= LANE_WAITS[index]
+                    || *caught_up.get_or_insert_with(|| collector_caught_up(record)));
+            if !released_by_x {
+                continue;
+            }
         }
 
         moved |= hand_the_lane_back(lane);
@@ -1576,6 +1596,14 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
         this_thread_record_ref().note_a_merge();
     }
     moved
+}
+
+/// Whether `record`'s R holds fewer than the soft threshold's entries, read
+/// off the front block by loads as the collector reads it: the collector has
+/// caught up with this thread.
+fn collector_caught_up(record: &crate::cycle::mutator_record::MutatorRecord) -> bool {
+    let reader = unsafe { crate::ring::Reader::new(record.candidate_ring()) };
+    !reader.has_at_least(crate::cycle::worker::SOFT_THRESHOLD)
 }
 
 /// Splice `lane` whole behind R's tail; answers whether it held a block.

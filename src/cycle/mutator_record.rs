@@ -136,10 +136,11 @@ pub(crate) struct MutatorRecord {
     turnover: AtomicU8,
     /// Turns the collector's X arm made, as against its proofs' arm, counted
     /// modulo 256 by the collector alone at each advance that arm makes. A
-    /// deferred lane mirrors it when it fills and
-    /// goes back into R at the first poll that reads it moved, whatever the
-    /// lane's wait: an X turn comes at X, so a wait counted in such turns would
-    /// hold a dead ring 7 X. Relaxed on both sides, as `turnover` is.
+    /// deferred lane mirrors it when it fills and goes back into R at the
+    /// first poll that reads it advanced while the collector has caught up with
+    /// the thread — an X turn comes at X, and a quiet thread's dead ring then
+    /// waits one X, not seven — or once it advanced by the lane's wait. Relaxed
+    /// on both sides, as `turnover` is.
     x_turns: AtomicU8,
     /// The next free record, meaningful while this one is on the registry's
     /// free list and written under its lock alone.

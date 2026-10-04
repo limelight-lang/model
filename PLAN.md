@@ -171,10 +171,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       exported bracket (`ll_gc_blocking_call`) after the re-reading, on the
       Sage's condition; the cap read at 64k and 1M; then S68.8's runs again.
 - [ ] S68.10 The deferred lanes under turns by X alone (design §5c, the
-      Sage 2026-10-05): the one-X bound kept, the lanes re-offered into a
-      tail each batch takes a fixed share from; first a column proving the
-      cause (a zero-count entry's age at its reading), then the tail, read
-      in A and B against their kept waits.
+      Sage's second ruling, 2026-10-05): an X turn releases every lane only
+      where R stands below the soft threshold — built; then the protocol
+      cell for A and B against released and kept, the ring loads, and the
+      collector's pacing (K at `BATCH_BOUND`, the 10 ms sleep) read before
+      further lane work.
 - [ ] S68.11 The sets that still fall to the owner (design §5d, the Sage
       2026-10-05): (a) the rig's draw in a blocking stretch and its build
       polling every `POLL_STRIDE` births; (b) the member cap 1M by default;

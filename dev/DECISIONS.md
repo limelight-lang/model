@@ -9,6 +9,35 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-05 — an X turn releases every lane only on a thread the collector has caught up with
+
+**Decided (the Sage, second ruling of 2026-10-05 on S68.10, which replaces
+the first's re-offer tail).** The readings refuted the tail's premise: what
+holds the garbage is the volume of live roots that pass through R once an X,
+not their burst — R's mean 61k with the release against 30k with the waits
+kept, and 78–83k when the same roots were spread over the interval
+(`dev/BENCHMARKS.md`, the S68.9 second reading, 2026-10-05). So an X turn is
+a turn like any for a lane on a thread the collector is still reading — the
+lane waits its one, three or seven turns, X turns counting — and releases
+every lane only on a thread whose R holds fewer than `SOFT_THRESHOLD`
+entries. The one-X bound stands where X was borrowed for, the quiet thread,
+which is also what the protocol's drain is; under load a dead ring behind a
+thrice-read root waits up to seven X, where garbage waits in R's queue
+anyway. Both builds share the rule. No `K` knob; the drain gate stays
+absolute at 12 s.
+
+**Rejected.** The tail (a fixed share keeps the volume); a re-offered root
+pruned by a current stamp (no re-offered root carries one, every turn
+advancing the byte); K = 7 flat (the drain gate fails in every cell — the
+fallback, put to Edmond only if the rule fails its readings).
+
+**Not built yet.** Re-offered roots checked by their tag alone (B only; sound
+on three conditions, its effect on the stamps unread). The collector's
+pacing — K at `BATCH_BOUND` and a 10 ms sleep after every round that made a
+batch, the service rate at 40 % CPU — read before any further lane work.
+
+---
+
 ## 2026-10-05 — the sets that still fall to the owner: the rig's own work leaves the mutator, the cap bounds a take's wait, a second refusal reads live, the application is sliced; the lanes keep their one-X bound behind a re-offer tail
 
 **Decided (the Sage, 2026-10-05, after two Critic rounds on S68.11 and one
@@ -48,7 +77,7 @@ on S68.10; design §5c, §5d).**
   what stands (never a store), P read after the last slice; `FreesStand`
   refusals read before and after, and a list-shaped frees word is the
   fallback if they rise.
-- *The lanes.* The one-X bound stands (`EPOCH_INTERVAL`'s contract). At an X
+- *The lanes* (replaced by the entry above). The one-X bound stands (`EPOCH_INTERVAL`'s contract). At an X
   turn the lanes go to a re-offer tail each batch takes from in a fixed
   share — not only when R is empty, which starves it. Kept on two readings:
   a column proving the cause (a zero-count entry's age at its reading, or

@@ -638,6 +638,18 @@ ahead of it), and A and B with the tail against their kept waits (63–71 and
 62–72 MB). `K` may be an embedder's knob, default 1. The protocol's drain
 gate and its 12 s stay.
 
+**The Sage's second ruling (2026-10-05)**, which replaces the tail above
+(`dev/DECISIONS.md`, "an X turn releases every lane only on a thread the
+collector has caught up with"). The cost is the volume of live roots
+through R, not their burst: spreading the same re-offer over the interval
+lengthened R further. An X turn releases a lane only where R holds fewer
+than `SOFT_THRESHOLD` entries, or once as many X turns as the lane's wait
+passed; otherwise the lane waits its own turns, X turns counting. Read
+before the build: R stood below the threshold in 0.07–0.85 % of the polls
+under `web-heap`'s load and 64–91 % in the drain, first within 1–559 ms of
+the stop. Built in both builds; `an_x_turn_releases_every_lane` is
+rewritten onto the rule beside a case of a standing R.
+
 ### 5d. The sets that still fall to the owner: S68.11 (the plan, before the code; revised after the Critic of its first draft)
 
 **What was read** (`dev/BENCHMARKS.md`, "S68.11: where the checkpoints are
