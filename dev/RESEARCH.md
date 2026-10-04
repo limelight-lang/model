@@ -750,3 +750,120 @@ abstracts and secondary pages and marked so. Nothing here was run.
   up to 5×); Kotlin/Native dropped its concurrent RC cycle collector for
   races, pauses and inflexibility. A shadow synchronous checker in debug
   builds, as Firefox runs, is the soundness check to copy.
+
+## 2026-10-04 — why the Recycler did not become a mainstream collector
+
+Asked by Edmond with the Recycler designs on the table. A research agent read
+the full texts of the PLDI'01 paper, Paz et al., Levanoni–Petrank (TOPLAS),
+Ulterior RC, "Down for the Count", RC Immix, LXR and Biased RC, and the
+production sources below; the ECOOP'01 full text was not reachable (abstract
+only). The UCSB mirror "bacon-concurrent.pdf" is the PLDI paper, so section
+and table numbers are the PLDI paper's. Nothing here was run.
+
+### What the Recycler measured ([PLDI'01](https://dl.acm.org/doi/10.1145/378795.378819); [mirror](https://sites.cs.ucsb.edu/~ckrintz/racelab/gc/papers/bacon-concurrent.pdf))
+
+- A 24-way 450 MHz RS/6000 with one more CPU than mutator threads (§7).
+  Longest pause 2.6 ms, end-to-end time "usually within 5%" (abstract); the
+  [ECOOP abstract](https://link.springer.com/chapter/10.1007/3-540-45337-7_12)
+  says 6 ms.
+- Under limited CPU or memory "about 90%" of mark-sweep's speed; on one CPU
+  jess 166 s against 108 s, javac 249 s against 127 s (Table 6).
+- The collector spent "far more time performing collection" than mark-sweep
+  (§7.4): javac 104.1 s against 2.8 s, specjbb 136.7 s against 4.7 s
+  (Table 3). On javac over half the collector's time went to Mark/Scan for
+  under 4,000 cycles collected (§7.3, §7.6).
+- Mutation-buffer high-water mark 128 KB–4.8 MB, and 43 MB for mpegaudio at
+  about 60 mutations an object (Table 4, §7.5); one extra header word an
+  object (§5); a free-list allocator "less than ideal" (§5.1); an atomic
+  exchange on every heap pointer store (§8); one collector CPU per about three
+  mutator CPUs, "their collector is scalable while ours is not" (§2, §8);
+  mutators block when memory or buffers run out (§1).
+
+### Problems reported later
+
+- Paz, Bacon, Kolodner, Petrank, Rajan ([CC'05](https://csaws.cs.technion.ac.il/~erez/Papers/CycleCollection.pdf),
+  [TOPLAS'07](https://dl.acm.org/doi/10.1145/1255450.1255453)): the original
+  concurrent collector "makes many repeated scans over the candidates", and
+  "liveness cannot be guaranteed. A rare race condition may prevent an
+  unreachable cyclic structure from being ever reclaimed" (§1.2) — a leak,
+  not a safety bug. Their improved collector still "falls behind a backup
+  tracing collector by 5-10%", matching it only once young objects were
+  traced (the age-oriented collector, §1.4).
+- [Levanoni–Petrank](https://csaws.cs.technion.ac.il/~erez/Papers/refcount.pdf)
+  (§1.8.1): the Recycler's barrier "still contains a compare-and-swap for each
+  reference slot update"; sliding views with coalescing remove all barrier
+  synchronisation, and cycles go to a backup on-the-fly mark-sweep.
+
+### What replaced or built on it
+
+- [Ulterior RC (2003)](https://users.cecs.anu.edu.au/~steveb/pubs/papers/urc-oopsla-2003.pdf):
+  pure RC 12.7 s on jack against 7.2 s for generational mark-sweep, "due to
+  the pointer tracking costs in RC" (Table 1); trial deletion struggles with
+  large cycles such as javac (§5); young objects copied, only old ones counted.
+- [Down for the Count (2012)](https://users.cecs.anu.edu.au/~steveb/pubs/papers/rc-ismm-2012.pdf):
+  "not aware of any high performance system that relies on reference
+  counting"; standard RC about 30 % slower than mark-sweep; backup tracing
+  "performs substantially better than trial deletion and has more predictable
+  performance" (§2.3); immediate RC is popular in PHP, Perl and Python for its
+  minimal runtime support; cyclic garbage averages 16 % of objects, up to 73 %
+  in hsqldb (Table 7).
+- [RC Immix (2013)](https://users.cecs.anu.edu.au/~steveb/pubs/papers/rcix-oopsla-2013.pdf):
+  the free-list heap is "the principal source" of the remaining ~10 % gap
+  (+26 % L1 data-cache misses, +7 % instructions, Table 1), closed by
+  line/block allocation, copying and backup tracing.
+- [LXR (2022)](https://users.cecs.anu.edu.au/~steveb/pubs/papers/lxr-pldi-2022.pdf):
+  coalescing RC in brief stop-the-world pauses plus concurrent SATB tracing
+  for cycles; a 1.6 % write barrier; 4 % faster than G1 and 7.8× Shenandoah's
+  throughput on Lucene. In this lineage cycles go to tracing, not trial
+  deletion.
+
+### Production
+
+No production system shipped the concurrent Recycler; the synchronous
+Bacon–Rajan algorithm did:
+- PHP since 5.3 ([zend_gc.c](https://github.com/php/php-src/blob/master/Zend/zend_gc.c)
+  cites the paper; the green/red/orange colours are unused); a 10,000-root
+  buffer ([manual](https://www.php.net/manual/en/features.gc.collecting-cycles.php));
+  the manual's benchmark about 7 % slower and 931 MB → 10 MB
+  ([performance](https://www.php.net/manual/en/features.gc.performance-considerations.php));
+  Composer [disabled the GC](https://github.com/composer/composer/commit/ac676f4)
+  because it kept rescanning live objects; PHP 7.3 added an adaptive threshold
+  ([PR #3165](https://github.com/php/php-src/pull/3165), 12.75 s → 2.32 s).
+- Firefox's [XPCOM cycle collector](https://github.com/mozilla-firefox/firefox/blob/main/xpcom/base/nsCycleCollector.cpp):
+  "not using the concurrent or acyclic cases"; incremental, with a
+  Levanoni–Petrank trick.
+- Nim [ORC](https://nim-lang.org/blog/2020/12/08/introducing-orc.html): trial
+  deletion; the `acyclic` annotation "can be crucial".
+- Others: CPython subtracts internal references over a whole generation
+  ([InternalDocs](https://github.com/python/cpython/blob/main/InternalDocs/garbage_collector.md));
+  Swift and Koka have no cycle collector ([Perceus §7](https://www.microsoft.com/en-us/research/wp-content/uploads/2020/11/perceus-tr-v1.pdf));
+  Perl uses `weaken` ([perlref](https://perldoc.perl.org/perlref)); Lobster
+  reports cycles at exit ([docs](https://aardappel.github.io/lobster/memory_management.html));
+  Pony uses ORCA ([tutorial](https://tutorial.ponylang.org/appendices/garbage-collection.html));
+  OpenJ9 has no RC policy, Metronome is tracing ([docs](https://eclipse.dev/openj9/docs/gc/));
+  [Biased RC](https://iacoma.cs.uiuc.edu/iacoma-papers/pact18.pdf) cut Swift
+  client execution time by 22.5 %.
+- No statement by Bacon or his co-authors on why they left the Recycler was
+  found; his [2007 ACM Queue article](https://queue.acm.org/detail.cfm?id=1217268)
+  was not reachable. The agent's inference: Metronome
+  ([POPL'03](https://dl.acm.org/doi/10.1145/604131.604155)) guarantees
+  utilisation from bounded live memory and allocation rate, which the
+  Recycler — a spare CPU, memory headroom, blocking on exhaustion, unbounded
+  cycle work — could not.
+
+### What applies here (inference, not sourced)
+
+- Most of the Recycler's cost bought concurrent counting: a CAS on every
+  store, mutation buffers, a non-scalable collector thread, a spare CPU.
+  Per-thread non-atomic immediate counting avoids it.
+- The agent concluded that deferred or coalesced RC is "largely unusable
+  here" because COW needs exact counts and destructors need RC. Half of that
+  is wrong for this project: destructor timing is no constraint
+  (`rfc/model/gc/cycle/questions.md` Y2, ruled by Edmond); COW does need exact
+  counts, which keeps COW kinds immediate (`rfc/model/values.md`) but leaves
+  objects free to defer.
+- What does apply: trial deletion traces the live data reachable from
+  candidates (the PLDI javac result and Composer's complaint are the same
+  pathology; mitigations are an acyclic filter, purging, an adaptive
+  threshold, perhaps tracing the young); the root buffer's memory; unbounded
+  synchronous pauses; the free-list allocator's locality cost (RC Immix).
