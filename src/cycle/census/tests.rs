@@ -68,7 +68,8 @@ fn the_bump_balances(report: &CollectionReport) {
         + counters.granted.worklist
         + counters.granted.held
         + counters.granted.components
-        + counters.granted.drops;
+        + counters.granted.drops
+        + counters.granted.recorded_edges;
     assert_eq!(
         capacity,
         granted + counters.tail_bytes_abandoned + close.remainder,

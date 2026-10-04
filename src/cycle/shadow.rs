@@ -220,7 +220,9 @@ pub(crate) unsafe fn recolor(row: *mut u32, color: Color) {
 /// descent from the moment it starts** ([`crate::cycle::maturation`]): the
 /// trace is over, the count has answered the only question the scan asks of
 /// it, and no production reader takes it again before the arena's reset. A row
-/// of any other colour is still the count the trace left, and this call
+/// of any other colour is still the count the trace left — or, after a
+/// collector's scan under `recycler-over-counts`, the index of its recorded
+/// run (`crate::cycle::scan::scan_the_recorded_edges`) — and this call
 /// refuses one in a test build.
 ///
 /// # Safety

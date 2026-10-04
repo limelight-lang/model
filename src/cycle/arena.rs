@@ -497,6 +497,11 @@ pub(crate) struct TraceScratchArena {
     /// Positions left to read before the next reading of the recall, from
     /// [`RECALL_STRIDE`] down to one.
     positions_to_the_reading: usize,
+    /// Positions a stride restarted early skipped, which
+    /// [`Self::positions_read`] leaves out
+    /// ([`Self::read_the_recall_as_a_stride`]).
+    #[cfg(feature = "recycler-over-counts")]
+    positions_skipped: usize,
     /// Whether a reading found the recall standing at [`Self::stops_at`] or
     /// above: what tells a trace the recall stopped from one a refused
     /// allocation did.
@@ -599,6 +604,11 @@ pub(crate) struct TraceScratchArena {
     /// ([`crate::cycle::reclamation`]). Segments of this bump, like the
     /// worklist's, and emptied once per component.
     drops: DeferredDrops,
+    /// The edges a collector's mark subtracted, in the order it wrote them
+    /// ([`crate::cycle::recorded_edges`]). Segments of this bump, empty
+    /// outside a collector's trace and spent by its scan.
+    #[cfg(feature = "recycler-over-counts")]
+    edges: crate::cycle::recorded_edges::RecordedEdges,
     /// Bytes of this arena's bump already charged to the manager's
     /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
     /// what was charged and a re-entered reset discharges nothing.
@@ -693,6 +703,8 @@ impl TraceScratchArena {
             reserve_kept: false,
             traced_token: std::ptr::null(),
             positions_to_the_reading: RECALL_STRIDE,
+            #[cfg(feature = "recycler-over-counts")]
+            positions_skipped: 0,
             recalled: false,
             stops_at: crate::cycle::token::RECALL_WIND_DOWN,
             level_seen: crate::cycle::token::RECALL_NONE,
@@ -721,6 +733,8 @@ impl TraceScratchArena {
             stamps: StampReading::UnregisteredTargets,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
+            #[cfg(feature = "recycler-over-counts")]
+            edges: crate::cycle::recorded_edges::RecordedEdges::new(),
             published: 0,
             harvest: Harvest::Unarmed,
         })
@@ -1082,6 +1096,8 @@ impl TraceScratchArena {
         // `reset` again — over a list whose head was already returned. A
         // rewound bump reads a residue of zero, which is what that second pass
         // needs to see.
+        #[cfg(feature = "recycler-over-counts")]
+        self.edges.clear();
         self.cursor =
             unsafe { BlockHeader::payload_start(self.base.block()).add(WORKSPACE_PREFIX_BYTES) };
         self.left = WORKSPACE_BUMP_BYTES;
@@ -1472,14 +1488,16 @@ impl TraceScratchArena {
         self.stack_for(consumer).push_into_current(entry)
     }
 
-    /// The stack `consumer` names; the other two consumers hold no stack.
+    /// The stack `consumer` names; the other three consumers hold no stack.
     fn stack_for(&mut self, consumer: Consumer) -> &mut TraceStack {
         match consumer {
             Consumer::Worklist => &mut self.worklist,
             Consumer::Held if self.in_a_pass => &mut self.held,
             Consumer::Held | Consumer::HeldForTheNextPass => &mut self.held_next,
             Consumer::Components => &mut self.components,
-            Consumer::Rows | Consumer::Drops => unreachable!("no stack stands under this consumer"),
+            Consumer::Rows | Consumer::Drops | Consumer::RecordedEdges => {
+                unreachable!("no stack stands under this consumer")
+            }
         }
     }
 
@@ -1533,6 +1551,72 @@ impl TraceScratchArena {
     pub(crate) fn push_drop(&mut self, child: *mut RcHeader) -> bool {
         self.drops.push_into_current(child)
             || (self.drops.advance_to_kept() && self.drops.push_into_current(child))
+    }
+
+    /// Open the run of the entity whose row is `row`: the edges recorded
+    /// after this, up to the next run, are the ones its expansion subtracted
+    /// ([`crate::cycle::recorded_edges`]). False when both allocation paths
+    /// refused, or the record is full: the trace aborts as on any refusal.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn open_run(&mut self, row: *mut u32) -> bool {
+        self.record_entry(row as u64 | crate::cycle::recorded_edges::RUN)
+    }
+
+    /// Record one edge the open run's expansion subtracted, into the row
+    /// `row`. False as [`Self::open_run`].
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn record_edge(&mut self, row: *mut u32) -> bool {
+        self.record_entry(row as u64)
+    }
+
+    #[cfg(feature = "recycler-over-counts")]
+    fn record_entry(&mut self, entry: u64) -> bool {
+        use crate::cycle::recorded_edges::{PAGE_SEGMENTS, Room, SEGMENT_ENTRIES};
+
+        debug_assert_eq!(entry & 0b10, 0, "a row is four-byte aligned");
+        match self.edges.room_for_the_next() {
+            Room::Ready => {}
+            Room::Full => return false,
+            room => {
+                if let Room::TopPageAndSegment { capacity } = room {
+                    let top = self.alloc_for(
+                        capacity * size_of::<*mut *mut u64>(),
+                        Consumer::RecordedEdges,
+                    );
+                    if top.is_null() {
+                        return false;
+                    }
+                    unsafe { self.edges.attach_top(top as *mut *mut *mut u64, capacity) };
+                }
+
+                if room != Room::Segment {
+                    let page = self.alloc_for(
+                        PAGE_SEGMENTS * size_of::<*mut u64>(),
+                        Consumer::RecordedEdges,
+                    );
+                    if page.is_null() {
+                        return false;
+                    }
+                    unsafe { self.edges.attach_page(page as *mut *mut u64) };
+                }
+
+                let segment =
+                    self.alloc_for(SEGMENT_ENTRIES * size_of::<u64>(), Consumer::RecordedEdges);
+                if segment.is_null() {
+                    return false;
+                }
+                unsafe { self.edges.attach_segment(segment as *mut u64) };
+            }
+        }
+
+        self.edges.push(entry);
+        true
+    }
+
+    /// The edges this collector's mark recorded.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn recorded_edges(&self) -> &crate::cycle::recorded_edges::RecordedEdges {
+        &self.edges
     }
 
     /// Hand every queued child to `visit` in the order the sever displaced
@@ -1625,6 +1709,20 @@ impl TraceScratchArena {
             return ControlFlow::Continue(());
         }
 
+        self.read_the_recall()
+    }
+
+    /// A reading of the recall that stands for a stride's: counted, and the
+    /// stride restarted from it. A collector's scan over its record opens on
+    /// one (`crate::cycle::scan::scan_the_recorded_edges`), since the record
+    /// may be far shorter than the storage a heap scan reads and a recall
+    /// raised between the phases would otherwise wait out the scan.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn read_the_recall_as_a_stride(&mut self) -> ControlFlow<()> {
+        // The positions the restarted stride skips were never read, and the
+        // epoch's clock takes the positions a trace read
+        // ([`Self::positions_read`]).
+        self.positions_skipped += self.positions_to_the_reading;
         self.read_the_recall()
     }
 
@@ -1797,6 +1895,17 @@ impl TraceScratchArena {
     /// recall. An in-line collection counts none.
     pub(crate) fn positions_inspected(&self) -> usize {
         self.recall_readings * RECALL_STRIDE + (RECALL_STRIDE - self.positions_to_the_reading)
+    }
+
+    /// [`Self::positions_inspected`] less the positions a stride restarted
+    /// early skipped (`read_the_recall_as_a_stride`): the storage the
+    /// trace read, which is what the epoch's clock takes. The two differ under
+    /// `recycler-over-counts` alone.
+    pub(crate) fn positions_read(&self) -> usize {
+        #[cfg(feature = "recycler-over-counts")]
+        return self.positions_inspected() - self.positions_skipped;
+        #[cfg(not(feature = "recycler-over-counts"))]
+        self.positions_inspected()
     }
 
     /// The epoch this trace's mark prunes and its commit stamps against: the
@@ -2000,6 +2109,10 @@ pub(crate) enum Consumer {
     Components,
     /// A segment of the teardown's deferred-drop queue.
     Drops,
+    /// A segment of the recorded edges, or a page of their directory
+    /// (`crate::cycle::recorded_edges`).
+    #[cfg_attr(not(feature = "recycler-over-counts"), allow(dead_code))]
+    RecordedEdges,
 }
 
 /// Which path a block the bump grew into came through.

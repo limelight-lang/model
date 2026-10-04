@@ -144,6 +144,10 @@ pub(crate) mod reclamation;
 // The record chain the trace's worklist and the teardown's deferred drops are
 // built on.
 pub(crate) mod records;
+// The edges a collector's mark subtracted, which its scan reads instead of the
+// heap under `recycler-over-counts`.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod recorded_edges;
 pub(crate) mod row;
 // The second phase, and the proposal a collection reads: reached from
 // [`trace`], which [`collect`] drives.

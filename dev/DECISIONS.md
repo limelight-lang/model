@@ -61,6 +61,41 @@ debug build asserting the tag at every primitive.
 
 ---
 
+## 2026-10-04 — the collector's scan reads the edges its mark recorded, and a run's index takes the row's count
+
+**Decision (S68.4, under `recycler-over-counts`).** A collector's mark records
+every edge it subtracts — one 8-byte entry an edge, one a run heading each
+expansion — in segments of the trace's arena (`src/cycle/recorded_edges.rs`),
+and the batch's scan reads that record instead of the heap
+(`scan::scan_the_recorded_edges`): a count-free move out of a live holder after
+the mark can no longer read its target unreachable. The case that shows it
+(`the_recorded_edges`) proposes X in the default build and reads it live under
+the feature.
+
+**The run's index lives in the header row's thirty bits**, in place of the
+working count, once the first pass has coloured the row by it — the count's
+only question, as `shadow::write_live_index` already reasons for the
+maturation descent. A potentially unreachable row is read as the zero it was
+coloured at by the stop's posts and by `undo_the_unreachable`, which now writes
+the zero rather than keeping the word; both were red without it.
+
+**The scan opens on a reading of the recall that stands for a stride**: the
+record is far shorter than the storage a heap scan reads, and a recall raised
+between the phases would otherwise wait out a whole scan. The positions the
+restarted stride skips are left out of the epoch's clock (`positions_read`).
+**A batch whose mark a wind-down cut** still scans the heap and its set goes
+the exact way; only a completed mark's completed record scan feeds the Δ-test.
+
+**Rejected:** a word beside every row for the run's index (a second array
+layout and a header word for large entities); a hash map from row to run (no
+contiguous grant the arena could serve); a capped record (the collector's
+trace has no rows ceiling — the record's own bound is the row's thirty bits).
+**Cost, named by the Critic:** an entity a live holder dropped during the trace
+now reads live through the holder's run and waits for the epoch's turn; S68.5
+answers it with the holder's tag (design §3).
+
+---
+
 ## 2026-10-04 — stale window tags are cleared at the Δ-test, and the holder's tag stays, enforced by the ABI
 
 **Decision (the Sage, on the Critic's review of S68.3).** Two findings on

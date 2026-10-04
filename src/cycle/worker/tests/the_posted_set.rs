@@ -322,3 +322,52 @@ fn a_stopped_trace_posts_a_closure_cut_at_the_recall() {
     let _ = root;
     reset_lanes();
 }
+
+/// A stop inside a collector's scan over its record posts the whole ring, as
+/// a stop inside a heap scan does: the stop falls in the record's first pass,
+/// over rows coloured potentially unreachable with their run's index in place
+/// of the zero they were coloured at, and both the stop's post of the root and
+/// the undo before the zero closure read them as that zero
+/// (`crate::cycle::scan::scan_the_recorded_edges`). The mark reads one
+/// position a member, under a stride; the scan's opening reading is the first,
+/// and the record, two entries a member, crosses the second. Red with either
+/// reading the index as a count: the root is read live and nothing is posted.
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn a_stop_inside_the_scan_over_the_record_posts_the_whole_ring() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let root = unsafe { a_ring_behind_one_root(&mut arena, CUT_IN_THE_SCAN) };
+    assert_eq!(candidate_count(), 1);
+    unsafe { &*record() }.set_batch_size(1);
+
+    testing::recall_at_the_reading(2);
+    let _ = crate::cycle::posted_set::testing::take_members_posted();
+    let served = served_by_a_collector();
+    unsafe { &(*record()).token }.recall_for_test(false);
+    assert!(
+        matches!(
+            served,
+            Served::Batch {
+                complete: false,
+                ..
+            }
+        ),
+        "{served:?}"
+    );
+    assert_eq!(
+        crate::cycle::posted_set::testing::take_members_posted(),
+        Some(CUT_IN_THE_SCAN)
+    );
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        CUT_IN_THE_SCAN,
+        "the ring is freed"
+    );
+    assert_ne!(
+        unsafe { slot_state(root as *const RcHeader) },
+        SlotState::Live
+    );
+    reset_lanes();
+}

@@ -25,8 +25,10 @@ deferred lanes are all as in the default build.
    grant ends: the collector releases the token on its own thread and cannot
    close the mutator's window, and a tag written after the grant names a
    number no later grant carries until it comes round. A close at a recall
-   would be unsound — a wind-down still scans, and zeros stored before T would
-   erase the tags the Δ-test reads. 0 is the number before the first consent.
+   would be unsound — a recall at the wind-down level does not stop a
+   completed mark's scan, whose set is still Δ-tested, and zeros stored
+   before T would erase the tags that test reads. 0 is the number before the
+   first consent.
 2. While the window is open the mutator works as today and also writes the
    window number into header byte 7:
    - of the entity whose count it writes — every count write, through the one
@@ -51,13 +53,31 @@ deferred lanes are all as in the default build.
 ## 3. The collector's batch
 
 4. The batch traces over shadow rows as today, and records every edge it
-   subtracts (source row → target row, about 4 bytes an edge).
+   subtracts: one 8-byte entry an edge (the target's row) after one a run
+   (the expanded entity's row, heading the edges its expansion subtracted),
+   in segments of the trace's arena (`src/cycle/recorded_edges.rs`).
 5. The scan spreads the live colour over the recorded edges only, never over
    the current heap: writes made after the mark to entities outside the set
    (a live array growing, a move out of a live holder) cannot whiten a live
-   entity. White entities form the set W.
+   entity. White entities form the set W. Two passes: the record in order,
+   each row coloured by its count at its first naming and a run's header row
+   taking its run's index in place of the count; then the live rows' runs,
+   raising their targets. It opens on a reading of the recall that stands for
+   a stride, since the record is shorter than the storage a heap scan reads.
 6. A batch stopped by a recall before its scan completes posts as today and
-   its set goes the default build's exact way.
+   its set goes the default build's exact way — and so does a batch whose
+   mark a wind-down cut: its scan reads the heap, as today, and its set is
+   never Δ-tested. Only the set of a completed mark's completed scan over
+   the record is.
+
+   *What the record costs in held garbage.* An entity a live holder dropped
+   during the trace reads live through the holder's run, where the heap scan
+   saw it at zero and proposed it: its root posts read live and waits for the
+   epoch's turn, and in a final-drain array it can be stamped mature and
+   pruned at for the rest of the epoch. S68.5 answers it with the tags: a
+   raise through a run whose header carries the window's tag — a holder
+   written since the consent — leaves the target unwalked rather than read
+   live, and stamps nothing (the Critic of S68.4, finding 2).
 
 ## 4. The judgement
 
@@ -144,7 +164,7 @@ deferred lanes are all as in the default build.
 |---|---|---|
 | always | every count write: + one byte store (≈ +2 instructions, measured ≈ +0.35 ns on a hot store); every GcHeap pointer store: + the holder's byte store and one argument (measured 6.26 → 7.40 ns on a hot heap-into-heap store) | — |
 | a grant | the consent as today, the window number advanced | the request as today |
-| the batch | runs on, withholds returns as today | every traced edge: the subtraction as today + one recorded edge (≈ 4 B); the scan over the recorded edges |
+| the batch | runs on, withholds returns as today | every traced edge: the subtraction as today + one recorded entry (8 B), and one a run; the scan over the record, not the heap |
 | T | one handshake | one byte read per member of W, + one CAS per stale member |
 | splitting and freeing | — | per member: the S test, its drops, count 0 and dead in place or the chain; per edge out: one drop entry |
 | the owner's poll | per drop: `drop_ref` (+ its cascade, an ordinary RC death); per block: a splice; dead in place: the retirement pass as today; S: the exact way | — |

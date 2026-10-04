@@ -1128,6 +1128,12 @@ fn a_stop_inside_the_first_regions_posts_unwalked_and_halves_k_down_to_one_read_
 /// root first, then the root that holds it, then a root over three strides
 /// whose scan the recall, raised between the phases, stops; the inner root's
 /// only reference is the outer root's.
+///
+/// Under `recycler-over-counts` the scan reads the mark's record and opens on
+/// a reading of the recall (`crate::cycle::scan::scan_the_recorded_edges`),
+/// so the recall raised between the phases stops it before any colour is
+/// given: the inner root's row reads zero and is proposed, and the owner's
+/// exact validation reads it live through the outer root, freeing nothing.
 #[test]
 fn a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live() {
     use crate::journal::kinds::BATCH_END_RECALLED_IN_THE_TRACE;
@@ -1177,11 +1183,19 @@ fn a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live() {
             .map(|&(root, verdict)| (root as *mut Object, verdict))
             .collect::<Vec<_>>(),
         vec![
-            (inner, Verdict::ReadLive),
+            (
+                inner,
+                if cfg!(feature = "recycler-over-counts") {
+                    Verdict::Proposed
+                } else {
+                    Verdict::ReadLive
+                }
+            ),
             (outer, Verdict::ReadLive),
             (wide, Verdict::ReadLive),
         ],
-        "the inner root's row reads zero and its color live"
+        "the inner root's row reads zero and its color live (proposed under the feature, \
+         whose scan stopped before any color)"
     );
 
     assert_eq!(unsafe { crate::gc::ll_gc_maybe_collect() }, 0);

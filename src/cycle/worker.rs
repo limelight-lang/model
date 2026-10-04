@@ -2299,7 +2299,7 @@ unsafe fn batch(
 
     // The batch's work toward the epoch's turn: every position its trace
     // read, the arena being this grant's.
-    let spent = arena.positions_inspected();
+    let spent = arena.positions_read();
     // The rows alone, which stand over the mutator's blocks: the arena's own
     // blocks go back after the release ([`serve_the_grant`]).
     arena.sweep_rows();
@@ -2568,7 +2568,16 @@ unsafe fn trace_the_batch(
     arena.stop_only_at(crate::cycle::token::RECALL_STOP);
     #[cfg(test)]
     let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
+    // Under `recycler-over-counts` the scan reads the edges the mark
+    // recorded and not the heap, which the mutator has been writing since
+    // (`crate::cycle::recorded_edges`); it colours every met row, the roots'
+    // closures among them.
+    #[cfg(feature = "recycler-over-counts")]
+    let scanned =
+        unsafe { crate::cycle::scan::scan_the_recorded_edges(arena) } == ScanResult::Complete;
+    #[cfg(not(feature = "recycler-over-counts"))]
     let mut scanned = true;
+    #[cfg(not(feature = "recycler-over-counts"))]
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index)
             && unsafe { scan::<AtomicCells>(arena, posts.root(index)) } != ScanResult::Complete
@@ -2797,6 +2806,9 @@ unsafe fn post_at_a_stop(
             Color::Live if shadow::count(word) == 0 => {}
             Color::Live if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
             Color::Live => {}
+            // Coloured at zero, and read so: under `recycler-over-counts` the
+            // row may hold its run index (`crate::cycle::scan`).
+            Color::PotentiallyUnreachable => posts.post(index, Verdict::Proposed),
             _ if shadow::count(word) == 0 => posts.post(index, Verdict::Proposed),
             _ if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
             _ => {}

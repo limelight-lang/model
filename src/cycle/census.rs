@@ -63,6 +63,7 @@ pub(crate) struct GrantedBytes {
     pub(crate) held: usize,
     pub(crate) components: usize,
     pub(crate) drops: usize,
+    pub(crate) recorded_edges: usize,
 }
 
 /// Events counted since the last [`take`], which a load makes one
@@ -156,7 +157,14 @@ thread_local! {
         scan: None,
         close: None,
         counters: Counters {
-            granted: GrantedBytes { rows: 0, worklist: 0, held: 0, components: 0, drops: 0 },
+            granted: GrantedBytes {
+                rows: 0,
+                worklist: 0,
+                held: 0,
+                components: 0,
+                drops: 0,
+                recorded_edges: 0,
+            },
             row_arrays: 0,
             row_bytes_requested: 0,
             tail_bytes_abandoned: 0,
@@ -276,6 +284,7 @@ pub(crate) fn note_grant(consumer: Consumer, bytes: usize) {
             Consumer::Held | Consumer::HeldForTheNextPass => &mut counters.granted.held,
             Consumer::Components => &mut counters.granted.components,
             Consumer::Drops => &mut counters.granted.drops,
+            Consumer::RecordedEdges => &mut counters.granted.recorded_edges,
         };
         *field += bytes;
     });

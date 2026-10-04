@@ -648,8 +648,9 @@ unsafe fn expand_the_worklist<R: CellReader>(
 ) -> Option<MarkResult> {
     while let Some(entry) = arena.pop_work() {
         // The row the entry carries is the scan's to read; the mark's
-        // expansion needs the entity alone, and the two phases keep one
-        // entry shape (`crate::cycle::stack::WorklistEntry`).
+        // expansion needs the entity alone — and a collector's, under
+        // `recycler-over-counts`, the row to head its run — and the two
+        // phases keep one entry shape (`crate::cycle::stack::WorklistEntry`).
         let entity = entry.entity;
         #[cfg(test)]
         note_expansion(entity);
@@ -658,6 +659,17 @@ unsafe fn expand_the_worklist<R: CellReader>(
         // a collector holds the kind from its own reading of the header
         // and does not go back to a word the mutator may be writing.
         let kind = unsafe { cells::entity_kind(entity) };
+        // A collector's expansion opens a run in the record its scan reads
+        // instead of the heap (`crate::cycle::recorded_edges`).
+        #[cfg(feature = "recycler-over-counts")]
+        if R::CONCURRENT && !arena.open_run(entry.row) {
+            // A block the record drew reads the recall, as every draw does.
+            return Some(if arena.was_recalled() {
+                MarkResult::Recalled
+            } else {
+                MarkResult::AllocationFailed
+            });
+        }
         let expansion = Expansion::<R, _>::new(arena, |arena, child| unsafe {
             visit_child::<R>(arena, child, prune, holding)
         });
@@ -837,6 +849,12 @@ unsafe fn visit_child<R: CellReader>(
         RowLookup::Untracked => true,
         RowLookup::Ready { row, first_visit } => {
             unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
+            // Every subtraction a collector makes, and nothing else, is what
+            // its scan may credit back (`crate::cycle::recorded_edges`).
+            #[cfg(feature = "recycler-over-counts")]
+            if R::CONCURRENT && !arena.record_edge(row) {
+                return false;
+            }
             #[cfg(test)]
             if first_visit && R::CONCURRENT && unsafe { stops_at_a_candidate(child) } {
                 return true;

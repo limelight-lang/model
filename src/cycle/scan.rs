@@ -144,6 +144,143 @@ pub(crate) unsafe fn scan<R: CellReader>(
     ScanResult::Complete
 }
 
+/// Colour every row a collector's completed mark met from the edges that mark
+/// recorded, never from the heap (`dev/design/recycler-over-counts.md`, §3.5;
+/// `crate::cycle::recorded_edges` says why): a row above zero is
+/// [`Color::Live`] and so is every row a recorded edge out of a live row
+/// reaches; every other met row is [`Color::PotentiallyUnreachable`]. What
+/// [`scan`] from each root answers over a heap no one wrote since the mark.
+///
+/// **Two passes.** The first walks the record in order: each row it names,
+/// header or edge, is coloured by its count at its first reading, and a run's
+/// header row then takes its run's index in place of the count, which has
+/// answered the only question the scan asks of it — the right
+/// [`shadow::write_live_index`] claims for the maturation descent after it.
+/// Every live row heading a run goes on the worklist at its run. The second
+/// pops the worklist and raises each potentially unreachable target of the
+/// popped row's run to live, queueing it in turn where it heads a run of its
+/// own. Each entry of the record is read once in the
+/// first pass and each edge at most once more in the second; each counts as
+/// a position toward the recall, which is read once at the start as well.
+///
+/// **A stop inside it leaves live rows holding a run index in place of their
+/// count**, which no reader of a stopped scan takes: a live colour is final
+/// there. A potentially unreachable row may hold one too, and is read as the
+/// zero it was coloured at — the colour is given at zero alone, and a row
+/// raised from it is live — by [`undo_the_unreachable`] and by the stop's
+/// posts (`crate::cycle::worker`).
+///
+/// # Safety
+/// As [`scan`], after a [`crate::cycle::mark::drain`] that completed, the
+/// record's rows still standing.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) unsafe fn scan_the_recorded_edges(arena: &mut TraceScratchArena) -> ScanResult {
+    use crate::cycle::recorded_edges::RUN;
+
+    // A reading before any row is written, standing for the stride a heap
+    // scan would have spent on the storage the record leaves out: the mutator
+    // that recalled between the phases gets its token now, and a zero closure
+    // after the stop starts a stride of its own.
+    if arena.read_the_recall_as_a_stride().is_break() {
+        return ScanResult::Recalled;
+    }
+
+    let entries = arena.recorded_edges().len();
+    for index in 0..entries {
+        if arena.inspect_position().is_break() {
+            return ScanResult::Recalled;
+        }
+
+        let entry = unsafe { arena.recorded_edges().entry(index) };
+        let row = (entry & !RUN) as *mut u32;
+        unsafe { colour_by_the_count(row) };
+        if entry & RUN == 0 {
+            continue;
+        }
+
+        let color = shadow::color(unsafe { *row });
+        // One past the header, which is where its first edge stands, so that
+        // zero is "no run": a leaf, met and never expanded.
+        unsafe { row.write(shadow::compose(color, index as u32 + 1)) };
+        // Queued here, at its run, and never where an edge names it: a row
+        // named before its run is queued at the run, and one never heading a
+        // run is a leaf with nothing to raise — the mark's rule that leaves
+        // take no entry (`crate::cycle::mark`, "Leaves are not pushed").
+        if color == Color::Live && !push_a_row(arena, row) {
+            return stopped(arena);
+        }
+    }
+
+    while let Some(popped) = arena.pop_work() {
+        let mut index = shadow::count(unsafe { *popped.row }) as usize;
+
+        while index < entries {
+            let entry = unsafe { arena.recorded_edges().entry(index) };
+            if entry & RUN != 0 {
+                break;
+            }
+
+            if arena.inspect_position().is_break() {
+                return ScanResult::Recalled;
+            }
+
+            let target = entry as *mut u32;
+            let word = unsafe { *target };
+            if shadow::color(word) == Color::PotentiallyUnreachable {
+                unsafe { shadow::recolor(target, Color::Live) };
+                // Its run index, settled by the first pass: zero is a leaf.
+                if shadow::count(word) != 0 && !push_a_row(arena, target) {
+                    return stopped(arena);
+                }
+            }
+            index += 1;
+        }
+    }
+
+    ScanResult::Complete
+}
+
+/// Queue a live row whose run the second pass reads; false when both
+/// allocation paths refused.
+#[cfg(feature = "recycler-over-counts")]
+fn push_a_row(arena: &mut TraceScratchArena, row: *mut u32) -> bool {
+    arena.push_work(WorklistEntry {
+        entity: std::ptr::null_mut(),
+        row,
+    })
+}
+
+/// What a refused push answers: a recall the growth read, or the refusal.
+#[cfg(feature = "recycler-over-counts")]
+fn stopped(arena: &TraceScratchArena) -> ScanResult {
+    if arena.was_recalled() {
+        ScanResult::Recalled
+    } else {
+        ScanResult::AllocationFailed
+    }
+}
+
+/// Colour a met row the first time the record names it — live above zero,
+/// potentially unreachable at zero. A row coloured already is left as it
+/// stands.
+///
+/// # Safety
+/// `row` is a row the record names, met by the trace and still standing.
+#[cfg(feature = "recycler-over-counts")]
+unsafe fn colour_by_the_count(row: *mut u32) {
+    let word = unsafe { *row };
+    if shadow::color(word) != Color::Unclassified {
+        return;
+    }
+
+    let color = if shadow::count(word) > 0 {
+        Color::Live
+    } else {
+        Color::PotentiallyUnreachable
+    };
+    unsafe { row.write(shadow::compose(color, 0)) };
+}
+
 /// Colour one entity the scan has reached and queue it when the colour
 /// changed, `reached_from_live` saying whether the edge came from a row already
 /// known to be held from outside. False when both allocation paths refused.
@@ -234,7 +371,10 @@ pub(crate) unsafe fn colour_the_zero_closure<R: CellReader>(
 }
 
 /// Colour unclassified again every row a scan cut short left potentially
-/// unreachable, keeping its count: the cut scan's queue is gone, so a row it
+/// unreachable, at count zero, which is the count every such row was coloured
+/// at — written rather than kept, since a collector's scan over its record may
+/// have put a run index there (`scan_the_recorded_edges`): the cut scan's
+/// queue is gone, so a row it
 /// coloured and had not expanded would close the zero closure early and leave
 /// the rest of its component out of the set ([`colour_the_zero_closure`]).
 /// The walk reads the met groups, as the reset does.
@@ -248,7 +388,7 @@ pub(crate) unsafe fn undo_the_unreachable(arena: &TraceScratchArena) {
         let _ = unsafe {
             crate::cycle::row::for_each_proposable_met(array, block, population, |index| {
                 let row = crate::cycle::row::row_at(array, block, population, index);
-                shadow::recolor(row, Color::Unclassified);
+                row.write(shadow::compose(Color::Unclassified, 0));
                 std::ops::ControlFlow::Continue(())
             })
         };
