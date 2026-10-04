@@ -90,7 +90,11 @@ after it. A diagnostic arm that posted a root read live and tagged with the
 window `Unwalked` instead of deferring it (two cells each way, not kept)
 moved `ReadLive` by 3k of 920k and the garbage not at all: the roots read
 live are not ones the window wrote, so the taint's root half would not
-answer this.
+answer this. Nor is it the epoch's measure of work: a second diagnostic arm
+that charged the epoch the positions the trace inspected rather than those
+it read (two cells each way, not kept) turned the epoch by proofs no more
+often — none — and moved neither `ReadLive` nor the garbage; B's epoch turns
+by X 18 times a 60 s cell, about as often as A's turns of both kinds.
 
 **Reading.** The gate is not met: mutator CPU (−6 to −15 %) and Δ-refusals
 (about 1 %) pass; the owner's longest pause fails in both arms, and held

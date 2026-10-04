@@ -413,6 +413,52 @@ notifications, the teardown and the close are the rest. So the steps:
        removed: the runs read `split_second_refusals` against
        `split_requeued`.
 
+### 5b. What S68.8's first reading asks: S68.9 (the plan, before the code)
+
+S68.8's first reading (`dev/BENCHMARKS.md`, "S68.8, first reading") failed
+the gate on the owner's pause in both arms and on held garbage in this one.
+The pause is the exact way of the sets whose Δ-test found no checkpoint —
+a third of them on `web-heap`, whose mutators sleep between requests with no
+poll, as a worker blocked in `accept` does — and of the sets past the cap.
+
+1. *The parked state.* The checkpoint byte (`TraceToken`, beside the token)
+   takes a fourth value, `PARKED`, and the runtime two exports:
+   `ll_gc_park()`, which an embedder calls before it blocks with no poll to
+   come, at a point where every reference is counted and the gate is open
+   (where a poll could stand), and `ll_gc_unpark()`, which it calls when it
+   runs again. Every transition is a read-modify-write of the one byte, so
+   the byte's modification order orders them all:
+   - park: `swap(PARKED, AcqRel)`; an ask it finds standing is answered by
+     the park itself;
+   - unpark: `compare_exchange(PARKED, NONE, AcqRel, Acquire)`; a failure
+     reads the collector's write over `PARKED`, and leaves it;
+   - the ask: `swap(ASKED, AcqRel)`, the previous value read — `PARKED` is
+     a checkpoint reached at once, T being the park;
+   - the wait reads `REACHED` or `PARKED` as reached;
+   - the withdrawal: `compare_exchange` of `ASKED` or `REACHED` to `NONE`,
+     never a store, so that it cannot bury a park.
+   Why it is sound: the park's release puts every tag the mutator stored
+   before it ahead of the collector's acquire of `PARKED`; the mutator
+   writes nothing between the park and the unpark; and the unpark's
+   read-modify-write, later in the byte's order than the collector's ask
+   whenever the ask read `PARKED`, acquires the ask's release, so that no
+   write after the unpark is one the trace — before the ask — could have
+   read (the load-buffering half the poll's acquire covers, §4.7). A
+   mutator that never parks is unchanged. The rig's web loads park around
+   their wait for the next arrival.
+2. *The cap.* `MEMBER_CAP` goes from 64k to 1M: the 400k-member sets take the
+   collector's free, and the act a recall waits for is read at 9.4 ms the
+   longest on `web-heap` at that cap.
+3. *The loom model* (`checkpoint_model`) takes the park: a park against an
+   ask, an unpark against an ask that read the park, a withdrawal against a
+   park.
+4. *Counted*: checkpoints reached by a park, in the Δ-test's counts and the
+   rig's `tag_*` columns.
+5. *Not in S68.9*: the record scan's `ReadLive` count, two and a half times
+   the heap scan's from S68.4 on, whose cause neither the root's tag nor the
+   epoch's measure of work explains (`dev/BENCHMARKS.md`, the same entry);
+   S68.9's re-reading measures what remains of the garbage first.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at
