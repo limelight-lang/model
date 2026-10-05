@@ -114,17 +114,13 @@ on S68.10; design §5c, §5d).**
   `refcount_store`, and is not built: no miss falls there.
 - *A second refusal reads live.* The rule stands on a different ground
   (`dev/BENCHMARKS.md`, S68.12, "the touch is the build of a live
-  request"): a root a second refusal reads live carries the window's tag
-  itself in 4,168 of 162,616 readings and is in U by the closure from a
-  touched context object, and 808 of 1,036 sets with a re-queued root hold
-  the context of a request still being built. A set refused twice is a
-  live one the scan coloured potentially unreachable during its build,
-  not a garbage set written twice. A re-queued root is written back at R's
-  tail, as a registration is; and `SecondRefusal` counts a batch where any
-  one marked root spent its chance, so it overstates the sets refused
-  twice. Its U's roots are read live and S stays proved; no exact walk, the kind
-  `SECOND_REFUSAL` removed. A member whose address cannot be recovered still
-  goes the exact way.
+  request"): 808 of 1,036 sets with a re-queued root hold the touched
+  context of a request still being built, so a set refused twice is a live
+  one, not a garbage set written twice. A re-queued root goes back at R's
+  tail; `SecondRefusal` counts a batch where any one marked root spent its
+  chance, and overstates the sets refused twice. Its U's roots are read
+  live and S stays proved; no exact walk, the kind `SECOND_REFUSAL`
+  removed. A member whose address cannot be recovered goes the exact way.
 - *The application is sliced.* Chains and registered members in the first
   slice, drops `POLL_STRIDE` a poll, the rest put back by a splice behind
   what stands (never a store), P read after the last slice; `FreesStand`
