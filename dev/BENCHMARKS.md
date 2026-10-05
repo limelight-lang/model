@@ -95,6 +95,16 @@ against 13.2 at 10 ms: the collector holds a grant a larger share of the
 wall. One mutator: B 11.9 MB of garbage and 20.4 s of mutator CPU against
 A's 13.9 MB and 32.4 s.
 
+**The rounds that read only `POSTED`, and the owner's disposition latency**
+(the Sage's reading for the disposition wake; one protocol cell of B at
+`1ad31cd` with `LL_RIG_STANDINGS=1`, which times the byte's states): 5,651
+batches, 11,972 rounds, 10,100 serves that found the mutator `POSTED` — 1.8
+a batch; the byte stood `POSTED` 7,331 times, 66.7 s in all over the two
+mutators, 9.1 ms on the mean and 371 ms at the longest. After each batch
+the collector cannot serve that mutator again for about 9 ms, the owner's
+next poll and its disposition; the longest stand is the posted set left
+unread through a blocking stretch.
+
 **What the touched sets are** (a diagnostic arm at `5267b9c`, not kept, one
 60 s cell of B): the members the Δ-test read, by the live readings each had
 survived — 63.8M with none, 475k with one, 2k with more; the touched among
