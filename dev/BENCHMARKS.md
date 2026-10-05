@@ -8,6 +8,45 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — S68.12 read by the protocol: at a 1 ms minimum the feature holds the default's garbage, clears every drain, and pauses its owner under 5 ms but once; the Δ-test refuses half its batches
+
+**Builds.** `cb0faf1`: S68.10's lane rule and the fallback timer's minimum
+at 1 ms, in both builds. `web-heap`, the protocol's cell (20 s warm-up,
+96 s, 12 s drain), two mutators at `cap-1`, five repeats of A and of B,
+alternated. This is also the reread S68.10 owed.
+
+| | A | B |
+|---|---|---|
+| garbage mean, MB | 28.1 / 28.3 / 24.7 / 28.2 / 27.5 | 26.8 / 28.7 / 28.1 / 27.1 / 26.5 |
+| garbage peak, MB | 161–186 | 163–247 |
+| garbage at the drain's end | 0 in every cell | 0 in every cell |
+| the drain's last free, s | 6.1–9.8 | 7.1–9.6 |
+| mutator CPU, s | 63.2–65.2 | 40.4–41.8 |
+| collector CPU, s | 42.4–43.1 | 39.7–41.7 |
+| longest owner pause, ms | a collection, 113–165 | the application, 1.1–4.2; one no-checkpoint collection of 6.2 |
+| members the owner's collections freed, M | 52.5–55.6 | 0.0 |
+| arrival p99.9, ms | 268–503 | 168–302 |
+| rounds | 17.6k–18.4k | 11.7k–12.2k |
+| batches | — | 5,721–5,919 |
+| Δ-tests proved / touched / no checkpoint | — | 3,172–3,284 / 3,008–3,266 / 0–2 |
+| second refusals, sets / roots read live | — | 1,269–1,431 / 244k–270k |
+
+**Reading, against the gate (§9).** Garbage no worse: B 26.5–28.7 MB
+against A 24.7–28.3. The drain's absolute gate holds in all ten cells.
+Mutator CPU within +3 % of A: B's is 35 % below. The owner's longest pause
+under 5 ms: the application's 1.1–4.2 ms in every cell, and one set without
+a checkpoint (one miss in that cell) collected in 6.2 ms. **Δ-refusals under
+10 % of batches fails**: 3,008–3,266 touched sets on 5,721–5,919 batches,
+53–56 %, against 2–4 % at S68.11 (10 ms, the lanes released at every X) and
+22–26 % at S68.10 (10 ms, the lane rule). A garbage set is touched by the
+decrement that killed it when the collector reads it inside the window it
+died in, which a faster collector does more often; the second refusal then
+reads its roots live, 244k–270k roots a cell, and they wait in the lanes.
+That reading is not proved: what the touched sets are, garbage or live, is
+not read.
+
+---
+
 ## 2026-10-05 — S68.10 read by the protocol: an X turn that releases the lanes only where the collector caught up halves the garbage in both builds, and B's matches A's
 
 **Builds.** `837b424`, release test binaries: A the default build, B the
