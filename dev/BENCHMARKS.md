@@ -8,6 +8,34 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — where the ring loads' mutator time goes: the allocator's sweep of its own blocks, 34 % of it in A and 54 % in B, finds nothing
+
+**Builds.** `4a85acf`, A and B, release test binaries; `deferred-then-dead`,
+two mutators at `cap-1`, one 10 s cell each (2 s warm-up, 3 s drain),
+under `perf record -F 499` (perf 6.8 from Ubuntu's `linux-tools`).
+
+**Profile of the mutator threads.** `Heap::alloc_no_block` takes 33.8 % of
+A's mutator samples and 53.8 % of B's; inside it 96–98 % of the samples
+fall on two instructions, the load of a block's `remote_free` and its test
+— `collect_owned`'s walk over every block the heap owns of the class. A
+spends 12.1 % besides in the kernel's `clear_page_erms`, B none visible.
+
+**What the walk finds** (a counting arm, not kept, the same cells):
+
+| | calls | blocks walked | a block with remote frees pending | a call that found slots |
+|---|---:|---:|---:|---:|
+| A | 58,912 | 199.5M (3,387 a call) | 0 | 0 |
+| B | 59,575 | 272.0M (4,565 a call) | 0 | 0 |
+
+Every call walks the class's whole block list, a cache miss a block, and
+on this load no other thread ever frees into the heap — the collector's
+frees in B are applied by the owner, not posted remotely — so the walk is
+pure cost, growing with the garbage standing (B stands more, so it walks
+more blocks). Estimated from the shares, not timed: at the 20 s cells'
+2,598 and 3,072 ns an operation, the walk is some 880 ns of A's operation
+and 1,650 of B's — more than B's whole excess over A, which A's owner
+collections (13.1 s of its 41.2 s) partly offset.
+
 ## 2026-10-05 — the 400k-ring probe at `e1e74bc`: the owner's first poll after a proved ring takes 0.05–0.13 ms in every shape; the collector's serve is 1.6–2.1× A's
 
 **Builds.** `e1e74bc`, A and B, release test binaries;
