@@ -3555,6 +3555,7 @@ impl CellReading {
                 "standings_recorded",
                 u8::from(switch_from_env("LL_RIG_STANDINGS")).to_string(),
             ),
+            ("offer_threshold", offer_threshold().to_string()),
             (
                 "mutator_cpu_us",
                 self.mutators
@@ -4370,6 +4371,8 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
                 .expect("LL_RIG_JOURNAL_KINDS is a mask in hexadecimal")
         },
     ));
+    // The mutators offer as the crate ships, not at the cases' threshold.
+    let _shipped = testing::OffersAsShipped::new();
     testing::pin_collectors_to(&cell.collector_cpus);
     set_collector_cap(cell.cap);
     testing::time_the_withheld_returns(true);
@@ -4638,6 +4641,15 @@ fn tag_counts() -> (usize, usize, usize) {
     }
     #[cfg(not(feature = "recycler-over-counts"))]
     (0, 0, 0)
+}
+
+/// The count of R the mutators offer at, under the cell's guard; zero
+/// without the feature.
+fn offer_threshold() -> usize {
+    #[cfg(feature = "recycler-over-counts")]
+    return crate::cycle::worker::threshold_for_offers();
+    #[cfg(not(feature = "recycler-over-counts"))]
+    0
 }
 
 /// The offers since the last call, taken: those taken, the standing of a

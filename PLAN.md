@@ -262,8 +262,15 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       Built 2026-10-05 (`src/cycle/offer.rs`, `token/offer_model.rs`, nine
       loom cases with their twins but the acquire's, which loom 0.7 cannot
       show; A 1316 and B 1305 tests green). An offer needs a collector
-      standing to take it. Open: the `web-heap` cells, the write-site table;
-      the request machinery stays in the default build's protocol.
+      standing to take it. The write-site table is in §5f. Read on
+      `web-heap` against S68.12's build on one box (`dev/BENCHMARKS.md`):
+      at the rounds' threshold the touched sets doubled; offered at a whole
+      batch and once R stood still 5 ms, the touched sets meet S68.12's, the
+      garbage is 20 % lower and every drain clears, but the collector's CPU
+      is 9 % higher than S68.12's, which the gate forbids, and one cell's
+      application took 45 ms. Open for Edmond (2026-10-05): drop the CPU
+      clause, keep looking under it, or go back to S68.12's protocol. The
+      request machinery stays in the default build's protocol.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);

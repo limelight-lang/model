@@ -164,10 +164,11 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("SETS_PROVED_BY_TAGS_VALIDATED", false), // test-only const Cell, no drop glue (`recycler-over-counts`)
         ("SINCE_THE_TURN", false),                // test-only const Cell<u8>, no drop glue
         ("SLOTS_POPPED", false),                  // test-only const Cell, no drop glue
+        ("STILL_SINCE", false), // const Cell of a Copy reading, no drop glue (`recycler-over-counts`)
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
-        ("TAKE_SEEN", false), // const Cell<bool>, no drop glue (`recycler-over-counts`)
-        ("TAKE_THIS", false), // test-only const Cell of a raw pointer, no drop glue
+        ("TAKE_SEEN", false),   // const Cell<bool>, no drop glue (`recycler-over-counts`)
+        ("TAKE_THIS", false),   // test-only const Cell of a raw pointer, no drop glue
         ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
         ("THIS_THREADS_STANDINGS", false), // test-only const RefCell of counts, no drop glue
         ("THREAD_BUFFER_ARENA", false),

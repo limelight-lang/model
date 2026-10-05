@@ -2302,6 +2302,65 @@ pub(crate) fn stamp_the_round_clock() {
     super::ROUND_CLOCK.store(super::serve_clock_now(), Ordering::Relaxed);
 }
 
+/// Whether the poll offers R that stood still across a round
+/// (`crate::cycle::offer`): off in the crate's cases, whose rounds and rings
+/// are built for the threshold and the interval, and on where a case turns
+/// it on ([`OffersRThatStoodStill`]).
+#[cfg(feature = "recycler-over-counts")]
+static STILL_R_OFFERED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn offers_r_that_stood_still() -> bool {
+    STILL_R_OFFERED.load(Ordering::Relaxed) || offers_as_shipped()
+}
+
+/// Whether the poll offers as the crate ships: R at a whole batch, and R
+/// that stood still. The rig's cells turn it on ([`OffersAsShipped`]).
+#[cfg(feature = "recycler-over-counts")]
+static OFFERS_AS_SHIPPED: AtomicBool = AtomicBool::new(false);
+
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn offers_as_shipped() -> bool {
+    OFFERS_AS_SHIPPED.load(Ordering::Relaxed)
+}
+
+/// The poll offers as the crate ships for the guard's life.
+pub(crate) struct OffersAsShipped;
+
+impl OffersAsShipped {
+    pub(crate) fn new() -> Self {
+        #[cfg(feature = "recycler-over-counts")]
+        OFFERS_AS_SHIPPED.store(true, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for OffersAsShipped {
+    fn drop(&mut self) {
+        #[cfg(feature = "recycler-over-counts")]
+        OFFERS_AS_SHIPPED.store(false, Ordering::Relaxed);
+    }
+}
+
+/// The poll offers R that stood still across a round for the guard's life.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) struct OffersRThatStoodStill;
+
+#[cfg(feature = "recycler-over-counts")]
+impl OffersRThatStoodStill {
+    pub(crate) fn new() -> Self {
+        STILL_R_OFFERED.store(true, Ordering::Relaxed);
+        Self
+    }
+}
+
+#[cfg(feature = "recycler-over-counts")]
+impl Drop for OffersRThatStoodStill {
+    fn drop(&mut self) {
+        STILL_R_OFFERED.store(false, Ordering::Relaxed);
+    }
+}
+
 /// The count of R at which the harness's mutator offers
 /// ([`consent_while`]): what [`serve_alone`] serves at.
 #[cfg(feature = "recycler-over-counts")]

@@ -8,6 +8,44 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — S68.13 with an offer at a whole batch and of R nothing was written into for 5 ms: every drain clears, the garbage falls 20 % under S68.12's and the touched sets meet it; the collector's CPU stays 9 % over
+
+**Builds.** B4, the commit after this entry: the offer's threshold at
+`BATCH_BOUND` (1,024), R below it offered once nothing was written into it
+for 5 ms on the round clock, a backlog read against the offer's threshold;
+against C, S68.12's B at `cb0faf1`. Five alternated protocol cells each on
+this box, as the entry below; the rig's cells offer as the crate ships
+(`OffersAsShipped`, the `offer_threshold` column), the crate's other cases
+at their own threshold. No cell void. Without the second rule, two of
+three 60 s cells at 1,024 left 0.83–0.90 MB at the drain's end: R below a
+batch waited the 4 s standing interval, and the deferred roots behind it
+more than one.
+
+| | B4 | C, S68.12 |
+|---|---|---|
+| garbage mean, MB | 22.8–28.5 | 27.4–31.0 |
+| garbage peak, MB | 146–226 | 173–206 |
+| garbage at the drain's end | 0 | 0 |
+| the drain's last free, s | 3.1–8.4 | 7.2–9.7 |
+| mutator CPU, s | 51.3–54.3 | 52.6–56.5 |
+| collector CPU, s | 62.6–67.6 | 55.8–60.5 |
+| longest owner pause (the application), ms | 2.5–3.3; one of 45.1 | 2.1–7.0 |
+| arrival p99.9, ms | 185–302 | 185–403 |
+| batches | 5,705–6,021 | 6,092–6,636 |
+| Δ-tests proved / touched | 3,339–3,467 / 2,645–3,227 | 3,764–3,842 / 2,441–3,186 |
+| second refusals, roots read live | 536–710 | 951–1,321 |
+
+**Reading, against S68.13's gate.** Touched sets: 2,921 against 2,829 on
+the medians (+3 %, each cell of B4 0.4–8 % over the C cell beside it).
+Garbage 24.2 MB against 30.1 on the medians, every drain cleared, the
+mutator's CPU 4 % under (52.6 s against 54.8). **Collector CPU lower than S68.12's fails**: 63.9 s
+against 58.6 on the medians (+9 %). One cell's application took 45.1 ms, the
+gate's 5 ms passed; an application splices every chain of the frees standing
+and its drops cascade by count, both unbounded by the stride, and which of
+them took the 45 ms is not read. An intermediate build (R offered once it
+stood still across any round's start, no backlog change; five cells) read
+touched 13 % and collector CPU 10 % over C, and one application of 18.6 ms.
+
 ## 2026-10-05 — S68.13 read by the protocol: the offer keeps the garbage, the pauses and the mutator's CPU, but refuses 2.4 times the touched sets of S68.12 and costs the collector 20 % more
 
 **Builds.** A and B at `df737a8` (S68.13 built), and C, S68.12's B at
