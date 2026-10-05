@@ -80,11 +80,10 @@ second refusal this common needs a second write. Not the bit's other
 causes: counted by cause in one 60 s cell, 638,513 roots went back
 unwalked from a touch's refusal and none after a recall, a stop or a cut
 batch; 1,078 sets re-queued, 875 refused again, 173,869 roots read live.
-*Not proved*: the second write is the owner's application of the
-collector's drops — a refused U's neighbour C is freed by the collector,
-and C's drops into U, applied at the owner's poll through `drop_ref`, are
-count writes that carry the window of the next grant, so U reads touched
-again.
+Nor the owner's application of the collector's drops: an arm that applies
+them with the window closed (one 60 s cell) re-queued 1,138 sets and
+refused 862 again, against 1,078 and 875. What writes a set a second time
+after its dying cascade is not read.
 
 ---
 
