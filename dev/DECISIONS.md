@@ -9,6 +9,35 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-05 — the fallback timer's minimum is 1 ms
+
+**Decided (the Sage, 2026-10-05, on S68.12 after its Critic).** The wait
+after a round that made a batch or read a freeing note is 1 ms, not 10: the
+shape a diagnostic arm measured, the minimum alone, every other rule of the
+timer standing (held after work seen without a batch, doubled to the 1 s
+maximum when idle). The 10 ms was a placeholder (2026-09-15, 2026-09-16:
+"two unmeasured bounds"); the rfc names the bounds and leaves their values
+to the build. At 10 ms the collector slept about half of each round with R
+standing at 28–61k entries; at 1 ms both builds held a third less garbage
+and every drain cleared by 8.6 s, the remnant's repeat included, for
+25–30 % more collector CPU, which no gate bounds. It supersedes the
+2026-09-16 line "what stands: the timer's bounds of 10 ms and 1 s" for the
+minimum, and closes the pacing line of the lanes entry below. The five
+protocol cells at 1 ms are the reread the third lanes ruling owed.
+
+**Rejected.** No sleep after a round that left a backlog: the next round
+reads the mutator `POSTED` — P holds one batch, and the owner's disposition
+sends no wake — and doubles the interval.
+
+**Later, each on its own reading.** A wake from the owner's disposition of a
+batch released with a backlog (a fourth wake and a note on the record:
+Edmond's, with the count of rounds that read only `POSTED` and the
+disposition's latency); `POSTED` on a mutator at the threshold holding the
+interval; the birth streak counted in time (Edmond's, if the default cap's
+reading shows spurious births).
+
+---
+
 ## 2026-10-05 — an X turn releases every lane only on a thread the collector has caught up with
 
 **Decided (the Sage, second ruling of 2026-10-05 on S68.10, which replaces

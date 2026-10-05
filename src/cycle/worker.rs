@@ -351,8 +351,13 @@ const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
 const REQUEST_WAIT: Duration = Duration::from_millis(2);
 
 /// The fallback timer's minimum: the wait after a round that made a batch or
-/// read a freeing disposition. Not a measured figure.
-const FALLBACK_INTERVAL_MIN: Duration = Duration::from_millis(10);
+/// read a freeing disposition, which sets how fast a standing R drains at
+/// one collector. Read on `web-heap` (`dev/BENCHMARKS.md`, 2026-10-05, "The
+/// collector's pacing"): at 10 ms the collector slept about half of every
+/// round with R standing at tens of thousands of entries; at 1 ms both
+/// builds held a third less garbage and every drain cleared by 8.6 s, for
+/// 25–30 % more collector CPU.
+const FALLBACK_INTERVAL_MIN: Duration = Duration::from_millis(1);
 
 /// The fallback timer's maximum, reached by doubling after empty rounds.
 /// Not a measured figure: what it bounds is how long a mutator at the

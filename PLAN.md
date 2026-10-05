@@ -188,6 +188,15 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       mutator's vCPU; the Δ-test's wait at 20 ms leaves the owner no
       collection. Open: the take-on-commit cell; the posted set held unread
       through a stretch entered over standing frees (222–279 a cell).
+- [ ] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
+      fallback timer's minimum 1 ms — built; then five protocol cells of A
+      and B (the reread S68.10 owes), the default cap with two mutators,
+      one mutator, the drain's idle tail, the take-on-commit cell, and a
+      count of rounds that read only `POSTED`. Open for Edmond: the
+      `under_stress` ledger probe fails under the feature since before this
+      step (its "R and P drained" wait at 10 ms; at 1 ms it drains and fails
+      "POSTED skips + collections >= batches", which counts the default
+      build's collections over P).
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
