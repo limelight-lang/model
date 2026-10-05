@@ -121,8 +121,10 @@ unwalked from a touch's refusal and none after a recall, a stop or a cut
 batch; 1,078 sets re-queued, 875 refused again, 173,869 roots read live.
 Nor the owner's application of the collector's drops: an arm that applies
 them with the window closed (one 60 s cell) re-queued 1,138 sets and
-refused 862 again, against 1,078 and 875. What writes a set a second time
-after its dying cascade is not read.
+refused 862 again, against 1,078 and 875. Nor a retry inside the first
+window: every one of 172,056 roots a second refusal read carried a window
+other than its first refusal's. What writes a set a second time after its
+dying cascade, in a later window, is not read.
 
 ---
 
