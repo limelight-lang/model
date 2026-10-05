@@ -3349,6 +3349,9 @@ impl CellReading {
             ("batches", self.outcomes.batches.to_string()),
             ("roots_batched", self.outcomes.roots_served.to_string()),
             ("grants", self.outcomes.grants.to_string()),
+            // Serves that found the mutator `POSTED`: P holding the last
+            // batch's verdicts, its disposition not yet run.
+            ("serves_posted", self.outcomes.posted.to_string()),
             ("idle_serves", self.outcomes.idle.to_string()),
             ("unanswered_requests", self.outcomes.unanswered.to_string()),
             (
