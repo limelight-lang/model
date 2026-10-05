@@ -76,11 +76,15 @@ garbage set once. 1,909 sets touched on 3,795 batches, about 1,230 touched
 members a set. Yet 1,269–1,431 of 1,739–1,858 re-queued sets a protocol
 cell refuse a second time and read their roots live (244k–270k roots): a
 garbage set is touched in the window it died in and in no later one, so a
-second refusal this common is not a second touch of the set. The
-second-chance bit is also set on every root the disposition writes back
-unwalked — after a recall, a stop, a cut batch — so a set met first in its
-dying window can read as refused twice. Not proved; the count of roots
-written back unwalked with the bit, by cause, is the reading.
+second refusal this common needs a second write. Not the bit's other
+causes: counted by cause in one 60 s cell, 638,513 roots went back
+unwalked from a touch's refusal and none after a recall, a stop or a cut
+batch; 1,078 sets re-queued, 875 refused again, 173,869 roots read live.
+*Not proved*: the second write is the owner's application of the
+collector's drops — a refused U's neighbour C is freed by the collector,
+and C's drops into U, applied at the owner's poll through `drop_ref`, are
+count writes that carry the window of the next grant, so U reads touched
+again.
 
 ---
 
