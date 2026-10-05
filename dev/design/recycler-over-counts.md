@@ -812,7 +812,8 @@ two minimums keeps its meaning.
 ### 5f. Open: the frame the mutator offers (Edmond's proposal, 2026-10-05)
 
 Edmond's proposal in its third form, worked out with the Sage after two Critic
-rounds on 2026-10-05; nothing is built. The frame a batch is judged against
+rounds on 2026-10-05, with the third round's findings folded in; nothing is
+built. The frame a batch is judged against
 opens when the mutator turns its window and offers the batch; the collector
 judges by "touched = tag equal to the frame's number" and needs nothing from
 the mutator after the take. The ask, the checkpoint, the bounded wait and the
@@ -835,16 +836,34 @@ consent go.
   2026-08-16). Not a fence per write: a `dmb` costs more than an `stlr`.
 - **The offer.** At a poll with the gate open, never on the slot-free path
   (a free's reading may hold ARC-elided temporaries, §4.7), when its root
-  queue R passes a threshold and its token stands `FREE` (the previous
-  batch judged), the mutator turns its window F-1 to F, records R's write
-  cursor on the token to seal the batch, and stores `OFFERED` with a
-  release. The release makes every write before the frame visible to the
-  take; the turn is the frame. One window per offer–take–release cycle.
+  queue R passes a threshold, or R has stood non-empty below it for
+  `STANDING_INTERVAL`, or the merged lanes are due, and its token stands
+  `FREE` (the previous batch judged), the mutator turns its window F-1 to
+  F, records on the token the end of the batch (at most `BATCH_BOUND`
+  entries from R's front), and stores `OFFERED` with a release. The release
+  makes every write before the frame visible to the take; the turn is the
+  frame. The offer wakes the collector its record names, as the consent
+  does today. One window per offer–take–release cycle; under cap zero the
+  mutator does not offer.
 - **The take.** A collector takes the batch by one CAS `OFFERED` →
-  `COLLECTOR` with an acquire, then traces as today. Between offer and take
-  the mutator runs free: it returns deaths and reuses slots, since no trace
-  holds an address yet; from the take it withholds them as under today's
-  grant.
+  `COLLECTOR` with an acquire and reads F and the batch's end only after
+  that CAS: an offer withdrawn and made again carries F+1, and a number
+  read before the take would judge it against F. It then traces as today.
+- **Withholding from the offer.** Every return gate withholds under
+  `OFFERED` as under `COLLECTOR`: slots, chunks, blocks, OS-direct runs and
+  the remote reclaim (`withhold_under_a_trace_or_make_returns`,
+  `returns_are_withheld`). The take lands at any instant, and the trace's
+  first reads may return addresses the frame held, so a return made after
+  the offer can put the trace on an unmapped run or a slot rebuilt with
+  plain stores (Critic, 2026-10-05, third form, finding 1). A withholding
+  mark reached under `OFFERED` withdraws the offer by the mutator's CAS; a
+  CAS that fails reads `COLLECTOR` and recalls as today.
+- **Every taker of the byte.** Under `OFFERED` the sealed range of R is
+  frozen: the retirement at the poll (`queue.rs`, `retire_at_the_poll`),
+  the compaction, the pressure collection's teardown-refusal pass, the
+  explicit fire, the exit and the record reset each withdraw the offer by
+  CAS `OFFERED` → `MUTATOR` before they touch R or the token, and
+  `take_recalling` gains an `OFFERED` arm.
 - **The judgement.** One `fence(Acquire)` after the trace, then the tag
   reads: a member is touched when its tag equals F. The trace's data reads
   may stay relaxed. The stale clear of §4.8 stands as it is, one range per
@@ -864,8 +883,10 @@ consent go.
   `cycle/token/checkpoint_model.rs` with the offer (window relaxed, byte
   release, take CAS acquire), the tag-then-release-data store before and
   after it, the collector's relaxed read, acquire fence and tag read, and
-  the exit's take against the collector's; negative twins (data relaxed, no
-  fence, offer relaxed) must fail. The load-buffering case the checkpoint's
+  the exit's take against the collector's, a return gate racing the take,
+  and a slot reused after the offer; negative twins (data relaxed, no
+  fence, offer relaxed, a return under `OFFERED`) must fail. Beside it, a
+  table of every write site the trace reads, with its ordering. The load-buffering case the checkpoint's
   proof leaves to loom's blind spot does not arise.
 - **Open for Edmond.** The blocking stretch loses its purpose: removed, or
   its park made a sleeping thread's offer. The AArch64 cost accepted
@@ -874,7 +895,12 @@ consent go.
   batch's close into collector frees records, to be measured before it is
   built. A turn per offer, or turns between offers under a wide counter and
   a range (the Sage's variant "e"), which buys an earlier frame at more
-  refusals on large sets.
+  refusals on large sets. The prune at a touched member: a member read
+  with the tag F mid-trace is coloured live and not expanded, which saves
+  the walk of sets refused anyway (72 % of the touched sets are requests
+  still being built, S68.12) but holds a ring the mutator let go after the
+  frame in a lane for several seconds instead of the next batch (12.5 % of
+  the sets read, S68.12); it needs an explicit live colour on the row.
 - **Ancestry.** Bacon and Rajan's Recycler judges a concurrently found
   garbage set across epochs with its Σ- and Δ-tests (ECOOP 2001; from memory
   and secondary sources, not re-read).

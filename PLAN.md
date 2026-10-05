@@ -239,14 +239,21 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       turns its window and offers a sealed batch at an open-gate poll; the
       collector takes it with an acquire CAS and judges touched = tag == F.
       No ask, checkpoint, wait, consent or carried sets.
-      Build: the write-order sites and the table audit; the offer and take
-      on the token; the Δ-test's fence and the ask removed; the loom model
-      with its negative twins; the blocking stretch per Edmond.
+      Build: the write-order sites with their table; withholding under
+      `OFFERED` at every return gate; the offer (threshold, standing R,
+      merged lanes, wake, batch bound) and the take; every reader of the
+      byte with its `OFFERED` arm; the request, consent and standing-list
+      machinery removed; the Δ-test's fence; the loom model with reuse and
+      the gate–take race and its negative twins; the default build's
+      protocol; the blocking stretch per Edmond.
       Done when: the loom model passes and each twin fails; `cargo test`
       green in both builds; five cells of A and B on `web-heap` with the
       no-checkpoint column gone, touched refusals no higher than S68.12's,
-      collector CPU lower by about the spin's share, an offer-to-take
-      latency column with its p99, owner pause and garbage within §9.
+      collector CPU lower than S68.12's cells, an offer-to-take latency
+      column with its p99, the drain and standing-R cells within §5c, owner
+      pause and garbage within §9; the write-site table complete; cases for
+      a newborn in a reused slot, an exit over `OFFERED` and a return under
+      `OFFERED`.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
