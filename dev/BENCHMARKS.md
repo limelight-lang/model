@@ -8,6 +8,35 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — the ring loads at `cb0faf1`: the feature costs 18–21 % of the mutator's time an operation and holds more garbage
+
+**Builds.** `cb0faf1` (S68.10's lane rule, S68.12's 1 ms minimum), A and B,
+release; two mutators at `cap-1`, one cell each, the rig's ring loads
+(`LL_RIG_SECONDS=20`, 2 s warm-up, 12 s drain), alternated.
+
+| load | arm | ns an operation | iterations | garbage standing, MB | the drain's last free, s | mutators at the 1.5 GB ceiling |
+|---|---|---|---|---|---|---|
+| `partly-overlapping` | A | 168,575 | 235,250 | 756 | 1.8 | 0 |
+| | B | 204,777 | 180,180 | 1,074 | 3.2 | 2 |
+| `live-churn` | A | 64,515 | 371,622 | 1,074 | 5.0 | 2 |
+| | B | 41,000 | 203,348 | 1,074 | 12.0 (cut) | 2 |
+| `deferred-then-dead` | A | 2,598 | 15.2M | 751 | 5.9 | 0 |
+| | B | 3,072 | 12.9M | 967 | 5.2 | 0 |
+| `deferred-live-large` | A | 2,579 | 15.4M | 738 | 1.7 | 0 |
+| | B | 3,098 | 12.8M | 862 | 2.8 | 0 |
+
+**Reading.** On the loads whose mutators do nothing but build and drop
+rings, the feature's tags and the collector's frees cost 18–21 % of an
+operation's time (the web load's −35 % was the owner's collections it no
+longer runs, which these loads barely have), and the garbage standing is
+16–42 % higher. `partly-overlapping` reaches the rig's garbage ceiling in
+B, which fails the absolute gate; `live-churn` reaches it in both, its
+operation not comparable across a ceiling. The gate's +3 % of mutator CPU
+was written for `web-heap`; these loads are not under it, and are read
+here, not judged.
+
+---
+
 ## 2026-10-05 — S68.12 read by the protocol: at a 1 ms minimum the feature holds the default's garbage, clears every drain, and pauses its owner under 5 ms but once; the Δ-test refuses half its batches
 
 **Builds.** `cb0faf1`: S68.10's lane rule and the fallback timer's minimum
