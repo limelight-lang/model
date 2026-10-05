@@ -189,10 +189,13 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       collection. Open: the take-on-commit cell; the posted set held unread
       through a stretch entered over standing frees (222–279 a cell).
 - [ ] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
-      fallback timer's minimum 1 ms — built; then five protocol cells of A
-      and B (the reread S68.10 owes), the default cap with two mutators,
-      one mutator, the drain's idle tail, the take-on-commit cell, and a
-      count of rounds that read only `POSTED`. Open for Edmond: the
+      fallback timer's minimum 1 ms — built and read (2026-10-05): B's
+      garbage 26.5–28.7 MB against A's 24.7–28.3, every drain clear, the
+      owner's pause under 5 ms but one 6.2 ms no-checkpoint set; the
+      Δ-test refuses 53–56 % of batches (the gate's 10 % fails); births at
+      cap 4 rise from 4 to 38; a take on a grant waits up to 36 ms. Owed: a
+      count of rounds that read only `POSTED`; what the touched sets are.
+      Open for Edmond: the
       `under_stress` ledger probe fails under the feature since before this
       step (its "R and P drained" wait at 10 ms; at 1 ms it drains and fails
       "POSTED skips + collections >= batches", which counts the default
