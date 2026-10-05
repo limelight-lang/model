@@ -234,26 +234,31 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       article.
 
 - [ ] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
-      third form after two Critic rounds and the Sage): every write the trace
-      reads stores its tag first and the data with a release; the mutator
-      turns its window and offers a sealed batch at an open-gate poll; the
-      collector takes it with an acquire CAS and judges touched = tag == F.
-      No ask, checkpoint, wait, consent or carried sets.
-      Build: the write-order sites with their table; withholding under
-      `OFFERED` at every return gate; the offer (threshold, standing R,
-      merged lanes, wake, batch bound) and the take; every reader of the
-      byte with its `OFFERED` arm; the request, consent and standing-list
-      machinery removed; the Δ-test's fence; the loom model with reuse and
-      the gate–take race and its negative twins; the default build's
-      protocol; the blocking stretch per Edmond.
+      third form after two Critic rounds, the Sage, and three Critics by
+      aspect): every count store, decrement included, and every slot store
+      the trace reads stores its tag first and the data with a release; the
+      mutator turns its window and offers R's end as a ceiling by CAS
+      `FREE` → `OFFERED` at an open-gate poll; the collector takes it with an
+      acquire CAS and judges touched = tag == F. No checkpoint, wait, consent
+      or carried sets; `ASKED` stays for cap zero.
+      Build: the write-order sites with their table (`write_through` and the
+      table's key word included); withholding under `OFFERED` at every
+      return gate, the marks counted from the take; the offer (threshold,
+      standing R from the release, merged lanes, wake, any collector takes)
+      and the take under the ceiling with K as today; every reader of the
+      byte with its `OFFERED` arm, the retirement's withdrawal never
+      waiting; the request, consent and standing-list machinery and the
+      blocking stretch removed; the Δ-test's fence; the loom model with
+      reuse, the gate–take race, the stale clear at the next window, and
+      its negative twins; the default build's protocol.
       Done when: the loom model passes and each twin fails; `cargo test`
       green in both builds; five cells of A and B on `web-heap` with the
       no-checkpoint column gone, touched refusals no higher than S68.12's,
       collector CPU lower than S68.12's cells, an offer-to-take latency
       column with its p99, the drain and standing-R cells within §5c, owner
       pause and garbage within §9; the write-site table complete; cases for
-      a newborn in a reused slot, an exit over `OFFERED` and a return under
-      `OFFERED`.
+      a newborn in a reused slot, an exit over `OFFERED`, a return under
+      `OFFERED` and an offer across cap zero.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
