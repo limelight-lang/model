@@ -772,30 +772,42 @@ third in both builds (A 28–32 MB, B 27–28 MB), cleared the drain by
 collector CPU. The sibling the backlog would birth is refused at cap 1, so
 today nothing else drains a standing R faster.
 
-**The change.** A round whose outcome leaves a mutator at the threshold
-after its batch (`Round::backlogged` not empty) sleeps no interval: the
-next round starts at once, as a wake would start it. Every other round
-paces as today — the minimum after a batch or a freeing note with no
-backlog, held after work seen without a batch, doubled when idle. Nothing
-else changes: `BATCH_BOUND` stays (the workspace's copy and P's room bound
-it), the birth of a sibling on two backlogged mutators for
-`BACKLOG_ROUNDS_TO_BIRTH` rounds stays, and the cap is still what bounds
-the collectors.
+**The change** (revised after the Critic of its first draft).
+`FALLBACK_INTERVAL_MIN` is 1 ms, not 10: the wait after a round that made a
+batch or read a freeing note, the shape the measurement ran — the switch
+set that minimum and nothing else. Every other rule of the timer stands:
+held after work seen without a batch, doubled up to `FALLBACK_INTERVAL_MAX`
+when idle, the bounds the rfc names (`rfc/model/gc/rc-cycle.md`, "Signals")
+two named figures whose values it leaves to the build.
 
-**What it may cost, to be read.** The collector's CPU (bounded by its one
-core at cap 1); the mutators' — each batch is a grant, a consent and a
-checkpoint, so more batches a second are more handshakes on the owner's
-side; the posted sets read and the frees applied the more often on the
-owner; the take's wait unchanged (no commit is longer); a mutator whose R
-never falls below the threshold keeps the collector busy for as long as it
-does, which at cap 1 is the load's own demand.
+*Not built, from the first draft and its Critic*: a round that sleeps no
+interval after a backlog. The round after it finds the mutator `POSTED` —
+P holds one batch at a time, and the owner's disposition sends no wake —
+and doubles the interval, so the cadence becomes a batch, a futile round
+and twice the minimum; the sibling streak, counted in rounds, would turn
+on disposition latency; an interval of zero doubles to zero when idle. The
+shape the Critic would build next, after this reading: a wake sent by the
+owner's disposition of a batch released with a backlog (a bit on the
+record), a `POSTED` read on such a mutator holding the interval rather
+than doubling it, and the birth streak counted in time.
 
-**Then read**, the protocol, five cells of A and B: garbage, the drain,
-both CPUs, p99.9, the owner's longest pause; and the ring loads after it.
+**What it may cost, to be read.** The collector's CPU (25–30 % more in the
+measured cells); the mutators' — more batches a second are more grants,
+consents and checkpoints, and more posted sets read and frees applied on
+the owner; the take's wait on a commit, more often met as the collector
+holds grants a larger share of the wall; the births at the default cap,
+`BACKLOG_ROUNDS_TO_BIRTH` rounds coming sooner in time; the idle tail, a
+few more doubling rounds from 1 ms before the maximum.
 
-**Tests.** A round that leaves a mutator above the threshold after its
-batch waits no interval before the next; one that leaves none waits the
-minimum, as today.
+**Then read**, the protocol, five cells of A and B (garbage, the drain,
+both CPUs, p99.9, the owner's longest pause); one cell at the default cap
+with two mutators (births and their time); one cell of one mutator; the
+collector's CPU over the drain's last seconds; the take-on-commit cell
+against `token_wait_longest_us`; then the ring loads.
+
+**Tests.** The cases that pin the interval read it as multiples of
+`FALLBACK_INTERVAL_MIN` and stand as they are; `under_stress`'s sleep of
+two minimums keeps its meaning.
 
 ## 6. The owner's poll
 
