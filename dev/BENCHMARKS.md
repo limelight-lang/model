@@ -45,6 +45,27 @@ reads its roots live, 244k–270k roots a cell, and they wait in the lanes.
 That reading is not proved: what the touched sets are, garbage or live, is
 not read.
 
+**The readings the Sage set on the 1 ms minimum** (one protocol cell each,
+`cb0faf1`; the 10 ms figures from `837b424`, the same lane rule):
+
+| cell | build, minimum | garbage, MB | drain's last free, s | collectors born | mutator / collector CPU, s | collector CPU after the stop, s | longest owner pause, ms | take's longest wait, ms |
+|---|---|---|---|---|---|---|---|---|
+| two mutators, cap 4 | B, 1 ms | 26.0 | 7.0 | 38 | 40.6 / 40.7 | 0.87 | 2.6 (application) | 0 |
+| | A, 1 ms | 28.5 | 5.5 | 24 | 62.9 / 42.6 | 0.95 | 135.8 | 0 |
+| | B, 10 ms | 50.9 | 11.6 | 4 | 41.2 / 34.5 | 1.78 | 2.9 (application) | 0 |
+| | A, 10 ms | 44.8 | 5.9 | 4 | 58.9 / 33.6 | 0.94 | 137.2 | 0 |
+| one mutator, cap 1 | B, 1 ms | 11.9 | 4.7 | 1 | 20.4 / 21.7 | 0.44 | 2.4 (application) | 0 |
+| | A, 1 ms | 13.9 | 9.7 | 1 | 32.4 / 23.2 | 0.48 | 143.6 | 0 |
+| two mutators, cap 1, a fire every 20 requests | B, 1 ms | 25.4 | 5.2 | 1 | 57.5 / 40.7 | 0.91 | 2.0 (application) | 36.4 |
+
+At the default cap the births rise from 4 to 38 (B) and 24 (A) a cell: the
+streak of `BACKLOG_ROUNDS_TO_BIRTH` backlogged rounds comes ten times sooner
+in time. The idle tail costs no more (0.87–0.95 s of collector CPU after the
+stop against 0.94–1.78). A take that lands on a grant waits up to 36.4 ms
+against 13.2 at 10 ms: the collector holds a grant a larger share of the
+wall. One mutator: B 11.9 MB of garbage and 20.4 s of mutator CPU against
+A's 13.9 MB and 32.4 s.
+
 ---
 
 ## 2026-10-05 — S68.10 read by the protocol: an X turn that releases the lanes only where the collector caught up halves the garbage in both builds, and B's matches A's
