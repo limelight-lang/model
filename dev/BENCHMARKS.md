@@ -66,6 +66,22 @@ against 13.2 at 10 ms: the collector holds a grant a larger share of the
 wall. One mutator: B 11.9 MB of garbage and 20.4 s of mutator CPU against
 A's 13.9 MB and 32.4 s.
 
+**What the touched sets are** (a diagnostic arm at `5267b9c`, not kept, one
+60 s cell of B): the members the Δ-test read, by the live readings each had
+survived — 63.8M with none, 475k with one, 2k with more; the touched among
+them 2.36M with none (3.7 %), 4.6k with one (1.0 %). A touched set is a
+request's graph, never read live, written by the cascade of its own death
+in the window the collector reads it in — the touch the design expects of a
+garbage set once. 1,909 sets touched on 3,795 batches, about 1,230 touched
+members a set. Yet 1,269–1,431 of 1,739–1,858 re-queued sets a protocol
+cell refuse a second time and read their roots live (244k–270k roots): a
+garbage set is touched in the window it died in and in no later one, so a
+second refusal this common is not a second touch of the set. The
+second-chance bit is also set on every root the disposition writes back
+unwalked — after a recall, a stop, a cut batch — so a set met first in its
+dying window can read as refused twice. Not proved; the count of roots
+written back unwalked with the bit, by cause, is the reading.
+
 ---
 
 ## 2026-10-05 — S68.10 read by the protocol: an X turn that releases the lanes only where the collector caught up halves the garbage in both builds, and B's matches A's
