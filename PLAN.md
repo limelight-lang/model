@@ -193,9 +193,13 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       garbage 26.5–28.7 MB against A's 24.7–28.3, every drain clear, the
       owner's pause under 5 ms but one 6.2 ms no-checkpoint set; the
       Δ-test refuses 53–56 % of batches (the gate's 10 % fails); births at
-      cap 4 rise from 4 to 38; a take on a grant waits up to 36 ms. Owed: a
-      count of rounds that read only `POSTED`; what the touched sets are.
-      Open for Edmond: the
+      cap 4 rise from 4 to 38; a take on a grant waits up to 36 ms. Read
+      (2026-10-05): rounds that find the mutator `POSTED`, 1.8 a batch; the
+      touched sets — 72 % of them hold the context of a request still
+      being built, a live set the Δ-test refuses as it must, and 17 % of
+      the batches are garbage touched at its death, so the 10 % gate
+      counts live sets beside garbage. Open for Edmond: the gate's
+      denominator; the
       `under_stress` ledger probe fails under the feature since before this
       step (its "R and P drained" wait at 10 ms; at 1 ms it drains and fails
       "POSTED skips + collections >= batches", which counts the default

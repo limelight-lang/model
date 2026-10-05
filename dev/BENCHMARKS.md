@@ -123,8 +123,35 @@ Nor the owner's application of the collector's drops: an arm that applies
 them with the window closed (one 60 s cell) re-queued 1,138 sets and
 refused 862 again, against 1,078 and 875. Nor a retry inside the first
 window: every one of 172,056 roots a second refusal read carried a window
-other than its first refusal's. What writes a set a second time after its
-dying cascade, in a later window, is not read.
+other than its first refusal's. Nor a write to the root itself: an arm at
+`2c97ad5` (not kept, one 60 s cell of B) that reads, at a second refusal,
+the window tag of each marked root carrying the bit found the root's own
+tag in the current window 4,168 times and another 158,448 times (772 sets
+read live, 162,616 roots). A root a second refusal reads live is in U by
+the closure over the record from a row touched elsewhere, not by a write
+to itself. **The touch is the build of a live request.** An arm at
+`2c97ad5` (not kept, one 60 s cell of B) that keeps, for every root a
+second refusal reads live, the closure's path back to the touched row it
+came from: 127,484 roots, every one with a path, 3–5 hops in 80 % of them,
+each hop a tree slot (slot 1 and up; slot 0, the closure's edge, in 11 %);
+the touched row at the path's head carries a count of 181–219 and the
+window's tag — a context object, which every closure of its request
+names. A second arm (not kept, one 60 s cell of B) that has the rig
+mark each request's eight context objects live at its start and ended at
+its end, and reads the state of every touched member at the Δ-test:
+| touched sets | a live request's context touched | an ended one's only | neither |
+|---|---:|---:|---:|
+| no root re-queued before | 444 | 248 | 12 |
+| a root re-queued before | 808 | 228 | 0 |
+On 2,874 batches, 1,740 touched (61 %): 1,252 of them (72 %) hold a
+context of a request still being built — a live set the scan coloured
+potentially unreachable, and which the Δ-test refuses as it must (how the
+scan comes to colour it is not read; the likeliest way, a closure born
+after its context's count is read adding a recorded edge the count lacks,
+is an assumption);
+476 (17 % of the batches) hold an ended request's context only, the touch
+of its death. A set refused twice is one live at its first refusal: no
+garbage set is written after its death.
 
 ---
 
