@@ -930,8 +930,8 @@ checkpoint, the bounded wait and the consent go.
   execute; the acquire is argued at `TraceToken::offer`. The exit's take
   against the collector's, a return under `OFFERED` and a slot reused
   under it are unit cases (`cycle/worker/tests/the_offer.rs`,
-  `the_reading_before_the_claim.rs`), not loom's. The table of every write
-  site the trace reads is still to write.
+  `the_reading_before_the_claim.rs`), not loom's. The write sites the trace
+  reads are in the table at the end of this section.
 - **Decided for the first build** (2026-10-05, defaults Edmond may
   overturn). The blocking stretch is removed: a sleeping thread was never
   traced under the consent either. The AArch64 cost is accepted unmeasured.
@@ -947,6 +947,36 @@ checkpoint, the bounded wait and the consent go.
 - **Ancestry.** Bacon and Rajan's Recycler judges a concurrently found
   garbage set across epochs with its Σ- and Δ-tests (ECOOP 2001; from memory
   and secondary sources, not re-read).
+
+**The write sites the trace reads** (2026-10-05, read from the code, not
+run). The trace and the Δ-test read the count and flags (`mark.rs`,
+`row.rs`, `worker.rs` `read_the_root`), byte 6 and byte 7 of the header,
+the class word, the pointer and value slots, the array head, the elements
+and the key words (`cells.rs`); the collector's frees read the flags, the
+class word and the storage of members proved garbage (`collector_frees.rs`,
+`split.rs`). A row's "tag, then release" is the rule of "The write order".
+
+| store | sites | order | why it holds |
+|---|---|---|---|
+| a count | `refcount_store` (`refcount.rs`), behind `ll_retain`, `release_word`, `set_header_refcount`, the guard's retain and release | tag, then release | the rule |
+| a newborn's header | `publish_header` | relaxed, then a release fence; byte 7 at 0 | the trace reaches a newborn only through a tagged store |
+| a pointer or value slot | `write_ptr_slot`, `write_value_slot` (`memory/barrier.rs`), behind `ll_store_*_in`, `ref_store`, `store_through_box` | the holder's tag by the caller, then release | the rule |
+| a root's slot | `ll_store_*_root` | release, no tag | a root is not a member |
+| an element, a key word | `Vector::store_element`, `Entry::store_words`, `store_key_word`, behind `as_vector_mut`, `as_table_mut` | tag, then release | the rule |
+| the array head | `head.rs` setters | tag by `as_*_mut`, then release | the rule |
+| a key before its entry is used | `set_int_key`, `set_string_key` (`table.rs`) | plain | published by `set_used`'s release; `used` only grows in a chunk |
+| a chain link | `Entry::store_link` | relaxed | the element's value bits are kept; only the link changes |
+| the separated array | `write_through` (`array/element.rs`) | release, no tag | its count stores tag (above) |
+| a sever to null | `empty_cell` from `sever_cells` (`reclamation.rs`), `sever_one_edge` and `sever_element_at` (arena), `reference_die` | release, no fresh tag | the holder is garbage being freed: a guarded component, whose guard's release tags, or a count of 0; a slot read as null drops an edge, which leaves the child's count higher and reads it live |
+| the candidate bit | `release_word` | relaxed, after the count's release | a hint: it chooses hold or expand and prune or not; a pruned target reads live, and an expanded one is read through its tagged stores |
+| the weak flag | `weak::create` | relaxed, no tag | ordered by the next released count of the target (above, Critic, write sites, finding 1); clears only keep a set unproved |
+| the ownership mark, the storage, the capacity | `set_ownership_mark`, `Storage` writes (`entity.rs`, `table.rs`, `vector.rs`) | relaxed or plain | read only by the collector's frees, on members proved garbage at the frame, which no mutator reaches after it; the frame's own stores are ordered by the offer |
+| `DEAD_IN_PLACE`, the destructor bits, the arena category | `take_slot_for_free`, `object.rs`, `promote.rs` | relaxed | `DEAD_IN_PLACE` is read after a count of 0, a tagged store; the destructor bits are not read by the trace; an arena entity is not traced |
+| byte 6, the stamp | `maturation.rs`, `finalization.rs`, `collector_stamps.rs`, `queue.rs` | relaxed | written by the token's holder, ordered by its hand-off |
+| the collector's own | `commit` (`collector_frees.rs`): the count to 0 untagged, the free-list link over the class word | relaxed, plain | members proved garbage; the collector is their only writer |
+
+Not covered by the table: stores the generated code makes outside the
+crate's cells, which are bound by contract (`cells.rs`).
 
 ## 6. The owner's poll
 

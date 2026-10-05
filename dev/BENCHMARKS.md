@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — S68.13 read by the protocol: the offer keeps the garbage, the pauses and the mutator's CPU, but refuses 2.4 times the touched sets of S68.12 and costs the collector 20 % more
+
+**Builds.** A and B at `df737a8` (S68.13 built), and C, S68.12's B at
+`cb0faf1`, on this box (4 CPUs, Xeon 2.8 GHz; S68.12's figures above came
+from another box, and A here spends 87–90 s of mutator CPU against 63–65
+there). `web-heap` by the protocol's cell (`dev/tools/arms.sh … 5 web`,
+46.78 ms interarrival, two mutators on CPUs 1–2, cap 1 on CPU 3, 20 s
+warm-up, 96 s, 12 s drain): five repeats of A against B, then five of C
+against B, alternated. No cell void.
+
+| | A | B (first five) | B (second five) | C, S68.12 |
+|---|---|---|---|---|
+| garbage mean, MB | 35.6–45.4 | 30.9–35.8 | 29.3–33.0 | 27.0–34.4 |
+| garbage peak, MB | 201–302 | 192–205 | 171–202 | 166–226 |
+| garbage at the drain's end | 0 | 0 | 0 | 0 |
+| the drain's last free, s | 6.4–9.4 | 6.2–8.4 | 4.7–8.2 | 2.4–10.2 |
+| mutator CPU, s | 86.4–89.9 | 52.5–54.8 | 52.9–53.8 | 53.9–55.3 |
+| collector CPU, s | 59.1–62.0 | 70.5–75.1 | 70.2–71.6 | 58.1–59.8 |
+| longest owner pause, ms | a collection, 140–221 | the application, 3.2–5.7 | the application, 2.4–6.3 | the application, 2.2–4.7; one collection of 6.1 |
+| arrival p99.9, ms | 436–537 | 185–302 | 185–302 | 185–336 |
+| rounds | 21.5k–21.8k | 15.8k–17.4k | 16.8k–17.8k | 12.7k–13.2k |
+| batches | 6,151–6,508 | 9,493–10,417 | 9,913–10,703 | 5,998–6,331 |
+| roots batched, M | — | — | 6.12–6.44 | 5.06–5.24 |
+| Δ-tests proved / touched | — | 3,909–3,983 / 5,617–6,436 | 3,935–4,047 / 5,884–6,655 | 3,754–3,904 / 2,311–2,819 |
+| second refusals, roots read live | — | 2,848–3,373 | 3,119–3,520 | 920–1,073 |
+
+**The offer's latency** (one more cell of B with `LL_RIG_STANDINGS=1`,
+which times the byte's states under a lock): 12,456 offers taken, none
+withdrawn; from the offer to the take 69 µs at the median, 32.4 ms at the
+99th centile, 486 ms at the longest. `POSTED` stood 12,305 times, 9.8 ms on
+the mean, 374 ms at the longest.
+
+**Reading, against S68.13's gate (`PLAN.md`).** Garbage, the drain, the
+owner's pause and the mutator's CPU hold: B's garbage is C's within the
+spread, every drain clears, the owner's longest pause stays the
+application's 2.4–6.3 ms, and B's mutator CPU is 2 % under C's. **Touched
+refusals no higher than S68.12's fails**: 5,617–6,655 touched sets on
+9,493–10,703 batches (59–64 %) against C's 2,311–2,819 on 5,998–6,331
+(39–45 %), and the re-queued sets they send back raise the roots batched
+by 23 % and the batches by 70 %. **Collector CPU lower than S68.12's
+fails**: 70.2–75.1 s against 58.1–59.8. The proved sets are the same
+(3,909–4,047 against 3,754–3,904): the extra batches are the refused sets
+batched again. Why the offer refuses more is not read yet.
+
 ## 2026-10-05 — the sweep gated (`ac1c342`): a ring load's operation 3–5 times cheaper in both builds, `mt_bench` within its noise
 
 **The change.** `Heap::alloc_no_block` sweeps a class's owned blocks only
