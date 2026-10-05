@@ -233,15 +233,20 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
-- [ ] S68.13 A window the mutator turns (Edmond, 2026-10-05; design §5f,
-      second form after the first Sage and Critic): every write the trace
-      reads stores its tag first and the data with a release, the trace
-      reads with an acquire; the mutator turns N to N+1 by itself at a poll;
-      the collector takes the turn from the window or from a tag of N+1,
-      looks as rarely as it likes, judges the sets it finished and keeps the
-      rest for a later window, up to a cap. No ask, no wait, no spin.
-      Next: the Critic on the second form, then the ARM cost of the
-      release/acquire order; nothing built before the ruling.
+- [ ] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
+      third form after two Critic rounds and the Sage): every write the trace
+      reads stores its tag first and the data with a release; the mutator
+      turns its window and offers a sealed batch at an open-gate poll; the
+      collector takes it with an acquire CAS and judges touched = tag == F.
+      No ask, checkpoint, wait, consent or carried sets.
+      Build: the write-order sites and the table audit; the offer and take
+      on the token; the Δ-test's fence and the ask removed; the loom model
+      with its negative twins; the blocking stretch per Edmond.
+      Done when: the loom model passes and each twin fails; `cargo test`
+      green in both builds; five cells of A and B on `web-heap` with the
+      no-checkpoint column gone, touched refusals no higher than S68.12's,
+      collector CPU lower by about the spin's share, an offer-to-take
+      latency column with its p99, owner pause and garbage within §9.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);

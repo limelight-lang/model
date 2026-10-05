@@ -809,68 +809,72 @@ against `token_wait_longest_us`; then the ring loads.
 `FALLBACK_INTERVAL_MIN` and stand as they are; `under_stress`'s sleep of
 two minimums keeps its meaning.
 
-### 5f. Open: a window the mutator turns (Edmond's proposal, 2026-10-05)
+### 5f. Open: the frame the mutator offers (Edmond's proposal, 2026-10-05)
 
-Edmond's proposal, second form after the first Sage and Critic reviews of
-2026-10-05; nothing is built.
+Edmond's proposal in its third form, worked out with the Sage after two Critic
+rounds on 2026-10-05; nothing is built. The frame a batch is judged against
+opens when the mutator turns its window and offers the batch; the collector
+judges by "touched = tag equal to the frame's number" and needs nothing from
+the mutator after the take. The ask, the checkpoint, the bounded wait and the
+consent go.
 
-A set is judged by tags alone, with no ask and no wait: every write the trace
-could have seen carries a tag the collector is bound to see. That holds once a
-tag is stored before the data it marks, the data with a release, and the trace
-reads the data with an acquire.
-
-- **The order the form rests on.** Every write the trace reads — a count, a
-  slot, an array's storage and length, a table's internals — stores the
-  window's tag first, then the data with a release. The trace reads the data
-  with an acquire, so a value it reads implies the tag stored before it is
-  visible to the collector's later tag read. Today `refcount_store` stores the
-  count first and the tag after it, both relaxed (`refcount.rs`), and the
-  barrier tags first but relaxed (`memory/barrier.rs`); with that order a
-  mutator preempted between the two stores leaves a new count under an old
-  tag, on any machine.
-- **The turn.** The mutator turns its window N to N+1 by itself, with a
-  release, at a poll with the gate open: when its withheld returns reach a
-  mark, or at any other point it chooses. It needs no word from the
-  collector, and the collector does not wait for it.
-- **The signal.** The collector learns of the turn either by an acquire load
-  of the window or by reading a tag of N+1 with an acquire: the mutator
-  stores N+1 only after the turn, so such a tag is the turn's signal. It may
-  look as rarely as it likes, say once in 10,000 roots; reads made between the
-  turn and the look see N+1 tags and refuse their sets, which costs refusals,
-  not soundness.
-- **The judgement.** Once the collector holds the signal it stops finding new
-  candidates, reads the tags of the sets its trace finished, and judges them:
-  a member is touched when its tag is any number from the set's first window
-  to the last turn. Tags are read only after the signal: a write tagged N and
-  made before the turn becomes visible through the turn's release, and a tag
-  read before the signal could miss it.
-- **Sets not finished.** A set whose trace the turn cut short is not judged
-  and not dropped: its members, rows and partial results are kept, and the
-  collector returns to it in a later window, its touched range counted from
-  the window it started in. The range must stay below the tag byte's wrap (255
-  numbers). A set touched in every window is live and never finishes, so the
-  carrying has a cap: past a number of windows, or past a share of the
-  collector's workspace, the set is given up. The cap, and what becomes of the
-  given-up set's roots, are open (Edmond, 2026-10-05: "at some point the
-  shooting has to stop"). Keeping a set across windows needs the collector's
-  workspace to outlive a batch: the arena is rewound at each batch's close
-  today (`cycle/arena.rs`).
-- **What it removes.** The ask, the bounded wait (`CHECKPOINT_WAIT`, 20 ms),
-  the yielding spin (some 13 % of B's collector CPU on the ring loads,
-  `dev/BENCHMARKS.md`, 2026-10-05) and the miss that sends a set the exact
-  way. The collector has other work and is never held by one mutator.
-- **What it costs.** On x86 the stores and loads stay plain moves; the order
-  binds the compiler only. On AArch64 every retain, release and slot store
-  becomes `stlr` and every trace read `ldar` or `ldapr`, unmeasured: the
-  project has no ARM host (`dev/BENCHMARKS.md`, 2026-08-16). A write the
-  form misses — one location the trace reads that keeps a relaxed store — is
-  unsound with no symptom, and loom does not model the load-buffering half
-  (`cycle/token/checkpoint_model.rs`).
-- **What stays open.** How a blocking stretch ends a window without a turn
-  the mutator can make while blocked (the stretch's leave reads the ask
-  today, `cycle/token.rs`); the exit's take and a recall while sets wait
-  across windows; the number the next consent opens once a window spans
-  several turns (`the_next_window`, `refcount.rs`).
+- **Why one number suffices.** A garbage set at the frame stays garbage: the
+  mutator holds no reference into it and cannot get one. The collector's
+  reads of an untouched member return values as of the frame, so a set
+  untouched in every member is judged on the frame alone, however late the
+  collector reads. A value written after the frame and read by the trace
+  carries the frame's tag, which the collector is bound to see.
+- **The write order.** Every write the trace reads stores the window's tag
+  first, then the data with a release: `refcount_store` (`refcount.rs`,
+  which stores the count first today), `write_ptr_slot` and the `+8` word of
+  `write_value_slot` (`memory/barrier.rs`), element stores through views,
+  the table's key and index stores (to audit), and outside cells by contract
+  (`cells.rs`). `publish_header` composes the window into a newborn's byte
+  instead of 0. On x86 the order binds the compiler only; on AArch64 each
+  such store is an `stlr`, unmeasured (no ARM host, `dev/BENCHMARKS.md`,
+  2026-08-16). Not a fence per write: a `dmb` costs more than an `stlr`.
+- **The offer.** At a poll with the gate open, never on the slot-free path
+  (a free's reading may hold ARC-elided temporaries, §4.7), when its root
+  queue R passes a threshold and its token stands `FREE` (the previous
+  batch judged), the mutator turns its window F-1 to F, records R's write
+  cursor on the token to seal the batch, and stores `OFFERED` with a
+  release. The release makes every write before the frame visible to the
+  take; the turn is the frame. One window per offer–take–release cycle.
+- **The take.** A collector takes the batch by one CAS `OFFERED` →
+  `COLLECTOR` with an acquire, then traces as today. Between offer and take
+  the mutator runs free: it returns deaths and reuses slots, since no trace
+  holds an address yet; from the take it withholds them as under today's
+  grant.
+- **The judgement.** One `fence(Acquire)` after the trace, then the tag
+  reads: a member is touched when its tag equals F. The trace's data reads
+  may stay relaxed. The stale clear of §4.8 stands as it is, one range per
+  cycle; a tag that equals F from 255 windows earlier refuses once and is
+  cleared.
+- **Sets not finished.** Not carried: a batch cut by a recall posts as today
+  (§3.6) and its roots return to R. A later batch retraces them; the
+  maturation stamps carry the work already proved. Carrying across windows
+  is unsound without the token (rows unstamped at the close, slots reused)
+  and costly with it (Critic, 2026-10-05, finding 3).
+- **What the token keeps.** Withholding returns while a trace may address
+  them, the take by the mutator's own exact or pressure collection, and the
+  exit; both withdraw an offer by CAS `OFFERED` → `MUTATOR`, the batch
+  staying in R. States: `FREE`, `OFFERED`, `COLLECTOR|s`, `MUTATOR`,
+  `POSTED`, `NOTHING_PROPOSED`.
+- **The proof.** Message passing only, which loom models: a rewrite of
+  `cycle/token/checkpoint_model.rs` with the offer (window relaxed, byte
+  release, take CAS acquire), the tag-then-release-data store before and
+  after it, the collector's relaxed read, acquire fence and tag read, and
+  the exit's take against the collector's; negative twins (data relaxed, no
+  fence, offer relaxed) must fail. The load-buffering case the checkpoint's
+  proof leaves to loom's blind spot does not arise.
+- **Open for Edmond.** The blocking stretch loses its purpose: removed, or
+  its park made a sleeping thread's offer. The AArch64 cost accepted
+  unmeasured, or the ordered stores enabled only while a batch is out. The
+  hand-over of withheld returns to the collector: a work-move at the
+  batch's close into collector frees records, to be measured before it is
+  built. A turn per offer, or turns between offers under a wide counter and
+  a range (the Sage's variant "e"), which buys an earlier frame at more
+  refusals on large sets.
 - **Ancestry.** Bacon and Rajan's Recycler judges a concurrently found
   garbage set across epochs with its Σ- and Δ-tests (ECOOP 2001; from memory
   and secondary sources, not re-read).
