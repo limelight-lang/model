@@ -349,6 +349,7 @@ impl<'a> Writer<'a> {
     /// it holds the exclusion its writes need — the collector's idle test
     /// ahead of its claim — where a store into the block's writer line would
     /// race the owner's own reading of it.
+    #[cfg(not(feature = "recycler-over-counts"))]
     pub(crate) fn room_in_tail_block_by_loads(&self) -> usize {
         let tail_block = self.0.tail_block.load(Ordering::Acquire);
         if tail_block.is_null() {
@@ -807,7 +808,7 @@ impl<'a> Reader<'a> {
     /// Entries not yet taken, as `Reader::unread` counts them in a test, the
     /// walk ended at the first block that brings the count to `limit` or past
     /// it: the answer is exact below `limit` and at least `limit` otherwise.
-    fn unread_up_to(&self, limit: usize) -> usize {
+    pub(crate) fn unread_up_to(&self, limit: usize) -> usize {
         let front_block = self.0.front_block.load(Ordering::Acquire);
         if front_block.is_null() {
             return 0;

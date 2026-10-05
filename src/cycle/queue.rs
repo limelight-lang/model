@@ -1441,9 +1441,13 @@ pub(crate) unsafe fn retire_at_the_poll() {
     let mutator_state = unsafe { mutator_state_ref(state) };
 
     // This thread alone consents, so no grant lands between this read and
-    // the take.
+    // the take. Under `recycler-over-counts` an offer of this thread's stands
+    // for the same: a take may land on it at any instant, and the take below
+    // would then wait out a batch, which this pass never does; the batch
+    // posts the completed deaths it takes as zero-count verdicts, and the
+    // pass stands for the next poll.
     let byte = unsafe { (*record).token.read() };
-    if crate::cycle::token::state(byte) == crate::cycle::token::COLLECTOR {
+    if crate::cycle::token::withholds(byte) {
         crate::gc::arm_to_retire();
         return;
     }

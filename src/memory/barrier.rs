@@ -288,22 +288,26 @@ pub unsafe fn store_ptr(
 }
 
 /// Write an 8-byte pointer slot of an object a collector may be tracing.
-/// The store is a relaxed atomic: a concurrent trace reads fields, a
-/// racing plain store is undefined behaviour, and the relaxed store is
-/// the same instruction. Same story for [`write_value_slot`], whose two
+/// The store is an atomic: a concurrent trace reads fields, a racing
+/// plain store is undefined behaviour, and the atomic store is the same
+/// instruction on x86. Same story for [`write_value_slot`], whose two
 /// words go out one store each: a reader of the `+8` word sees a pointer,
 /// a tag word or zero, never a value under the wrong reading, because
 /// that word alone decides the arm (`rfc/model/values.md`, "ValueBox
 /// Layout") and the atomics make the race defined.
+///
+/// [`SLOT_PUBLISH`] orders it: a release under `recycler-over-counts`, so
+/// that the holder's window tag, which the caller stores first, reaches a
+/// collector whose trace reads this slot (`dev/design/recycler-over-counts.md`,
+/// §5f, "The write order").
 #[inline]
 pub(crate) unsafe fn write_ptr_slot(slot: *mut *mut RcHeader, new: *mut RcHeader) {
-    unsafe {
-        (*(slot as *const std::sync::atomic::AtomicPtr<RcHeader>))
-            .store(new, std::sync::atomic::Ordering::Relaxed)
-    };
+    unsafe { (*(slot as *const std::sync::atomic::AtomicPtr<RcHeader>)).store(new, SLOT_PUBLISH) };
 }
 
-/// Write a 16-byte `Value` slot; see [`write_ptr_slot`].
+/// Write a 16-byte `Value` slot; see [`write_ptr_slot`]. The `+8` word goes
+/// last and alone carries [`SLOT_PUBLISH`]: it is the word a trace decides
+/// the arm and reads the address by.
 #[inline]
 pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
     unsafe {
@@ -311,9 +315,21 @@ pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
         let words = new.into_words();
         (*(slot as *const AtomicU64)).store(words[0], Ordering::Relaxed);
         (*((slot as *const u8).add(crate::value::DISCRIMINATING_WORD_OFFSET) as *const AtomicU64))
-            .store(words[1], Ordering::Relaxed);
+            .store(words[1], SLOT_PUBLISH);
     };
 }
+
+/// The ordering of the store that publishes an address a trace reads: a slot
+/// of an object, the `+8` word of a value slot, an array element's `+8` word
+/// and an ordered hash's key word. A release under `recycler-over-counts`,
+/// where the store comes after the holder's window tag and the collector
+/// tests a set by the tags its acquire fence makes visible
+/// (`dev/design/recycler-over-counts.md`, §5f, "The write order"); relaxed
+/// without it.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const SLOT_PUBLISH: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Release;
+#[cfg(not(feature = "recycler-over-counts"))]
+pub(crate) const SLOT_PUBLISH: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
 
 /// The `store_box` micro-op: the same publish for a 16-byte `Value` slot.
 ///

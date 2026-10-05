@@ -286,6 +286,7 @@ fn the_count_does_not_lower_a_higher_arming() {
 /// byte after the poll's reading is refused by that take and its collector
 /// woken, rather than consented to by a return inside the pass while the
 /// pass rewrites R.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_request_after_the_reading_is_refused_by_the_pass() {
     let _g = test_guard();
@@ -311,6 +312,30 @@ fn a_request_after_the_reading_is_refused_by_the_pass() {
         refusals + 1,
         "the take refused the request"
     );
+    reset();
+}
+
+/// Under `recycler-over-counts` an offer standing on the byte is a trace
+/// the pass may not run under: the collector may take it at any moment and
+/// read R. The pass stands for the next poll, and the offer stands with it.
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn a_standing_offer_defers_the_pass() {
+    let _g = test_guard();
+    reset();
+    let mut arena = Arena::new();
+    unsafe { completed_deaths(&mut arena, plain_class("OfferedPassNode"), D) };
+    crate::gc::disarm();
+    let token = this_threads_token();
+    assert!(token.offer(1, D, crate::cycle::token::RECALL_NONE).is_ok());
+
+    unsafe { crate::cycle::queue::retire_at_the_poll() };
+    assert_eq!(candidate_count(), D, "no pass under the offer");
+    assert_eq!(crate::gc::arming(), Arming::Retire, "and the pass stands");
+    assert_eq!(token.read(), crate::cycle::token::OFFERED, "nor withdrawn");
+
+    assert_eq!(token.withdraw_the_offer(crate::cycle::token::FREE), Ok(()));
+    crate::gc::disarm();
     reset();
 }
 

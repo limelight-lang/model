@@ -108,8 +108,8 @@ pub(crate) mod kind {
     /// W whole, marked proved: the split dropped by a refusal other than
     /// the cap.
     pub(crate) const PROVED_WHOLE: u8 = 2;
-    /// No checkpoint within the bound: unmarked.
-    pub(crate) const NO_CHECKPOINT: u8 = 3;
+    // 3 stays unused: readings journaled before S68.13 carry it for a
+    // checkpoint not met within the bound.
     /// W whole, marked proved, past the member cap.
     pub(crate) const PAST_THE_CAP: u8 = 4;
     /// Touched: W, U out, unmarked.

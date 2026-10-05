@@ -259,6 +259,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       pause and garbage within §9; the write-site table complete; cases for
       a newborn in a reused slot, an exit over `OFFERED`, a return under
       `OFFERED` and an offer across cap zero.
+      Built 2026-10-05 (`src/cycle/offer.rs`, `token/offer_model.rs`, nine
+      loom cases with their twins but the acquire's, which loom 0.7 cannot
+      show; A 1316 and B 1305 tests green). An offer needs a collector
+      standing to take it. Open: the `web-heap` cells, the write-site table;
+      the request machinery stays in the default build's protocol.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);

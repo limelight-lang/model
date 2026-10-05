@@ -343,12 +343,6 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
-    // The safepoint checkpoint a collector holding the grant asks for, the
-    // cut-off of the set it proved (`dev/design/recycler-over-counts.md`,
-    // §4.7): under an open gate alone, where every reference is counted.
-    #[cfg(feature = "recycler-over-counts")]
-    crate::cycle::token::reach_the_checkpoint_on_this_thread();
-
     // What a collector freed on this thread's behalf: its chains spliced, a
     // slice of its drops applied, where the destructors they reach may run
     // (`crate::cycle::collector_frees`). While drops stand the poll reads no
@@ -399,6 +393,13 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     if freed > 0 || crate::cycle::queue::take_retired_by_the_close() > 0 {
         crate::cycle::queue::verdicts::note_freeing_disposition();
     }
+
+    // The offer of a batch of R, where the reading calls for one: under an
+    // open gate alone, where every reference is counted, and after the fire,
+    // whose collection may have left the byte `FREE` and R drained
+    // (`crate::cycle::offer`).
+    #[cfg(feature = "recycler-over-counts")]
+    let _ = unsafe { crate::cycle::offer::offer_if_due() };
 
     // The soft signal, last: a fire over R whole above read R and started
     // the count again, so a signal sent here is for entries still in R; a

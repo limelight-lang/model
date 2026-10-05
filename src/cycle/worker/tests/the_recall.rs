@@ -640,6 +640,7 @@ fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
 /// batch sees it: the mutator is held between its swap and anything it does
 /// after it until the collector has chosen, and the grant still goes back
 /// with no batch.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_consent_at_a_mark_is_read_as_a_recall_before_the_batch() {
     let _g = test_guard();
@@ -702,6 +703,46 @@ fn a_consent_at_a_mark_is_read_as_a_recall_before_the_batch() {
     reset_lanes();
 }
 
+/// Under `recycler-over-counts` the recall a stack at its mark raises is
+/// stored by the offer before its swap publishes it, so the collector's
+/// reading after the take sees it: the grant goes back with no batch, and R
+/// keeps its root.
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn an_offer_at_a_mark_is_read_as_a_recall_before_the_batch() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let mut context = LLContext { arena: &mut arena };
+    let empty = unsafe { ll_array_new(MemoryCategory::GcHeap) };
+    assert!(!empty.is_null(), "the array was allocated");
+    let root = unsafe { a_root_over(&mut context, empty as *mut RcHeader, Tag::Array) };
+    assert_eq!(candidate_count(), 1, "R holds the root alone");
+
+    let token = unsafe { &(*record()).token };
+    let _clear = ClearTheRecall(token);
+    withhold_deaths_to_the_mark();
+    assert!(
+        unsafe { crate::cycle::offer::offer_at(1) },
+        "the poll offered"
+    );
+    assert!(token.is_recalled(), "the offer carries the stacks' level");
+    let sent = Sent(record());
+    let served = std::thread::spawn(move || {
+        assert!(crate::memory::heap::ll_thread_init());
+        let mut standing = Standing::new(ELDER);
+        unsafe { take_an_offer(sent.into_inner(), ELDER, 1, &mut standing) }
+    })
+    .join()
+    .expect("the collector finished");
+    assert_eq!(served, Served::Idle, "no batch under the recall");
+    assert_eq!(token.read(), crate::cycle::token::FREE);
+    assert_eq!(candidate_count(), 1, "R kept its root");
+
+    unsafe { let_go(root) };
+    reset_lanes();
+}
+
 /// Leave this thread's stack of deaths withheld under a foreign holder at
 /// its mark, the holder gone and no drain run, as a grant ends before the
 /// mutator's next free: the next consent then recalls the grant it opens.
@@ -747,6 +788,7 @@ fn record_token() -> *const crate::cycle::token::TraceToken {
 /// batch's trace, is released at the trace's first reading of the recall, the
 /// first root of the pass before the trace, and the batch goes on to its end:
 /// the grant held behind it has no batch of its own to abandon.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
     let released_at = released_behind_another_batch(testing::at_the_start_of_the_next_trace, false);
@@ -758,6 +800,7 @@ fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
 
 /// The same grant, its mutator asking between the mark and the scan of the
 /// other batch's trace, is released at the next reading of the stride.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
     let released_at = released_behind_another_batch(testing::between_the_next_phases, false);
@@ -771,6 +814,7 @@ fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
 /// at the reading that stops the other batch rather than after that batch's
 /// tail: the stop reads the grants behind the trace as a reading at the
 /// stride does (`dev/BENCHMARKS.md`, "S67.13: the grants behind a stop released at it").
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_grant_behind_a_stopped_trace_is_released_at_the_stop() {
     let released_at = released_behind_another_batch(testing::between_the_next_phases, true);
@@ -795,6 +839,7 @@ fn a_grant_behind_a_stopped_trace_is_released_at_the_stop() {
 ///
 /// The collector is the case's thread with a list of its own on a slot no
 /// thread stands in, as in `the_standing_list`.
+#[cfg(not(feature = "recycler-over-counts"))]
 fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>), traced_asks: bool) -> usize {
     const SLOT: usize = 6;
     let _g = test_guard();

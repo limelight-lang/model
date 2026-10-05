@@ -115,7 +115,7 @@
 //! made at a mark stops no later grant; a stack still at its mark when a
 //! grant opens — a drain a new holder stopped, or a consent no drain preceded
 //! — recalls that grant at its consent, before the collector's reading ahead
-//! of its batch ([`withheld_recall`], [`recall_if_a_mark_stands`]). A count is what
+//! of its batch ([`withheld_recall`], `recall_if_a_mark_stands`). A count is what
 //! its stack holds at every instant: the drain takes an item's weight off
 //! before the return, and a return withheld again counts anew, so a consent
 //! inside a drain, the drain's own chain in hand, reads it exactly
@@ -834,8 +834,16 @@ pub(crate) unsafe fn withhold_under_a_trace_or_make_returns(ptr: *mut u8, kind: 
     // request is consented to here, and `POSTED` arms the collection over P
     // or, at `NOTHING_PROPOSED`, P's disposition
     // (`crate::cycle::token::read_and_act_on_this_thread`).
-    if crate::cycle::token::read_and_act_on_this_thread() == crate::cycle::token::Reading::Collector
-    {
+    let reading = crate::cycle::token::read_and_act_on_this_thread();
+    if reading.withholds() {
+        // The marks count from the take, not from the offer: what an offer
+        // withheld before a collector took it is no part of that collector's
+        // trace ([`note_the_take`]).
+        #[cfg(feature = "recycler-over-counts")]
+        if reading == crate::cycle::token::Reading::Collector {
+            note_the_take();
+        }
+
         // The reset's whole-block sentinel addresses a block header, which
         // has no byte 8 to thread the stack through; the block's return
         // waits at the pool's own entry instead
@@ -1493,6 +1501,13 @@ pub(crate) fn dispose_thread_state() {
 struct ForeignStack {
     head: Cell<*mut u8>,
     held: Cell<usize>,
+    /// What the stack held when a collector took this thread's offer, or
+    /// zero before the take: the marks count from it, so that the returns
+    /// an offer withheld before its take are not charged to the trace the
+    /// take began (`dev/design/recycler-over-counts.md`, §5f,
+    /// "Withholding"; [`note_the_take`]).
+    #[cfg(feature = "recycler-over-counts")]
+    base: Cell<usize>,
 }
 
 impl ForeignStack {
@@ -1500,7 +1515,19 @@ impl ForeignStack {
         Self {
             head: Cell::new(std::ptr::null_mut()),
             held: Cell::new(0),
+            #[cfg(feature = "recycler-over-counts")]
+            base: Cell::new(0),
         }
+    }
+
+    /// What the stack holds past its base, the figure its marks are read
+    /// against: `held` itself without `recycler-over-counts`.
+    #[inline]
+    fn past_the_base(&self, held: usize) -> usize {
+        #[cfg(feature = "recycler-over-counts")]
+        return held.saturating_sub(self.base.get());
+        #[cfg(not(feature = "recycler-over-counts"))]
+        held
     }
 
     fn is_empty(&self) -> bool {
@@ -1513,12 +1540,13 @@ impl ForeignStack {
     /// the two asks nothing, so that each level is raised once and the
     /// returns after it cost what they cost below it; a stack that already
     /// holds a mark when a grant opens recalls that grant at its consent
-    /// ([`recall_if_a_mark_stands`]).
+    /// (`recall_if_a_mark_stands`).
     #[inline]
     fn count(&self, weight: usize, mark: usize) {
         let before = self.held.get();
+        self.held.set(before + weight);
+        let before = self.past_the_base(before);
         let held = before + weight;
-        self.held.set(held);
         // Both crossings under one test, which below the first mark is the
         // two compares one crossing took (`dev/BENCHMARKS.md`, "S65.30: the free against S65.7's").
         if before >= STOP_MARKS * mark || held < mark {
@@ -1544,7 +1572,7 @@ impl ForeignStack {
 
     /// The recall level this stack's count holds against `mark`.
     fn level(&self, mark: usize) -> u8 {
-        match self.held.get() {
+        match self.past_the_base(self.held.get()) {
             held if held >= STOP_MARKS * mark => crate::cycle::token::RECALL_STOP,
             held if held >= mark => crate::cycle::token::RECALL_WIND_DOWN,
             _ => crate::cycle::token::RECALL_NONE,
@@ -1570,6 +1598,7 @@ impl ForeignStack {
 /// well, which releases the grant where the collector holds it behind
 /// another mutator's batch. Once per grant, after the consent
 /// (`crate::cycle::token::read_and_act_on_this_thread`).
+#[cfg(not(feature = "recycler-over-counts"))]
 pub(crate) fn recall_if_a_mark_stands() {
     if withheld_recall() != crate::cycle::token::RECALL_NONE {
         crate::cycle::token::tell_this_threads_holder();
@@ -1584,6 +1613,47 @@ pub(crate) fn withheld_recall() -> u8 {
         .with(|stack| stack.level(DEATHS_MARK))
         .max(CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.level(CHUNKS_MARK)))
         .max(BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE.with(|stack| stack.level(BLOCKS_MARK)))
+}
+
+thread_local! {
+    /// Whether this thread's latest offer has been read taken by a return
+    /// withheld under it, which set the stacks' bases ([`note_the_take`]).
+    #[cfg(feature = "recycler-over-counts")]
+    static TAKE_SEEN: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Start the count of this thread's withheld stacks for the offer its poll
+/// just made: no take read yet, and the bases at zero, so that a mark
+/// reached before the take withdraws the offer
+/// (`crate::cycle::token::recall_this_threads_token`).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn note_an_offer() {
+    TAKE_SEEN.with(|seen| seen.set(false));
+    for stack in [
+        &WITHHELD_UNDER_A_FOREIGN_TRACE,
+        &CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
+        &BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
+    ] {
+        stack.with(|stack| stack.base.set(0));
+    }
+}
+
+/// Set each withheld stack's base to what it holds, at the first return a
+/// collector's take of this thread's offer withholds: the marks of the
+/// grant count from there (Critic, 2026-10-05, token states, finding 2).
+#[cfg(feature = "recycler-over-counts")]
+fn note_the_take() {
+    if TAKE_SEEN.with(|seen| seen.replace(true)) {
+        return;
+    }
+
+    for stack in [
+        &WITHHELD_UNDER_A_FOREIGN_TRACE,
+        &CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
+        &BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE,
+    ] {
+        stack.with(|stack| stack.base.set(stack.held.get()));
+    }
 }
 
 /// The second mark of each stack, as a multiple of its first: past it the
@@ -1720,7 +1790,7 @@ static A_HOOK_BEFORE_THE_RETURNS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 /// Run `act` at the start of this thread's next drain of the withheld returns.
-#[cfg(test)]
+#[cfg(all(test, not(feature = "recycler-over-counts")))]
 pub(crate) fn before_the_next_returns(act: Box<dyn FnOnce() + Send>) {
     let mut hook = BEFORE_THE_NEXT_RETURNS
         .lock()

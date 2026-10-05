@@ -5,13 +5,13 @@ session and replaced whole by the next handoff; what outlives it is in
 `PLAN.md` and the journals, and `PLAN.md` outranks it.
 
 ## State
-- /home/user/model: `main` = `origin/main` = `origin/claude/exciting-tesla-y0c10j`
-  = `a2d4705`; working tree clean. /home/user/rfc untouched this session
-  (`9e79051`, in sync).
-- dev/PLAN.md outranks this file. Open steps: S68.8 (runs + article), S68.11
+- /home/user/model: `main` = `origin/main` carries S68.13's build; the mirror
+  `claude/exciting-tesla-y0c10j` is left at `026973e`. /home/user/rfc
+  untouched this session.
+- PLAN.md outranks this file. Open steps: S68.8 (runs + article), S68.11
   (owner fallbacks; only Edmond's questions left), S68.12 (pacing; Edmond's
-  questions), S68.13 (proposed, design §5f). Closed this session: S68.7,
-  S68.10.
+  questions), S68.13 (built; the `web-heap` cells and the write-site table
+  open). Closed this session: S68.7, S68.10.
 
 ## Done this session
 - S68.12 touched sets read: 72 % of touched sets hold the context of a request
@@ -47,15 +47,14 @@ session and replaced whole by the next handoff; what outlives it is in
   collector batch, figures, unbuilt optimizations.
 
 ## Next
-- S68.13: Edmond's window the mutator turns (+1 once at a poll when its
-  withheld queue reaches a mark or the collector flags its reads done; more
-  turns only on the collector's grant). Run the Critic first on the
-  memory-order condition (the judging turn must follow the trace's last read),
-  then the model, the Critic, the Sage. Nothing built before the ruling.
-- Wait for Edmond's answers (PLAN, "Open for Edmond (2026-10-05)"): token
-  wait 36 ms; Δ-refusal gate denominator; the array-bearing load; births at
-  cap 4; disposition wake.
-- Unbuilt optimizations are listed in PLAN under S68.13.
+- S68.13: five cells of A and B on `web-heap` (offer-to-take p99 from the
+  rig's `offer_*` columns, touched refusals and collector CPU against
+  S68.12's cells); the write-site table in design §5f.
+- B under `--test-threads=8` on this 4-core box: `the_rig::a_phase_spins_its_
+  cpu_and_its_polls_add_to_it` failed 2 of 3 once, then passed 4 of 4; the
+  base failed `the_recall::a_grant_behind_another_trace_...` 1 of 3. Both
+  are wall-clock bounds; not root-caused.
+- Wait for Edmond's answers (PLAN, "Open for Edmond (2026-10-05)").
 
 ## Working notes
 - Push: `cd` first; hash by `git diff origin/main..main | sha1sum | cut -c1-8`;

@@ -59,10 +59,13 @@ unsafe fn let_go_and_collect(roots: Vec<Sent<*mut Object>>) {
     );
 }
 
+/// Wait for `rounds` rounds of collector `index`, this thread making no
+/// poll meanwhile: the case's routing reads which collector a wake reached,
+/// and an offer of this thread's would wake its own.
 fn wait_for_rounds_of(index: usize, rounds: usize) {
     let mut seen = 0;
     assert!(
-        wait_until(
+        wait_until_without_a_poll(
             || {
                 // As the other mutator's loop does: the `POSTED` a batch
                 // left is cleared; the clear a wake relies on is
@@ -86,10 +89,20 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
 /// that tick met the second backlog round with a backlog of one
 /// (`dev/POSTMORTEM.md`, "a wake inside the other mutator's tick meets a
 /// backlog of one").
+///
+/// Under `recycler-over-counts` each mutator then offers R as its next poll
+/// would, with no wake, so that the one round the case wakes next reads
+/// every offer standing.
 fn dispose_by_hand(others: &[&Mutator]) {
     unsafe { &*record() }.clear_posted_for_test();
+    #[cfg(feature = "recycler-over-counts")]
+    let _ = testing::offer_and_wake_no_one();
     for other in others {
-        other.run(|_| unsafe { &*mutator_record::this_thread_record() }.clear_posted_for_test());
+        other.run(|_| {
+            unsafe { &*mutator_record::this_thread_record() }.clear_posted_for_test();
+            #[cfg(feature = "recycler-over-counts")]
+            let _ = testing::offer_and_wake_no_one();
+        });
     }
 }
 
@@ -111,6 +124,8 @@ fn a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idl
     testing::permit_births(true);
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
+    #[cfg(feature = "recycler-over-counts")]
+    dispose_by_hand(&[&other]);
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
     assert_eq!(testing::take_spawns(), 1);
@@ -266,6 +281,8 @@ fn one_backlogged_mutator_births_no_sibling() {
     testing::permit_births(true);
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
+    #[cfg(feature = "recycler-over-counts")]
+    dispose_by_hand(&[]);
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
     // One mutator is read by one collector at a time, so its backlog, however
@@ -304,6 +321,8 @@ fn a_cap_of_one_births_no_sibling() {
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
     let _ = testing::take_backlog_rounds_without_a_birth();
+    #[cfg(feature = "recycler-over-counts")]
+    dispose_by_hand(&[&other]);
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
     for _ in 0..BACKLOG_ROUNDS_TO_BIRTH {

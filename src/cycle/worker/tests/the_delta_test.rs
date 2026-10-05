@@ -1,7 +1,7 @@
 //! The collector's Δ-test of the set its scan over the record proved, under
 //! `recycler-over-counts` (`crate::cycle::delta_test`;
-//! `dev/design/recycler-over-counts.md`, §4): a garbage ring nobody touched
-//! since the consent is proved by its tags, and the owner's exact validation
+//! `dev/design/recycler-over-counts.md`, §4, §5f): a garbage ring nobody
+//! touched since the offer is proved by its tags, and the owner's exact validation
 //! agrees; a member tagged with the open window refuses the set; a stale tag
 //! is cleared as it is read.
 
@@ -52,12 +52,10 @@ fn served_and_counted() -> crate::cycle::delta_test::TagReadingCounts {
         proved: after.proved - before.proved,
         touched: after.touched - before.touched,
         weakly_held: after.weakly_held - before.weakly_held,
-        no_checkpoint: after.no_checkpoint - before.no_checkpoint,
-        ..after
     }
 }
 
-/// A ring nobody touched since the consent is proved by its tags, and the
+/// A ring nobody touched since the offer is proved by its tags, and the
 /// collector frees it itself (S68.6b): the owner's poll applies what it left
 /// and counts the two members freed, with no collection over a set.
 #[test]
@@ -70,10 +68,7 @@ fn an_untouched_garbage_ring_is_proved_by_its_tags() {
     let freed_before = crate::cycle::collector_frees::frees_counts();
 
     let counts = served_and_counted();
-    assert_eq!(
-        (counts.proved, counts.touched, counts.no_checkpoint),
-        (1, 0, 0)
-    );
+    assert_eq!((counts.proved, counts.touched), (1, 0));
     let freed = crate::cycle::collector_frees::frees_counts();
     assert_eq!(
         (
@@ -282,72 +277,57 @@ fn a_stale_tag_is_cleared_and_refuses_nothing() {
     reset_lanes();
 }
 
-/// Serve the ring's batch with this thread standing in as the mutator, its
-/// poll's answer to a checkpoint ask left to `at_the_poll`, which runs at each
-/// reading the harness makes; and answer how the counts moved.
-fn served_with(mut at_the_poll: impl FnMut()) -> crate::cycle::delta_test::TagReadingCounts {
+/// Offer the ring's batch from this thread's poll, run `before_the_take`
+/// under the frame the offer opened, then serve the batch; and answer how the
+/// counts moved. The collector is started after the act, so that the act
+/// lands between the offer and the take whatever the scheduler does.
+fn served_after(before_the_take: impl FnOnce()) -> crate::cycle::delta_test::TagReadingCounts {
     let before = tag_reading_counts();
     unsafe { &*record() }.set_batch_size(2);
     unsafe { &*record() }.clear_posted_for_test();
+    assert!(
+        unsafe { crate::cycle::offer::offer_at(testing::HARNESS_OFFER_THRESHOLD) },
+        "the poll offered R"
+    );
+    before_the_take();
     let sent = crate::cycle::testing::Sent(record());
-    let collector = std::thread::spawn(move || {
+    let served = testing::consent_while(std::thread::spawn(move || {
         assert!(
             crate::memory::heap::ll_thread_init(),
             "the pool served the collector thread"
         );
         unsafe { testing::serve_alone(sent.into_inner()) }
-    });
-    while !collector.is_finished() {
-        crate::cycle::token::read_and_act_on_this_thread();
-        at_the_poll();
-        std::thread::yield_now();
-    }
-    assert!(matches!(
-        collector.join().expect("the collector finished"),
-        Served::Batch { complete: true, .. }
-    ));
+    }));
+    assert!(matches!(served, Served::Batch { complete: true, .. }));
     let after = tag_reading_counts();
     crate::cycle::delta_test::TagReadingCounts {
         proved: after.proved - before.proved,
         touched: after.touched - before.touched,
         weakly_held: after.weakly_held - before.weakly_held,
-        no_checkpoint: after.no_checkpoint - before.no_checkpoint,
-        ..after
     }
 }
 
-/// A count write the mutator makes on a member after the collector's ask and
-/// before its own checkpoint answers it lands in the window and refuses what
-/// the member reaches: the answer's release is what puts the tag before the
-/// collector's reads (`dev/design/recycler-over-counts.md`, §4.7).
+/// A count write the mutator makes on a member after its offer lands in the
+/// frame the offer opened and refuses what the member reaches, though the
+/// count it leaves is the one the scan read: the tag, not the count, is what
+/// the Δ-test reads (`dev/design/recycler-over-counts.md`, §5f, "The
+/// Δ-test").
 #[test]
-fn a_write_before_the_checkpoint_answers_refuses_what_it_reaches() {
+fn a_write_in_the_offered_frame_refuses_what_it_reaches() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
     let (a, _) = unsafe { a_garbage_ring(&mut arena) };
-    let token = unsafe { &(*record()).token };
-    let mut written = false;
 
-    let counts = served_with(|| {
-        if !written && token.checkpoint_is_asked() {
-            // The mutator's own count write, under the window its consent
-            // opened: a retain and a release that leave the count as it was.
-            unsafe {
-                crate::refcount::ll_retain(a as *mut RcHeader);
-                let header = a as *mut RcHeader;
-                let count = crate::refcount::header_refcount(header);
-                crate::refcount::set_header_refcount(header, count - 1);
-            }
-            written = true;
-            token.reach_the_checkpoint();
-        }
+    let counts = served_after(|| unsafe {
+        // A retain and a count set back whole: the count is as it was, and
+        // the header carries the frame.
+        crate::refcount::ll_retain(a as *mut RcHeader);
+        let header = a as *mut RcHeader;
+        let count = crate::refcount::header_refcount(header);
+        crate::refcount::set_header_refcount(header, count - 1);
     });
-    assert!(written, "the ask stood at a reading");
-    assert_eq!(
-        (counts.proved, counts.touched, counts.no_checkpoint),
-        (0, 1, 0)
-    );
+    assert_eq!((counts.proved, counts.touched), (0, 1));
     assert_eq!(
         unsafe { ll_gc_maybe_collect() },
         0,
@@ -362,20 +342,25 @@ fn a_write_before_the_checkpoint_answers_refuses_what_it_reaches() {
     reset_lanes();
 }
 
-/// A mutator that reaches no checkpoint costs the set its Δ-test: the wait
-/// ends at its bound, and the set goes the exact way.
+/// A write made before the offer carries an older frame and refuses
+/// nothing: the frame the take reads is the offer's, one past the window the
+/// write tagged with.
 #[test]
-fn a_mutator_that_never_answers_costs_the_test_and_nothing_else() {
+fn a_write_before_the_offer_refuses_nothing() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
-    let _ = unsafe { a_garbage_ring(&mut arena) };
-    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    let (a, _) = unsafe { a_garbage_ring(&mut arena) };
+    unsafe {
+        crate::refcount::ll_retain(a as *mut RcHeader);
+        let header = a as *mut RcHeader;
+        let count = crate::refcount::header_refcount(header);
+        crate::refcount::set_header_refcount(header, count - 1);
+    }
 
-    let counts = served_with(|| {});
-    assert_eq!((counts.proved, counts.no_checkpoint), (0, 1));
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
-    assert_eq!(crate::cycle::trace::take_sets_proved_by_tags_validated(), 0);
+    let counts = served_after(|| {});
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2, "the proved ring freed");
     reset_lanes();
 }
 
@@ -817,131 +802,5 @@ fn an_s_no_root_lands_in_gets_its_drops_at_the_poll() {
         DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
         2
     );
-    reset_lanes();
-}
-
-/// A blocking stretch the mutator enters while an ask stands answers it: the
-/// collector proves the ring and frees it, with no poll in between.
-#[test]
-fn a_blocking_stretch_answers_a_standing_ask() {
-    let _g = test_guard();
-    reset_lanes();
-    let mut arena = Arena::new();
-    let _ = unsafe { a_garbage_ring(&mut arena) };
-    let token = unsafe { &(*record()).token };
-    let answered = crate::cycle::token::blocking_counts()[1];
-    let mut entered = false;
-
-    let counts = served_with(|| {
-        if !entered && token.checkpoint_is_asked() {
-            entered = crate::cycle::token::enter_blocking_on_this_thread();
-            assert!(entered, "the gate is open here");
-        }
-    });
-    crate::cycle::token::leave_blocking_on_this_thread();
-    assert!(entered, "the ask stood at a reading");
-    assert_eq!((counts.proved, counts.no_checkpoint), (1, 0));
-    assert_eq!(crate::cycle::token::blocking_counts()[1] - answered, 1);
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
-    reset_lanes();
-}
-
-/// A blocking stretch that stands before the ask is the checkpoint at once.
-#[test]
-fn an_ask_finds_a_blocking_stretch_reached_at_once() {
-    let _g = test_guard();
-    reset_lanes();
-    let mut arena = Arena::new();
-    let _ = unsafe { a_garbage_ring(&mut arena) };
-    let token = unsafe { &raw const (*record()).token } as usize;
-    // On the collector's thread, before its ask: the byte alone, the debug
-    // flag being the mutator thread's.
-    testing::between_the_next_phases(Box::new(move || unsafe {
-        (*(token as *const crate::cycle::token::TraceToken)).enter_blocking();
-    }));
-    let before = tag_reading_counts().blocking;
-
-    let counts = served_with(|| {});
-    unsafe { &(*record()).token }.leave_blocking();
-    assert_eq!((counts.proved, counts.no_checkpoint), (1, 0));
-    assert_eq!(tag_reading_counts().blocking - before, 1);
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
-    reset_lanes();
-}
-
-/// The byte's transitions one at a time: an ask's withdrawal leaves a
-/// blocking stretch standing; a late answer never lands after a withdrawal;
-/// a stretch met at a poll is stale and cleared.
-#[test]
-fn the_checkpoint_byte_keeps_a_blocking_stretch_and_drops_a_late_answer() {
-    use crate::cycle::token::{
-        CHECKPOINT_BLOCKING, CHECKPOINT_BLOCKING_ASKED, CHECKPOINT_NONE, TraceToken,
-    };
-    let token = TraceToken::new_held();
-
-    token.enter_blocking();
-    assert!(token.ask_for_the_checkpoint(), "reached at once");
-    assert_eq!(token.checkpoint_for_test(), CHECKPOINT_BLOCKING_ASKED);
-    assert!(token.checkpoint_reached());
-    token.withdraw_the_checkpoint();
-    assert_eq!(
-        token.checkpoint_for_test(),
-        CHECKPOINT_BLOCKING,
-        "not buried"
-    );
-    token.leave_blocking();
-    assert_eq!(token.checkpoint_for_test(), CHECKPOINT_NONE);
-
-    assert!(!token.ask_for_the_checkpoint());
-    token.withdraw_the_checkpoint();
-    token.reach_the_checkpoint();
-    assert_eq!(
-        token.checkpoint_for_test(),
-        CHECKPOINT_NONE,
-        "no answer after the withdrawal"
-    );
-
-    let stale = crate::cycle::token::blocking_counts()[3];
-    token.enter_blocking();
-    token.reach_the_checkpoint();
-    assert_eq!(token.checkpoint_for_test(), CHECKPOINT_NONE, "cleared");
-    assert_eq!(crate::cycle::token::blocking_counts()[3] - stale, 1);
-}
-
-static ENTERED_IN_A_TEARDOWN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
-
-unsafe extern "C" fn try_to_block(_object: *mut Object) {
-    let entered = crate::cycle::token::enter_blocking_on_this_thread();
-    if entered {
-        crate::cycle::token::leave_blocking_on_this_thread();
-    }
-    ENTERED_IN_A_TEARDOWN.store(1 + entered as u8, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Under a closed gate — inside a teardown, where the runtime holds references
-/// it has not counted — a blocking stretch is refused and stores nothing.
-#[test]
-fn a_blocking_stretch_under_a_closed_gate_stores_nothing() {
-    let _g = test_guard();
-    reset_lanes();
-    let mut arena = Arena::new();
-    let class = ClassBuilder::new("DeltaTestBlocksInATeardown")
-        .destructor(try_to_block as *const ())
-        .build();
-    let before = unsafe { &(*record()).token }.checkpoint_for_test();
-    let object = {
-        let mut context = LLContext { arena: &mut arena };
-        unsafe { new_constructed(&mut context, class, MemoryCategory::GcHeap) }
-    };
-    unsafe {
-        assert!(ll_release(object as *mut RcHeader));
-        crate::object::ll_object_die(object);
-    }
-    assert_eq!(
-        ENTERED_IN_A_TEARDOWN.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "the destructor ran, and its stretch was refused"
-    );
-    assert_eq!(unsafe { &(*record()).token }.checkpoint_for_test(), before);
     reset_lanes();
 }

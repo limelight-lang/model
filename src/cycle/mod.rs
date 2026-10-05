@@ -172,6 +172,9 @@ pub(crate) mod stack;
 // waited for by a mutator whose candidates, and the entities the trace
 // reaches, a collector is tracing.
 pub(crate) mod token;
+// The mutator's offer of a batch of R at a poll, under `recycler-over-counts`.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod offer;
 // The record the token stands in, with the words a collector thread's
 // handoff uses, in storage that outlives the thread.
 pub(crate) mod mutator_record;

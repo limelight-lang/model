@@ -260,6 +260,7 @@ fn a_posted_mutator_is_a_skip_for_the_round_and_p_stands() {
 /// A request from a collector thread, consented to by this thread's poll
 /// and by its slot free entry: the byte reads `COLLECTOR|s` after either,
 /// and the collector reads the grant.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
     let _g = test_guard();
@@ -312,12 +313,66 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
     reset();
 }
 
+/// Under `recycler-over-counts` the poll offers R where it is due and a
+/// collector stands to take it, and makes no offer where none does, as here
+/// with births held; an offer that stands opens the window it carries, and a
+/// collector's take reads the frame and the ceiling the offer stored: R's
+/// count, here under the batch's bound. The release after the batch frees
+/// the byte for the next offer.
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn the_poll_offers_r_and_a_take_reads_the_frame_it_opened() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("TriggerOfferNode");
+    let mut arena = Arena::new();
+    let keepers = [
+        unsafe { kept_root(&mut arena, node, "TriggerOfferKeeperA") },
+        unsafe { kept_root(&mut arena, node, "TriggerOfferKeeperB") },
+    ];
+    assert_eq!(candidate_count(), 2);
+    let window = crate::refcount::this_threads_window();
+    crate::cycle::worker::testing::serve_rounds_at(2);
+    unsafe { ll_gc_maybe_collect() };
+    crate::cycle::worker::testing::serve_rounds_at(0);
+    assert_eq!(state(byte()), FREE, "no collector stood to take one");
+    assert_eq!(
+        crate::refcount::this_threads_window(),
+        window,
+        "and no frame was spent"
+    );
+
+    assert!(unsafe { crate::cycle::offer::offer_at(2) });
+    assert_eq!(byte(), crate::cycle::token::OFFERED, "the offer stands");
+    let token = unsafe { &(*crate::cycle::mutator_record::this_thread_record()).token };
+    assert_eq!(token.take_the_offer(ELDER), Ok(()));
+    assert_eq!(byte(), word(COLLECTOR, ELDER));
+    assert_eq!(
+        token.window(),
+        crate::refcount::this_threads_window(),
+        "the frame the offer opened"
+    );
+    assert_eq!(token.ceiling(), 2, "R's count");
+    token.release_claim(ELDER, false);
+    assert_eq!(state(byte()), FREE);
+
+    for keeper in keepers {
+        unsafe {
+            assert!(ll_release(keeper as *mut RcHeader));
+            ll_object_die(keeper);
+        }
+    }
+    reset();
+}
+
 /// A sleeping mutator: the request it did not answer inside the wait stays
 /// on its byte, the next round's request finds its own standing there and
 /// waits nothing, and the collector's checkpoint serves the grant once the
 /// mutator consents
 /// (`dev/design/the-standing-request-lives-on-the-record.md`, "The
 /// collector").
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_sleeping_mutators_request_stands_and_is_served_at_a_checkpoint() {
     let _g = test_guard();

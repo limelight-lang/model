@@ -87,7 +87,6 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ARMED", false),                 // test-only const Cell, no drop glue
         ("AT_THE_SURPLUS_UNLINK", false), // test-only const Cell of an fn pointer, no drop glue
         ("BETWEEN_THE_READS", false),     // test-only const Cell of an fn pointer, no drop glue
-        ("BLOCKING", false), // debug-only const Cell<bool>, no drop glue (`recycler-over-counts`)
         ("BLOCKS", false),
         ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
@@ -167,9 +166,10 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("SLOTS_POPPED", false),                  // test-only const Cell, no drop glue
         ("STORE_BEFORE_VALIDATION", false), // test-only const Cell, no destructor registration
         ("SURVIVORS_ADMITTED_BEFORE_REFUSAL", false), // test-only const Cell, no drop glue
-        ("TAKE_THIS", false),               // test-only const Cell of a raw pointer, no drop glue
-        ("TEARDOWN_DEPTH", false),          // const Cell<u32>, no drop glue
-        ("THIS_THREADS_STANDINGS", false),  // test-only const RefCell of counts, no drop glue
+        ("TAKE_SEEN", false), // const Cell<bool>, no drop glue (`recycler-over-counts`)
+        ("TAKE_THIS", false), // test-only const Cell of a raw pointer, no drop glue
+        ("TEARDOWN_DEPTH", false), // const Cell<u32>, no drop glue
+        ("THIS_THREADS_STANDINGS", false), // test-only const RefCell of counts, no drop glue
         ("THREAD_BUFFER_ARENA", false),
         ("THREAD_CACHE", true),
         ("THREAD_FIGURES", false),
@@ -180,8 +180,9 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("WEAK_TABLE", false),
         ("WIDEST_PART", false), // test-only const Cell of a Copy struct, no drop glue
         ("WINDOW", false),
+        ("WITHDRAWN_AT_ROUND", false), // const Cell<u64>, no drop glue (`recycler-over-counts`)
         ("WITHHELD_BY_AN_ENTRY", false), // test-only const Cell<u64>, no drop glue
-        ("WITHHELD_BY_SEGMENT", false),  // test-only const RefCell of Copy arrays, no drop glue
+        ("WITHHELD_BY_SEGMENT", false), // test-only const RefCell of Copy arrays, no drop glue
         ("WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("WRITTEN_BYTES", false),
     ];

@@ -11,7 +11,9 @@
 //! batch's end.
 
 use super::*;
+#[cfg(not(feature = "recycler-over-counts"))]
 use crate::cycle::testing::long_ring;
+#[cfg(not(feature = "recycler-over-counts"))]
 use crate::cycle::worker::testing::HeldRequestWait;
 
 /// Zero for the embedder's interval when the guard drops: a case that
@@ -67,19 +69,23 @@ fn a_cases_override_outranks_the_embedders_interval() {
 
 /// A slot no collector thread is born into under the default cap and no
 /// other case names.
+#[cfg(not(feature = "recycler-over-counts"))]
 const SLOT: usize = 7;
 
 /// The round's threshold for the cases below: a ring of two stands under
 /// it, and the take is the only thing that can reach such a ring.
+#[cfg(not(feature = "recycler-over-counts"))]
 const THRESHOLD: usize = 4;
 
 /// Members of a ring that stands below the threshold.
+#[cfg(not(feature = "recycler-over-counts"))]
 const STANDING_RING: usize = 2;
 
 /// One serve of `record` by the case's thread, inside the walk `standing`
 /// stands for: the count of expired waits carries from serve to serve, which
 /// is what the bound is read on. A serve that stands in for a round of its
 /// own is `the_standing_list`'s `serve_as_its_own_round`.
+#[cfg(not(feature = "recycler-over-counts"))]
 fn serve_within_one_walk(record: *mut MutatorRecord, standing: &mut Standing) -> Served {
     unsafe { serve(record, SLOT, THRESHOLD, standing, serve_clock_now()) }
 }
@@ -87,6 +93,7 @@ fn serve_within_one_walk(record: *mut MutatorRecord, standing: &mut Standing) ->
 /// A ring below the threshold is not served at the visit that first reads
 /// it, and is taken as an ordinary batch at the first visit an interval
 /// later.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_ring_below_the_threshold_is_taken_an_interval_after_it_first_stood() {
     let _g = test_guard();
@@ -138,6 +145,7 @@ fn a_ring_below_the_threshold_is_taken_an_interval_after_it_first_stood() {
 /// second time at its own cadence. The mutator here never reads its byte,
 /// so the serve answers `Unanswered` and the word it left is the case's to
 /// read.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_ring_at_the_threshold_leaves_no_instant_to_count() {
     let _g = test_guard();
@@ -182,6 +190,7 @@ fn a_ring_at_the_threshold_leaves_no_instant_to_count() {
 /// A ring read empty clears the instant: a ring that stood and was taken
 /// whole by its own mutator's collection counts its interval again from
 /// the round that reads the next registration.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_ring_read_empty_clears_the_instant() {
     let _g = test_guard();
@@ -227,6 +236,7 @@ fn a_ring_read_empty_clears_the_instant() {
 /// collection by hand: a poll of its own between the batch and the last
 /// reading could drain R, which is branch 2 and clears the instant the
 /// case is reading.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn what_a_take_leaves_stands_its_own_interval_from_the_batch() {
     let _g = test_guard();
@@ -292,6 +302,7 @@ fn what_a_take_leaves_stands_its_own_interval_from_the_batch() {
 /// for the checkpoints, and a failed compare-and-swap on a sleeping
 /// mutator's byte, round after round, is what the standing form exists to
 /// spare.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_take_already_standing_is_answered_without_a_swap() {
     let _g = test_guard();
@@ -347,6 +358,7 @@ fn a_take_already_standing_is_answered_without_a_swap() {
 /// standing across it would have the next round take again at its own
 /// cadence. The grant here finds R drained: the mutator collects in line
 /// between the serve's reading and its request.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_grant_that_makes_no_batch_restarts_the_instant() {
     let _g = test_guard();
@@ -394,6 +406,7 @@ fn a_grant_that_makes_no_batch_restarts_the_instant() {
 /// The round reads the serve clock once per record, and the take and the
 /// epoch's advance share that reading: a record whose ring the round stamps
 /// carries the same instant in both words.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn one_visits_clock_reading_is_shared_by_the_take_and_the_advance() {
     let _g = test_guard();
@@ -432,6 +445,7 @@ fn one_visits_clock_reading_is_shared_by_the_take_and_the_advance() {
 /// estimate of what a producing mutator offers per batch, and four takes of
 /// three roots each would double it toward the bound, a size no batch of the
 /// thread earned.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_take_leaves_the_batch_size_where_it_found_it() {
     let _g = test_guard();
@@ -474,6 +488,7 @@ fn a_take_leaves_the_batch_size_where_it_found_it() {
 /// ring crossed the threshold meanwhile, is served as the threshold batch
 /// it now is — K clamped and sized — so that the checkpoint, which cannot
 /// know which kind of request it serves, needs no kind of its own.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch() {
     let _g = test_guard();
@@ -536,6 +551,7 @@ fn a_ring_that_crossed_the_threshold_under_a_standing_take_is_a_threshold_batch(
 /// The take's clamp is the ring, not K: a mutator whose K is one has its
 /// standing ring taken whole all the same, where a take under K would carry
 /// it off one root per interval.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_take_is_clamped_by_the_ring_and_not_by_k() {
     let _g = test_guard();
@@ -575,6 +591,7 @@ fn a_take_is_clamped_by_the_ring_and_not_by_k() {
 /// wakes. Without the bound a pool of threads that sleep and wake in turn
 /// costs the round one wait per thread per interval, which the standing
 /// form does not bound by itself.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_round_spends_no_more_than_its_bound_of_expired_waits() {
     let _g = test_guard();
@@ -634,6 +651,7 @@ fn a_round_spends_no_more_than_its_bound_of_expired_waits() {
 
 /// The bound is one walk's: the next round pays it again, so a mutator
 /// that slept through one round's requests is waited for at the next.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn the_bound_on_expired_waits_is_one_walks() {
     let _g = test_guard();
@@ -699,6 +717,7 @@ fn the_bound_on_expired_waits_is_one_walks() {
 /// The round's start is where the walk's count of expired waits is
 /// cleared: a collector whose last round spent its bound waits again at
 /// the next, however long it slept between them.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn a_round_starts_with_its_waits_unspent() {
     let _g = test_guard();
@@ -720,6 +739,7 @@ fn a_round_starts_with_its_waits_unspent() {
 /// The bound is over the walk and not over the take: a mutator read at the
 /// threshold, which no interval gates, is left standing at once past the
 /// bound as a take's mutator is.
+#[cfg(not(feature = "recycler-over-counts"))]
 #[test]
 fn the_bound_covers_the_threshold_path_too() {
     let _g = test_guard();

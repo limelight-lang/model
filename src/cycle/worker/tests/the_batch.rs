@@ -711,7 +711,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
             std::time::Instant::now() < deadline,
             "the first batch posted"
         );
-        crate::cycle::token::read_and_act_on_this_thread();
+        testing::poll_the_byte_for_a_stand_in();
         std::thread::yield_now();
     }
     let posted = verdict_count();
@@ -742,7 +742,7 @@ fn a_mutator_registering_throughout_the_batches_loses_no_root_and_doubles_none()
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     let mut batches_seen = 0;
     loop {
-        crate::cycle::token::read_and_act_on_this_thread();
+        testing::poll_the_byte_for_a_stand_in();
         unsafe { &*record() }.clear_posted_for_test();
         while batched.try_recv().is_ok() {
             batches_seen += 1;

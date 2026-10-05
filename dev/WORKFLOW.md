@@ -853,14 +853,14 @@ table's version bracket, `src/journal/ring_model.rs` for the journal
 ring's, which is the same bracket read the other way round,
 `src/cycle/token/free_path_model.rs` for the free path's reading of the
 trace token against a collector's take, the store-buffering pair, and,
-under `recycler-over-counts`, `src/cycle/token/checkpoint_model.rs` for the
-handshake at the checkpoint, the window tag and its stale clear:
+under `recycler-over-counts`, `src/cycle/token/offer_model.rs` for the
+mutator's offer, the window tag and its stale clear:
 
 ```
 RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib ring_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib free_path
-RUSTFLAGS="--cfg loom" cargo test --lib --features recycler-over-counts checkpoint_model
+RUSTFLAGS="--cfg loom" cargo test --lib --features recycler-over-counts offer_model
 ```
 
 It is outside the commit gate, and the dependency is gated the same way

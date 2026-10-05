@@ -185,7 +185,7 @@ impl<'a> VerdictWriter<'a> {
     /// # Safety
     /// The calling thread holds `record`'s token, which is what makes it P's
     /// one producer for the handle's life; without it the handle is read
-    /// through [`VerdictWriter::room_by_loads`] alone, which stores nothing.
+    /// through `VerdictWriter::room_by_loads` alone, which stores nothing.
     pub(crate) unsafe fn open(record: &'a MutatorRecord) -> Self {
         Self(unsafe { ring::Writer::new(record.verdict_ring()) })
     }
@@ -207,6 +207,7 @@ impl<'a> VerdictWriter<'a> {
 
     /// The same room by loads alone, for the idle test the collector makes
     /// ahead of its claim: no store into P's block under no claim.
+    #[cfg(not(feature = "recycler-over-counts"))]
     pub(crate) fn room_by_loads(&self) -> usize {
         self.0.room_in_tail_block_by_loads()
     }

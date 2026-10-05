@@ -274,7 +274,8 @@ impl Entry {
     unsafe fn store_words(e: *mut Entry, words: [u64; 2]) {
         unsafe {
             (*Self::word(e, 0)).store(words[0], Ordering::Relaxed);
-            (*Self::word(e, DISCRIMINATING_WORD_OFFSET)).store(words[1], Ordering::Relaxed);
+            (*Self::word(e, DISCRIMINATING_WORD_OFFSET))
+                .store(words[1], crate::memory::barrier::SLOT_PUBLISH);
         }
     }
 
@@ -298,7 +299,7 @@ impl Entry {
     pub unsafe fn store_key_word(e: *mut Entry, word: u64) {
         unsafe {
             let at = (&raw mut (*e).key_word) as *const AtomicU64;
-            (*at).store(word, Ordering::Relaxed);
+            (*at).store(word, crate::memory::barrier::SLOT_PUBLISH);
         }
     }
 

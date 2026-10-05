@@ -13,6 +13,22 @@
 //! collector's batch"). What the mutator does with the verdicts is
 //! `crate::cycle::queue::verdicts`.
 //!
+//! # Under `recycler-over-counts`: the offer
+//!
+//! The request, the consent and the standing list are the default build's.
+//! Under `recycler-over-counts` the mutator offers and the collector takes
+//! (`dev/design/recycler-over-counts.md`, §5f; `crate::cycle::offer`): the
+//! mutator's poll reads the three branches over R that the round reads below
+//! — the threshold, a ring standing past the interval on the round's clock
+//! (`round_clock`), a merged lane — and swaps `FREE → OFFERED` with the
+//! frame and the batch's ceiling stored before it; the round's visit takes
+//! the offer by one swap `OFFERED → COLLECTOR|s` under the reading hold
+//! (`take_an_offer`) and serves the grant as below, the batch clamped to
+//! the ceiling as well. A visit asks nothing, waits for nothing and keeps no
+//! list: a record with no offer is idle to it. Under a cap of zero the elder
+//! answers an offer with an ask (`ask_over_an_offer`) rather than reading
+//! R itself, so the cap is read by the elder alone here too.
+//!
 //! # The batch
 //!
 //! Before any claim the collector reads whether the mutator has work — R at
@@ -23,7 +39,7 @@
 //! line — the mutator holds `MUTATOR` through its close — on one that has
 //! not disposed of the last batch (`POSTED`) and on every other holder, a
 //! failure being a skip; and it waits for the mutator's consent, which the
-//! mutator gives at its next slot free or poll ([`serve`] says how long,
+//! mutator gives at its next slot free or poll (`serve` says how long,
 //! and what a mutator that never answers costs). It peeks up to K entries
 //! from R's front through the reader's pair without consuming them, K
 //! clamped to P's room and to what R holds, and copies them into its
@@ -166,7 +182,7 @@
 //! — [`STANDING_INTERVAL`] unless the embedder replaced it
 //! ([`standing_interval`]) — or holds a deferred lane its owner has merged
 //! since the collector last accounted for its merges, by
-//! [`decide_the_branch_and_stamp_the_instant`]; nothing but a test ends the
+//! `decide_the_branch_and_stamp_the_instant`; nothing but a test ends the
 //! thread.
 //!
 //! **A wake starts a round and decides nothing else** (`rfc/dev/DECISIONS.md`,
@@ -183,7 +199,7 @@
 //! round that reads its ring an interval overdue or merged into since the
 //! last grant, and by the checkpoint that answers such a take's consent
 //! when the mutator was asleep at it.
-//! A walk spends at most [`EXPIRED_WAITS_PER_ROUND`] consent waits on
+//! A walk spends at most `EXPIRED_WAITS_PER_ROUND` consent waits on
 //! mutators that do not answer; past that every request it lands is left
 //! standing at once, for the checkpoint that reads the consent, and that
 //! checkpoint carries the batch's backlog and a refusal it read back to
@@ -240,7 +256,7 @@
 //! over R whole: the round that reads a mutator's R where it would have taken
 //! it — at the threshold, standing past its interval, or merged into — asks for
 //! one by writing [`ASKED`](crate::cycle::token::ASKED) over an empty P
-//! ([`ask_for_an_in_line_collection`]); a merged deferred lane is asked for as
+//! (`ask_for_an_in_line_collection`); a merged deferred lane is asked for as
 //! a take would have taken it, at the round after the merge
 //! (`rfc/model/gc/rc-cycle.md`, "Decision summary"). R is read by the elder
 //! rather than by the poll, and the ask is a value of the byte the mutator
@@ -293,9 +309,10 @@ pub(crate) enum Served {
     /// no poll inside the wait, or its request stood from an earlier round
     /// already, or a pass released it without a batch and this round's
     /// request was pushed with no wait, or this walk had spent its bound of
-    /// expired waits ([`EXPIRED_WAITS_PER_ROUND`]) and the request was
+    /// expired waits (`EXPIRED_WAITS_PER_ROUND`) and the request was
     /// landed without one. Neither a batch nor work; the
     /// request is served at a checkpoint when the mutator answers.
+    #[cfg_attr(feature = "recycler-over-counts", allow(dead_code))]
     Unanswered,
     /// Nothing was taken: before any claim — R below the threshold, P
     /// without room, the record under another collector's reading — under
@@ -305,7 +322,7 @@ pub(crate) enum Served {
     Idle,
     /// Under a collector cap of zero, R read where a take would have taken it
     /// and the mutator asked to collect it in line
-    /// ([`ask_for_an_in_line_collection`]).
+    /// (`ask_for_an_in_line_collection`).
     Asked,
     /// A batch was made: this many roots taken from R, each with a verdict
     /// posted into P, whether their trace completed, and whether R still
@@ -325,7 +342,7 @@ const INITIAL_BATCH: usize = 64;
 /// The most roots a batch takes: under a block's capacity, so that the peek
 /// spans at most two blocks of R; and a copy of at most a quarter of the
 /// workspace's bump, so that the rows of the trace do not start by growing.
-const BATCH_BOUND: usize = 1024;
+pub(crate) const BATCH_BOUND: usize = 1024;
 
 const _: () = assert!(BATCH_BOUND < BLOCK_ENTRIES);
 const _: () =
@@ -348,6 +365,7 @@ const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
 /// (`rfc/dev/design/trace-token-handshake.md`, "Cost"); a mutator blocked
 /// past it is asleep, its request stands until it answers, and the next
 /// round's request fails on the standing one and waits nothing.
+#[cfg(not(feature = "recycler-over-counts"))]
 const REQUEST_WAIT: Duration = Duration::from_millis(2);
 
 /// The fallback timer's minimum: the wait after a round that made a batch or
@@ -401,6 +419,7 @@ static EMBEDDERS_EPOCH_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
 /// wait and once per mutator per round, which is the wait's price and not
 /// the cap's. What the bound is paid with is the batches a walk gives up by
 /// not waiting for a mutator that would have answered late.
+#[cfg(not(feature = "recycler-over-counts"))]
 const EXPIRED_WAITS_PER_ROUND: usize = 2;
 
 /// How long a mutator's candidate ring may stand non-empty below the
@@ -612,6 +631,14 @@ pub(crate) fn set_standing_interval(interval: Duration) {
     EMBEDDERS_STANDING_INTERVAL_NANOS.store(nanos, Ordering::Relaxed);
 }
 
+/// The standing interval in force, in nanoseconds of the serve clock: what
+/// a mutator's offer measures its standing ring against
+/// (`crate::cycle::offer`).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn standing_interval_nanos() -> u64 {
+    standing_interval().as_nanos() as u64
+}
+
 /// The standing interval in force: a case's, the embedder's, or the crate's.
 fn standing_interval() -> Duration {
     #[cfg(test)]
@@ -623,6 +650,29 @@ fn standing_interval() -> Duration {
         0 => STANDING_INTERVAL,
         nanos => Duration::from_nanos(nanos),
     }
+}
+
+/// Rounds begun by every collector since the process started, and the serve
+/// clock as the latest of them read it at its start: the coarse clock and
+/// the pacing a mutator's offer reads without a clock of its own
+/// (`crate::cycle::offer`). Relaxed: a reading one round stale delays an
+/// offer by one round.
+#[cfg(feature = "recycler-over-counts")]
+static ROUNDS_BEGUN: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "recycler-over-counts")]
+static ROUND_CLOCK: AtomicU64 = AtomicU64::new(0);
+
+/// Rounds begun by every collector since the process started.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn rounds_begun() -> u64 {
+    ROUNDS_BEGUN.load(Ordering::Relaxed)
+}
+
+/// The serve clock as the latest round read it at its start, or zero before
+/// the first round.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn round_clock() -> u64 {
+    ROUND_CLOCK.load(Ordering::Relaxed)
 }
 
 /// Nanoseconds since [`SERVE_CLOCK_BASE`], at least one.
@@ -775,6 +825,29 @@ pub(crate) fn wake(index: usize) -> bool {
         .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
     collector.wake_signal.notify_all();
     is_alive(index)
+}
+
+/// Whether a collector stands to take an offer of a record named to slot
+/// `named`: that slot's thread, or the elder, alive or starting, the elder
+/// born here where none stands.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn a_taker_stands(named: usize) -> bool {
+    if is_alive(named) {
+        return true;
+    }
+
+    ensure_thread();
+    COLLECTORS[ELDER].state.load(Ordering::Acquire) != UNBORN
+}
+
+/// Wake a collector to take an offer: the one of slot `named`, or the elder
+/// where that slot holds no thread — its next round names the record back to
+/// itself.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn wake_a_taker(named: usize) {
+    if !wake(named) && named != ELDER {
+        wake(ELDER);
+    }
 }
 
 /// Wake slot `index` for a byte event on one of its requests — the
@@ -1041,6 +1114,12 @@ fn reclaims(index: usize, record: &MutatorRecord) -> bool {
     false
 }
 
+/// The threshold a mutator offers R at: the rounds' own.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn threshold_for_offers() -> usize {
+    threshold_for_rounds()
+}
+
 /// The threshold the rounds serve at: the module's own, or a case's.
 fn threshold_for_rounds() -> usize {
     #[cfg(test)]
@@ -1149,10 +1228,15 @@ struct Round {
 /// One round of the collector of slot `index` over the records: visit every
 /// record named to it but the thread's own, which polls nothing, read each
 /// mutator's note for the timer, and serve each whose R holds `threshold`
-/// entries or more. What a serve does is [`serve`]'s.
+/// entries or more. What a serve does is `serve`'s.
 fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
     let own = mutator_record::this_thread_record();
     let mut outcome = Round::default();
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        ROUND_CLOCK.store(serve_clock_now(), Ordering::Relaxed);
+        ROUNDS_BEGUN.fetch_add(1, Ordering::Relaxed);
+    }
     // The round's first checkpoint: a consent that came between rounds is
     // served before any record is read, and a record that exited under a
     // standing request is unlinked for the registry whether or not this
@@ -1210,10 +1294,19 @@ unsafe fn read_one_record(
     let now = serve_clock_now();
     advance_the_epoch_if_due(unsafe { &*record }, now);
     // Under a cap of zero the visit keeps the clock and requests nothing.
+    #[cfg(not(feature = "recycler-over-counts"))]
     let served = if collectors_capped_at_zero() {
         unsafe { ask_for_an_in_line_collection(record, threshold, now) }
     } else {
         unsafe { serve(record, index, threshold, standing, now) }
+    };
+    // The mutator offers, and the visit takes what it offered, or answers it
+    // with an ask under a cap of zero.
+    #[cfg(feature = "recycler-over-counts")]
+    let served = if collectors_capped_at_zero() {
+        unsafe { ask_over_an_offer(record) }
+    } else {
+        unsafe { take_an_offer(record, index, threshold, standing) }
     };
     outcome.made_a_batch |= standing.take_batches_served() > 0;
     outcome.saw_work |= standing.take_saw_work();
@@ -1277,6 +1370,7 @@ unsafe fn read_one_record(
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
+#[cfg(not(feature = "recycler-over-counts"))]
 pub(crate) unsafe fn serve(
     record: *mut MutatorRecord,
     slot: usize,
@@ -1368,6 +1462,95 @@ pub(crate) unsafe fn serve(
     unsafe { wait_for_consent(mutator, slot, threshold, standing) }
 }
 
+/// Take the batch `record`'s mutator offered, as collector `slot`, and serve
+/// it ([`serve_the_grant`]): one swap `OFFERED → COLLECTOR|slot`, made under
+/// the reading hold so that it cannot land on the record's next life, after
+/// a load that leaves a record with no offer untouched. Every other byte is
+/// read as `serve` reads a refused request: `POSTED` a batch undisposed of,
+/// `FREE` nothing offered, and a holder — the mutator collecting in line, or
+/// another collector's take — the token held. `threshold` is what the batch's
+/// form is read against (`dev/design/recycler-over-counts.md`, §5f, "The
+/// take").
+///
+/// # Safety
+/// `record` is a record of the registry's, and the calling thread is not its
+/// mutator.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) unsafe fn take_an_offer(
+    record: *mut MutatorRecord,
+    slot: usize,
+    threshold: usize,
+    standing: &mut Standing,
+) -> Served {
+    let mutator = unsafe { &*record };
+    let seen = mutator.token.read();
+    if state(seen) != crate::cycle::token::OFFERED {
+        return served_without_a_take(seen);
+    }
+
+    #[cfg(test)]
+    testing::before_the_reading_take();
+    if !unsafe { mutator_record::take_for_reading(record) } {
+        return Served::Idle;
+    }
+
+    let hold = HandBackOnDrop(record);
+    #[cfg(test)]
+    testing::between_the_take_and_the_reading();
+    let taken = mutator.token.take_the_offer(slot);
+    drop(hold);
+    match taken {
+        Ok(()) => unsafe { serve_the_grant(mutator, slot, threshold, standing) },
+        Err(seen) => served_without_a_take(seen),
+    }
+}
+
+/// What a visit that took no offer answers, by the byte `seen` it read
+/// instead.
+#[cfg(feature = "recycler-over-counts")]
+fn served_without_a_take(seen: u8) -> Served {
+    match state(seen) {
+        crate::cycle::token::FREE => Served::Idle,
+        POSTED => Served::Posted,
+        _ => Served::TokenHeld,
+    }
+}
+
+/// Under a collector cap of zero, answer the batch `record`'s mutator offered
+/// with an ask for a collection over R whole in line
+/// ([`crate::cycle::token::TraceToken::ask_over_the_offer`]), under the
+/// reading hold as a take is, so that an offer made across the cap's change
+/// is collected over rather than left for a take that will not come
+/// (`dev/design/recycler-over-counts.md`, §5f, "Cap zero"). An ask that lands
+/// restamps the standing instant and accounts for the merges, as a grant's
+/// release does.
+///
+/// # Safety
+/// As [`take_an_offer`].
+#[cfg(feature = "recycler-over-counts")]
+unsafe fn ask_over_an_offer(record: *mut MutatorRecord) -> Served {
+    let mutator = unsafe { &*record };
+    let seen = mutator.token.read();
+    if state(seen) != crate::cycle::token::OFFERED {
+        return served_without_a_take(seen);
+    }
+
+    if !unsafe { mutator_record::take_for_reading(record) } {
+        return Served::Idle;
+    }
+
+    let _hold = HandBackOnDrop(record);
+    let merges = mutator.merges();
+    match mutator.token.ask_over_the_offer() {
+        Ok(()) => {
+            mutator.note_standing_since(serve_clock_now());
+            mutator.note_merges_seen(merges);
+            Served::Asked
+        }
+        Err(seen) => served_without_a_take(seen),
+    }
+}
+
 /// Under a collector cap of zero, ask `record`'s mutator to collect R whole in
 /// line where the round would have taken R: the same three branches over the
 /// same reading as [`serve`]'s — R at `threshold`, a ring standing below it
@@ -1390,6 +1573,7 @@ pub(crate) unsafe fn serve(
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
+#[cfg(not(feature = "recycler-over-counts"))]
 unsafe fn ask_for_an_in_line_collection(
     record: *mut MutatorRecord,
     threshold: usize,
@@ -1424,6 +1608,7 @@ unsafe fn ask_for_an_in_line_collection(
 /// What a round does with the mutator's R, and the three branches are one
 /// reading apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[cfg(not(feature = "recycler-over-counts"))]
 enum RingRound {
     /// R holds the round's threshold: the serve of today.
     Serves,
@@ -1457,6 +1642,7 @@ enum RingRound {
 /// The instant and the merges seen are the collector's words on the
 /// record's hold line, read and written here under the reading hold
 /// ([`MutatorRecord::standing_since`], [`MutatorRecord::merges_seen`]).
+#[cfg(not(feature = "recycler-over-counts"))]
 fn decide_the_branch_and_stamp_the_instant(
     mutator: &MutatorRecord,
     reading: Option<crate::ring::FrontBlockReading>,
@@ -1505,6 +1691,7 @@ fn decide_the_branch_and_stamp_the_instant(
 ///
 /// # Safety
 /// As [`serve`], and `seen` is the value that refusal read back.
+#[cfg(not(feature = "recycler-over-counts"))]
 unsafe fn answer_a_refused_request(
     mutator: &MutatorRecord,
     seen: u8,
@@ -1575,6 +1762,7 @@ impl Drop for HandBackOnDrop {
 ///
 /// # Safety
 /// As [`serve`], and this collector's request stands on `mutator`.
+#[cfg(not(feature = "recycler-over-counts"))]
 unsafe fn wait_for_consent(
     mutator: &MutatorRecord,
     slot: usize,
@@ -1644,6 +1832,7 @@ unsafe fn wait_for_consent(
 ///
 /// # Safety
 /// The calling collector made the request `REQUESTED|slot` on `mutator`.
+#[cfg(not(feature = "recycler-over-counts"))]
 unsafe fn answer_the_withdrawal(
     mutator: &MutatorRecord,
     slot: usize,
@@ -1799,12 +1988,14 @@ unsafe fn serve_the_grant(
 }
 
 /// A request between its swap and its grant, withdrawn on the unwind.
+#[cfg(not(feature = "recycler-over-counts"))]
 struct WithdrawOnDrop<'a> {
     token: &'a crate::cycle::token::TraceToken,
     slot: usize,
     standing: bool,
 }
 
+#[cfg(not(feature = "recycler-over-counts"))]
 impl Drop for WithdrawOnDrop<'_> {
     fn drop(&mut self) {
         if !self.standing {
@@ -1847,7 +2038,7 @@ pub(crate) struct Standing {
     consumed_a_wake: bool,
     /// Consent waits of this walk that ran out with the request unanswered,
     /// counted from the round's start ([`Standing::start_a_round`]): past
-    /// [`EXPIRED_WAITS_PER_ROUND`] the walk stops waiting and leaves every
+    /// `EXPIRED_WAITS_PER_ROUND` the walk stops waiting and leaves every
     /// later request standing at once.
     expired_waits: usize,
     /// Whether a pass read a listed mutator collecting in line: work this
@@ -1890,6 +2081,7 @@ impl Standing {
     /// between a pass's read and the walk's request. The stamp goes down
     /// before the link, and of the link words `next` is first, the word the
     /// registry reads.
+    #[cfg(not(feature = "recycler-over-counts"))]
     fn push(&mut self, record: *mut MutatorRecord) {
         let mutator = unsafe { &*record };
         if !mutator.standing_next().load(Ordering::Relaxed).is_null() {
@@ -2091,12 +2283,14 @@ impl Standing {
     }
 
     /// A consent wait that ran out with the request left standing.
+    #[cfg(not(feature = "recycler-over-counts"))]
     fn note_an_expired_wait(&mut self) {
         self.expired_waits += 1;
     }
 
     /// Whether this walk has spent its bound of expired waits, so that a
     /// request landing now is left standing without one.
+    #[cfg(not(feature = "recycler-over-counts"))]
     fn spent_its_waits(&self) -> bool {
         #[cfg(test)]
         if let Some(cap) = testing::expired_waits_cap() {
@@ -2132,13 +2326,13 @@ impl Standing {
 
     /// Batches the checkpoints made since the round last asked, left as
     /// they are.
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     pub(crate) fn batches_served_for_test(&self) -> usize {
         self.batches_served
     }
 
     /// The records standing in the list, first to last.
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     pub(crate) fn standing_for_test(&self) -> Vec<*mut MutatorRecord> {
         let mut records = Vec::new();
         let mut cursor = self.first;
@@ -2244,6 +2438,11 @@ unsafe fn batch(
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
     let (at_the_threshold, clamp) = the_form_and_the_clamp(mutator, &reader, threshold);
     let take = verdicts.room().min(clamp);
+    // No entry past what the offer covered: one registered after the frame
+    // names a decrement the frame's tag refuses
+    // (`dev/design/recycler-over-counts.md`, §5f, "The take").
+    #[cfg(feature = "recycler-over-counts")]
+    let take = take.min(mutator.token.ceiling());
     if take == 0 {
         return served_without_roots(mutator, posted);
     }
@@ -3072,7 +3271,6 @@ unsafe fn split_and_free(
 
     let test = unsafe { delta_test::test_the_set_by_its_tags(mutator, arena) };
     let touched = match test.reading {
-        TagReading::NoCheckpoint => return (Posting::Unmarked, kind::NO_CHECKPOINT),
         TagReading::Touched => true,
         TagReading::Garbage => false,
     };

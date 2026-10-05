@@ -1786,12 +1786,12 @@ impl WebLoop {
 
     /// The next request's plan, its draw's instructions counted into the
     /// figures `counted` names: the rig's work and not the runtime's,
-    /// subtracted from the window's. The draw runs in a blocking stretch
+    /// subtracted from the window's. The draw runs in a section of its own
     /// ([`Stretch::Draw`]), entered and left outside the count: it touches no
     /// entity of the runtime's heap, and is the harness taken out of the
-    /// program, which has no such stretch to miss a checkpoint in.
+    /// program.
     fn draw_a_plan(&mut self, counted: Option<(&ThreadCounters, &mut ArrivalFigures)>) -> Plan {
-        in_a_blocking_stretch(Stretch::Draw, || {
+        in_a_stretch(Stretch::Draw, || {
             let Some((counters, figures)) = counted else {
                 return Plan::draw(&mut self.streams, self.long_lived.targets());
             };
@@ -2262,43 +2262,17 @@ impl Cell {
 /// polls or frees again, and the returns it withholds under a foreign trace
 /// stay withheld through the sleep. The web loads' wait is its second
 /// caller.
-///
-/// The sleep is a blocking stretch
-/// (`crate::cycle::token::enter_blocking_on_this_thread`), as a
-/// worker's blocking call is under the runtime's bracket: every reference
-/// the rig holds is counted, and the gate is open, so a collector's ask finds
-/// its checkpoint at once. Under `LL_RIG_NO_BLOCKING` it is not, the first
-/// reading's behaviour; without `recycler-over-counts` the blocking stretch is a no-op.
 fn sleep_without_poll(wait: Duration) {
-    in_a_blocking_stretch(Stretch::Wait, || std::thread::sleep(wait));
+    in_a_stretch(Stretch::Wait, || std::thread::sleep(wait));
 }
 
-/// What a blocking stretch of the rig's stands for: counted apart, so that
-/// what the draw's stretches answer is not read as the waits'.
+/// What a stretch of the rig's own stands for, named as its section.
 #[derive(Clone, Copy)]
 enum Stretch {
     /// The draw of the next plan: the harness's own work.
     Draw,
     /// A wait slept without a poll: a worker's blocking call.
     Wait,
-}
-
-/// Stretches the rig entered, by [`Stretch`].
-static STRETCHES_ENTERED: [std::sync::atomic::AtomicUsize; 2] =
-    [const { std::sync::atomic::AtomicUsize::new(0) }; 2];
-
-/// Stretches entered while drops a poll's slice left stood unapplied, the
-/// posted set unread behind them (`crate::cycle::collector_frees`).
-static STRETCHES_OVER_STANDING_FREES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// Leaves the blocking stretch it stands for when dropped, on an unwind too.
-struct LeaveTheStretch;
-
-impl Drop for LeaveTheStretch {
-    fn drop(&mut self) {
-        crate::cycle::token::leave_blocking_on_this_thread();
-    }
 }
 
 /// Names the rig's section `Other` when dropped: what follows a stretch is
@@ -2311,28 +2285,14 @@ impl Drop for LeaveTheSection {
     }
 }
 
-/// Run `work`, which writes no count, slot or tag of the runtime's heap,
-/// inside a blocking stretch, unless `LL_RIG_NO_BLOCKING` is set or the
-/// gate is closed.
-fn in_a_blocking_stretch<R>(stretch: Stretch, work: impl FnOnce() -> R) -> R {
-    static NO_BLOCKING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// Run `work`, which writes no count, slot or tag of the runtime's heap, in
+/// the section `stretch` names.
+fn in_a_stretch<R>(stretch: Stretch, work: impl FnOnce() -> R) -> R {
     testing::enter_the_rig_section(match stretch {
         Stretch::Draw => testing::RigSection::Draw,
         Stretch::Wait => testing::RigSection::Wait,
     });
     let _section = LeaveTheSection;
-    let _leave = (!*NO_BLOCKING.get_or_init(|| std::env::var_os("LL_RIG_NO_BLOCKING").is_some())
-        && crate::cycle::token::enter_blocking_on_this_thread())
-    .then(|| {
-        STRETCHES_ENTERED[stretch as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        #[cfg(feature = "recycler-over-counts")]
-        if unsafe { crate::cycle::mutator_record::this_thread_record().as_ref() }
-            .is_some_and(crate::cycle::mutator_record::MutatorRecord::collectors_frees_stand)
-        {
-            STRETCHES_OVER_STANDING_FREES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-        LeaveTheStretch
-    });
     work()
 }
 
@@ -2446,13 +2406,12 @@ fn an_arrival_waits_behind_the_services_before_it() {
     assert!(served[2].2 >= millis(8), "{:?} waited", served[2].2);
 }
 
-/// The draw of a plan stands in a stretch of its own kind, left when the
-/// draw returns, from both of the loop's draws: a request run whole and the
+/// The draw of a plan stands in a section of its own, left when the draw
+/// returns, from both of the loop's draws: a request run whole and the
 /// arrivals' draw ahead of its service. Red with either draw out of its
-/// stretch, or counted as a wait.
-#[cfg(feature = "recycler-over-counts")]
+/// section, or the section left standing.
 #[test]
-fn a_drawn_plan_stands_in_a_stretch_of_its_own() {
+fn a_drawn_plan_stands_in_a_section_of_its_own() {
     let _g = test_guard();
     let mut arena = Arena::new();
     let web = Web {
@@ -2461,17 +2420,17 @@ fn a_drawn_plan_stands_in_a_stretch_of_its_own() {
     };
     let mut web_loop =
         unsafe { WebLoop::set_up(web, 0, WebClasses::new("DrawnPlan"), 0, &mut arena) };
-    let entered = |stretch: Stretch| {
-        STRETCHES_ENTERED[stretch as usize].load(std::sync::atomic::Ordering::Relaxed)
-    };
-    let (draws, waits) = (entered(Stretch::Draw), entered(Stretch::Wait));
+    let drawn = in_a_stretch(Stretch::Draw, testing::this_threads_rig_section);
+    assert_eq!(
+        drawn,
+        testing::RigSection::Draw as usize,
+        "the draw's section"
+    );
     let _ = web_loop.draw_a_plan(None);
-    assert_eq!(entered(Stretch::Draw), draws + 1, "the arrivals' draw");
-    assert!(!crate::cycle::token::this_thread_is_blocking(), "and left");
+    let other = testing::RigSection::Other as usize;
+    assert_eq!(testing::this_threads_rig_section(), other, "and left");
     web_loop.run_a_request();
-    assert_eq!(entered(Stretch::Draw), draws + 2, "a request's own draw");
-    assert_eq!(entered(Stretch::Wait), waits, "no wait counted");
-    assert!(!crate::cycle::token::this_thread_is_blocking());
+    assert_eq!(testing::this_threads_rig_section(), other);
     let _ = web_loop.tear_down(&mut MutatorReading::default());
 }
 
@@ -3367,7 +3326,7 @@ impl CellReading {
                 self.verdict_collections.longest.as_micros().to_string(),
             ),
             // By the kind of set read (`crate::cycle::posted_set::kind`):
-            // not tested, proved S, proved whole, no checkpoint, past the
+            // not tested, proved S, proved whole, a retired kind, past the
             // cap, touched, retired, weakly held, cut, unmarked whole,
             // mark lost, unreadable, none.
             (
@@ -3713,6 +3672,7 @@ impl CellReading {
         }
         let requests: usize = figures.iter().map(|one| one.records.len()).sum();
         let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
+        let offers = offer_counts();
         let run_for = seconds_from_env("LL_RIG_SECONDS");
         let window = run_for.saturating_sub(seconds_from_env("LL_RIG_WARM_UP_SECONDS"));
         let busy: Duration = figures.iter().map(|one| one.busy).sum();
@@ -3896,18 +3856,16 @@ impl CellReading {
             // `recycler-over-counts` (`crate::cycle::delta_test`).
             ("tag_sets_proved", tag_counts().0.to_string()),
             ("tag_sets_touched", tag_counts().1.to_string()),
-            ("tag_sets_weakly_held", tag_counts().5.to_string()),
-            ("tag_checkpoints_missed", tag_counts().2.to_string()),
-            ("tag_checkpoint_wait_us", tag_counts().3.to_string()),
-            ("tag_checkpoint_wait_longest_us", tag_counts().4.to_string()),
-            ("tag_asks_a_blocking_answered", tag_counts().6.to_string()),
-            ("blocking_entered", blocking_counts()[0].to_string()),
-            ("blocking_answered_an_ask", blocking_counts()[1].to_string()),
-            (
-                "blocking_left_after_an_ask",
-                blocking_counts()[2].to_string(),
-            ),
-            ("blocking_stale_cleared", blocking_counts()[3].to_string()),
+            ("tag_sets_weakly_held", tag_counts().2.to_string()),
+            // The mutators' offers the same way: taken, the standing of a
+            // taken offer from the offer to the take at the median, the 99th
+            // centile and the longest in microseconds, and offers withdrawn
+            // (`crate::cycle::offer`).
+            ("offers_taken", offers[0].to_string()),
+            ("offer_to_take_p50_us", offers[1].to_string()),
+            ("offer_to_take_p99_us", offers[2].to_string()),
+            ("offer_to_take_longest_us", offers[3].to_string()),
+            ("offers_withdrawn", offers[4].to_string()),
             // The collector's own frees and the split, the same way
             // (`crate::cycle::collector_frees`, `crate::cycle::split`).
             ("frees_sets", frees_counts()[0].to_string()),
@@ -3934,39 +3892,12 @@ impl CellReading {
             ("split_dropped", split_counts()[3].to_string()),
             ("split_unreadable", split_counts()[4].to_string()),
             ("split_roots_read_live_again", split_counts()[5].to_string()),
-            // The rig's own stretches by kind, and the Δ-test's missed
-            // checkpoints and the asks a stretch answered at once by the
-            // section the mutator stood in (`testing::RigSection`: other,
-            // draw, build, poll, spin, wait, end).
+            // The offers the mutators withdrew, by the section each stood in
+            // (`testing::RigSection`: other, draw, build, poll, spin, wait,
+            // end).
             (
-                "stretches_entered_draw",
-                STRETCHES_ENTERED[Stretch::Draw as usize]
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    .to_string(),
-            ),
-            (
-                "stretches_entered_wait",
-                STRETCHES_ENTERED[Stretch::Wait as usize]
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    .to_string(),
-            ),
-            (
-                "checkpoints_missed_by_section",
-                joined(&testing::checkpoints_by_section()[0]),
-            ),
-            (
-                "checkpoint_waits_recalled_by_section",
-                joined(&testing::checkpoints_by_section()[1]),
-            ),
-            (
-                "asks_a_stretch_answered_by_section",
-                joined(&testing::checkpoints_by_section()[2]),
-            ),
-            (
-                "stretches_over_standing_frees",
-                STRETCHES_OVER_STANDING_FREES
-                    .load(std::sync::atomic::Ordering::Relaxed)
-                    .to_string(),
+                "offers_withdrawn_by_section",
+                joined(&testing::withdrawals_by_section()),
             ),
             (
                 "build_step_longest_us",
@@ -4698,35 +4629,40 @@ fn write_the_requests(path: &str, mutators: &[WebReading]) {
         .unwrap_or_else(|error| panic!("the requests were written to {path}: {error}"));
 }
 
-/// The Δ-test's counts: sets proved, touched, checkpoints missed, the
-/// checkpoint waits in all and at the longest in microseconds, and sets
-/// weakly held.
-fn tag_counts() -> (usize, usize, usize, u128, u128, usize, usize) {
+/// The Δ-test's counts: sets proved, touched and weakly held.
+fn tag_counts() -> (usize, usize, usize) {
     #[cfg(feature = "recycler-over-counts")]
     {
         let counts = crate::cycle::delta_test::tag_reading_counts();
-        (
-            counts.proved,
-            counts.touched,
-            counts.no_checkpoint,
-            counts.waited.as_micros(),
-            counts.longest_wait.as_micros(),
-            counts.weakly_held,
-            counts.blocking,
-        )
+        (counts.proved, counts.touched, counts.weakly_held)
     }
     #[cfg(not(feature = "recycler-over-counts"))]
-    (0, 0, 0, 0, 0, 0, 0)
+    (0, 0, 0)
 }
 
-/// [`crate::cycle::token::blocking_counts`], zeros without the feature.
-fn blocking_counts() -> [usize; 4] {
+/// The offers since the last call, taken: those taken, the standing of a
+/// taken offer at the median, the 99th centile and the longest in
+/// microseconds, and those withdrawn; zeros without the feature.
+fn offer_counts() -> [u64; 5] {
     #[cfg(feature = "recycler-over-counts")]
     {
-        crate::cycle::token::blocking_counts()
+        let (mut taken, withdrawn) = testing::take_offer_standings();
+        taken.sort_unstable();
+        let at = |centile: usize| {
+            taken
+                .get((taken.len() * centile / 100).min(taken.len().saturating_sub(1)))
+                .map_or(0, |nanos| nanos / 1_000)
+        };
+        [
+            taken.len() as u64,
+            at(50),
+            at(99),
+            taken.last().map_or(0, |nanos| nanos / 1_000),
+            withdrawn.count as u64,
+        ]
     }
     #[cfg(not(feature = "recycler-over-counts"))]
-    [0; 4]
+    [0; 5]
 }
 
 /// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,
@@ -4792,23 +4728,13 @@ fn a_cell_of_the_rig() {
     let _g = test_guard();
     let _wait = testing::HeldRequestWait::crate_own();
     let cell = Cell::from_env();
-    // The two settings S68.8 reads under `recycler-over-counts`: the largest
-    // set the collector frees itself, and the Δ-test's wait for a checkpoint.
+    // The setting S68.8 reads under `recycler-over-counts`: the largest set
+    // the collector frees itself.
     #[cfg(feature = "recycler-over-counts")]
-    {
-        if let Ok(cap) = std::env::var("LL_RIG_MEMBER_CAP") {
-            let _ = crate::cycle::collector_frees::set_member_cap_for_test(
-                cap.parse().expect("LL_RIG_MEMBER_CAP is a count"),
-            );
-        }
-        if let Ok(wait) = std::env::var("LL_RIG_CHECKPOINT_WAIT_US") {
-            let _ = crate::cycle::delta_test::set_checkpoint_wait_for_test(
-                std::time::Duration::from_micros(
-                    wait.parse()
-                        .expect("LL_RIG_CHECKPOINT_WAIT_US is microseconds"),
-                ),
-            );
-        }
+    if let Ok(cap) = std::env::var("LL_RIG_MEMBER_CAP") {
+        let _ = crate::cycle::collector_frees::set_member_cap_for_test(
+            cap.parse().expect("LL_RIG_MEMBER_CAP is a count"),
+        );
     }
     let class = member_class("RigNode");
     let loads: Vec<Load> = LOADS

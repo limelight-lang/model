@@ -1,5 +1,5 @@
 //! The window tag in header byte 7 (`dev/design/recycler-over-counts.md`,
-//! §2): a consent opens the next window and publishes its number beside the
+//! §2): an offer opens the next window and publishes its number beside the
 //! token; every count write tags its entity, and every slot write of an
 //! object or an array tags its holder; the tag and the collector's stamp in
 //! byte 6 stand apart.
@@ -8,26 +8,30 @@
 //! for the reason `the_maturation_stamp_the_commit_writes` gives.
 
 use super::*;
-use crate::cycle::token::{RECALL_NONE, REQUESTED, TraceToken, word};
+use crate::cycle::token::{RECALL_NONE, TraceToken};
 
-/// A consent opens the window one past the last and stores its number where
-/// the collector reads it after the grant; 255 wraps to 1, and 0, which no
-/// window carries, is skipped.
+/// An offer opens the window one past the last, as the poll's offer does
+/// (`crate::cycle::offer`), and stores its number where the collector reads
+/// it after the take; 255 wraps to 1, and 0, which no window carries, is
+/// skipped.
 #[test]
-fn a_consent_opens_the_next_window_and_publishes_it() {
-    // A slot no other case of the binary consents on.
+fn an_offer_opens_the_next_window_and_publishes_it() {
+    // A slot no other case of the binary takes on.
     const SLOT: usize = 6;
     let token = TraceToken::new_held();
     token.release();
     set_window(254);
 
     for expected in [255, 1, 2] {
-        token.request_for_test(word(REQUESTED, SLOT));
-        assert!(token.consent(word(REQUESTED, SLOT), RECALL_NONE).is_ok());
+        let window = the_next_window();
+        assert_eq!(window, expected, "one past the last, 0 skipped");
+        assert!(token.offer(window, 0, RECALL_NONE).is_ok());
+        set_window(window);
+        assert!(token.take_the_offer(SLOT).is_ok());
         assert_eq!(
             token.window(),
             expected,
-            "the grant carries the window opened"
+            "the take reads the window offered"
         );
 
         let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
@@ -36,7 +40,7 @@ fn a_consent_opens_the_next_window_and_publishes_it() {
         assert_eq!(
             unsafe { window_tag(header) },
             expected,
-            "this thread tags with the window its consent opened"
+            "this thread tags with the window its offer opened"
         );
         token.release_claim(SLOT, false);
     }
@@ -44,35 +48,33 @@ fn a_consent_opens_the_next_window_and_publishes_it() {
     set_window(0);
 }
 
-/// A consent whose swap fails — the request it read is gone — opens no window
-/// and spends no number: the thread keeps tagging with the window it had, and
-/// the next consent that succeeds opens the number this one would have.
+/// An offer whose swap fails — the byte is held — leaves the window as it
+/// stood: the thread keeps tagging with the window it had, and the next offer
+/// that lands opens the number this one would have.
 #[test]
-fn a_lost_consent_spends_no_number() {
-    // A slot no other case of the binary consents on.
+fn a_lost_offer_spends_no_number() {
+    // A slot no other case of the binary takes on.
     const SLOT: usize = 5;
     let token = TraceToken::new_held();
-    token.release();
     set_window(30);
 
-    // No request stands, so the swap from REQUESTED reads the mutator's byte.
-    assert!(token.consent(word(REQUESTED, SLOT), RECALL_NONE).is_err());
+    assert_eq!(the_next_window(), 31);
+    assert!(token.offer(31, 0, RECALL_NONE).is_err(), "the byte is held");
     let mut h = RcHeader::new(MemoryCategory::GcHeap, 0);
     let header: *mut RcHeader = &raw mut h;
     unsafe { ll_retain(header) };
     assert_eq!(
         unsafe { window_tag(header) },
         30,
-        "the lost consent opened nothing"
+        "the lost offer opened nothing"
     );
 
-    token.request_for_test(word(REQUESTED, SLOT));
-    assert!(token.consent(word(REQUESTED, SLOT), RECALL_NONE).is_ok());
-    assert_eq!(
-        token.window(),
-        31,
-        "the number the lost consent did not spend"
-    );
+    token.release();
+    let window = the_next_window();
+    assert_eq!(window, 31, "the number the lost offer did not spend");
+    assert!(token.offer(window, 0, RECALL_NONE).is_ok());
+    assert!(token.take_the_offer(SLOT).is_ok());
+    assert_eq!(token.window(), 31);
     token.release_claim(SLOT, false);
 
     set_window(0);

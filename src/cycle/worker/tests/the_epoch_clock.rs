@@ -242,6 +242,7 @@ fn a_lane_behind_all_live_takes_oftener_than_x_is_reoffered_after_x() {
             unsafe { crate::refcount::ll_retain(ring[0].cast()) };
             Sent(ring[0])
         }));
+        offered_by(&mutator, ANY_ENTRY);
         assert!(
             round(SLOT, ANY_ENTRY, standing).made_a_batch,
             "the round took the ring"
@@ -331,6 +332,7 @@ fn a_batch_at_the_advancing_visit_traces_on_the_turned_epoch() {
     std::thread::sleep(Duration::from_millis(5));
     let turnovers = record.turnovers();
     let mut standing = Standing::new(SLOT);
+    offered_by(&mutator, ANY_ENTRY);
     assert!(
         round(SLOT, ANY_ENTRY, &mut standing).made_a_batch,
         "the round took the root"

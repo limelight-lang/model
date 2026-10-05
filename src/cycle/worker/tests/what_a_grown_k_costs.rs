@@ -271,7 +271,7 @@ fn a_batch(collector: &Collector, during: During) -> Sample {
             break served;
         }
 
-        crate::cycle::token::read_and_act_on_this_thread();
+        testing::poll_the_byte_for_a_stand_in();
         if started.try_recv().is_ok() {
             match during {
                 During::Nothing => {}

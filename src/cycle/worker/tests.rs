@@ -37,12 +37,12 @@ struct Mutator {
 
 impl Mutator {
     /// A mutator that, between jobs, does what a mutator's polls do at its
-    /// byte — consent to a request — and clears the `POSTED` a batch leaves,
+    /// byte — consent to a request, or offer R — and clears the `POSTED` a batch leaves,
     /// standing in for the disposition a case that reads batch after batch
     /// with no collection between makes at its end.
     fn start() -> Self {
         Self::start_idling_with(|_| {
-            crate::cycle::token::read_and_act_on_this_thread();
+            let _ = testing::poll_the_byte();
             unsafe { &*mutator_record::this_thread_record() }.clear_posted_for_test();
         })
     }
@@ -145,8 +145,30 @@ fn wait_until(mut reached: impl FnMut() -> bool, within: std::time::Duration) ->
             return false;
         }
 
-        // As a mutator waits: its byte read between two sleeps, a request
-        // consented to, `POSTED` armed.
+        // As a mutator polls between two sleeps: its byte read, a request
+        // consented to, `POSTED` armed, R offered where it is due.
+        let _ = testing::poll_the_byte();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+/// [`wait_until`] for a mutator that waits without polling: its byte read
+/// and acted on, and nothing offered, so that no wake but the case's own
+/// reaches a collector.
+fn wait_until_without_a_poll(
+    mut reached: impl FnMut() -> bool,
+    within: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    loop {
+        if reached() {
+            return true;
+        }
+
+        if std::time::Instant::now() > deadline {
+            return false;
+        }
+
         crate::cycle::token::read_and_act_on_this_thread();
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -473,14 +495,33 @@ fn born_waiting_for(record: *mut MutatorRecord, wait: std::time::Duration) {
     let _ = testing::take_mutators_served();
 }
 
-/// Wake the thread and wait for the round the wake starts.
+/// Wake the thread and wait for the round the wake starts. Under
+/// `recycler-over-counts` this thread's poll offers R where it is due, and
+/// the offer's wake is the round's; the case's wake stands in where nothing
+/// is offered.
 fn wake_for_a_round() {
     let _ = testing::take_rounds();
-    assert!(wake(ELDER), "the elder received the wake");
+    if !testing::poll_the_byte() {
+        assert!(wake(ELDER), "the elder received the wake");
+    }
     assert!(
         wait_until(|| testing::take_rounds() >= 1, A_BIRTH),
         "the wake started a round"
     );
+}
+
+/// Under `recycler-over-counts`, have `mutator` offer R at `threshold` as its
+/// poll would, for a case that drives the round itself on its own thread,
+/// which no offer's wake reaches; without the feature the round requests,
+/// and nothing is offered.
+fn offered_by(mutator: &Mutator, threshold: usize) {
+    #[cfg(feature = "recycler-over-counts")]
+    assert!(
+        mutator.run(move |_| unsafe { crate::cycle::offer::offer_at(threshold) }),
+        "the mutator offered R"
+    );
+    #[cfg(not(feature = "recycler-over-counts"))]
+    let _ = (mutator, threshold);
 }
 
 /// Longer than any wait a case makes on the thread, so that a round inside
@@ -1028,6 +1069,7 @@ mod generation_fixtures {
 
 mod the_batch;
 mod the_cap_at_zero;
+#[cfg(not(feature = "recycler-over-counts"))]
 mod the_cap_set_under_work;
 mod the_collectors_stamps;
 #[cfg(feature = "recycler-over-counts")]
@@ -1036,6 +1078,8 @@ mod the_epoch_clock;
 #[cfg(feature = "debug-journal")]
 mod the_journal_of_the_collector;
 mod the_merged_lane;
+#[cfg(feature = "recycler-over-counts")]
+mod the_offer;
 mod the_posted_set;
 mod the_progress;
 mod the_reading_before_the_claim;
@@ -1043,10 +1087,12 @@ mod the_recall;
 mod the_recorded_edges;
 mod the_rig;
 mod the_siblings;
+#[cfg(not(feature = "recycler-over-counts"))]
 mod the_standing_list;
 mod the_take_after_an_interval;
 mod the_waits_by_readings;
 mod the_web_loads;
+#[cfg(not(feature = "recycler-over-counts"))]
 mod under_stress;
 mod what_a_grown_k_costs;
 mod what_a_take_costs;

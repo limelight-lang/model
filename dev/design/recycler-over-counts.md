@@ -840,12 +840,15 @@ checkpoint, the bounded wait and the consent go.
   its holder first, then stores the slot with a release; the tag is the
   caller's, since `write_ptr_slot` and `write_value_slot`
   (`memory/barrier.rs`) do not know the holder: the `ll_store_*_in` forms,
-  the element views (`entity.rs`), the copy-on-write store of
-  `array/element.rs` (`write_through`, which tags nothing today), the
-  table's key word (`store_key_word`; the hash index is not read), and
-  outside cells by contract (`cells.rs`). `publish_header` composes the
-  window into a newborn's byte instead of 0. No turn falls between a tag and
-  its data store. On x86 the order binds the compiler only (+0.35-0.4 ns a
+  the element views (`entity.rs`), the table's key word (`store_key_word`;
+  the hash index is not read), and outside cells by contract (`cells.rs`).
+  The copy-on-write store of `array/element.rs` (`write_through`) has no
+  holder to hand and tags none: a reference it stores or displaces is a
+  count store, which tags, and a scalar over a scalar changes nothing the
+  trace reads (Critic, write sites, built no failing run). `publish_header`
+  leaves a newborn's byte 0: the trace reaches a newborn only through a
+  slot store, which tagged its holder, or a count store, which tagged it
+  (Critic, ordering). No turn falls between a tag and its data store. On x86 the order binds the compiler only (+0.35-0.4 ns a
   retain–release pair, `dev/BENCHMARKS.md`, 2026-10-04); on AArch64 each
   such store is an `stlr`, unmeasured (no ARM host, 2026-08-16).
 - **The reads.** Count and flag reads may be relaxed. Every load that yields
@@ -863,10 +866,16 @@ checkpoint, the bounded wait and the consent go.
   (§4.8) before the new frame's tags: a clear of a stale F from 255 windows
   back would otherwise erase a fresh F (Critic, ordering, finding 1); every
   exit of a batch (posted, dropped unread, `NOTHING_PROPOSED`) is a release
-  after its last clear. A CAS that fails (an `ASKED` the elder set under cap zero, `TraceToken::ask_to_collect_in_line`)
-  offers nothing. The offer wakes its collector; a slot without a thread
-  loses the wake, so any collector's round takes an `OFFERED` it meets. One
-  window per offer–take–release cycle.
+  after its last clear. The byte at `FREE` is the mutator's alone to leave,
+  since no collector writes over it, so the words stored before the swap
+  are read by no one else; over any other byte nothing is stored or offered.
+  The ceiling is a `u16`, R's count up to the batch's bound, so the token
+  stays in the record's first line. The offer wakes its collector; a slot
+  without a thread loses the wake, so any collector's round takes an
+  `OFFERED` it meets. Where no collector stands, the elder is born first,
+  and where its birth is refused no offer is made: it would withhold every
+  return until a mark and spend a frame's number for a take that cannot
+  come (`cycle/offer.rs`). One window per offer–take–release cycle.
 - **The take.** A collector takes the batch by one CAS `OFFERED` →
   `COLLECTOR` with an acquire and reads F and the ceiling only after that
   CAS: an offer withdrawn and made again carries F+1. The batch is the first
@@ -883,16 +892,20 @@ checkpoint, the bounded wait and the consent go.
   addresses the frame held. The marks (`DEATHS_MARK`, blocks, chunks) count
   from the take: the first return that reads `COLLECTOR` records the stacks'
   lengths as the base. A mark reached under `OFFERED` withdraws the offer by
-  CAS `OFFERED` → `FREE`, drains, and the next offer waits for the
-  collector's next round (Critic, token states, findings 2 and 3); a CAS
-  that fails reads `COLLECTOR` and recalls as today.
+  CAS `OFFERED` → `FREE`, with no wait; the returns go back at the next free
+  or poll, and the next offer waits for the collector's next round (Critic,
+  token states, findings 2 and 3). A CAS that fails reads `COLLECTOR` and
+  recalls as without the offer.
 - **Every taker of the byte.** Under `OFFERED` the sealed range of R is
   frozen. The compaction, the pressure collection's teardown-refusal pass,
   the explicit fire, the exit and the record reset withdraw by CAS `OFFERED`
   → `MUTATOR` before they touch R or the token, and may wait on a take that
   wins (`take_recalling` gains an `OFFERED` arm). The retirement at the poll
-  (`queue.rs`, `retire_at_the_poll`) never waits: it withdraws by CAS
-  `OFFERED` → `FREE`, and on `COLLECTOR` it leaves R alone and returns.
+  (`queue.rs`, `retire_at_the_poll`) never waits and withdraws nothing: on
+  `OFFERED` or `COLLECTOR` it leaves R alone and stays armed for the next
+  poll. Withdrawing there would undo at each poll the offer the poll before
+  it made, the offer coming last in the poll, and an armed retirement would
+  keep any offer from standing long enough to be taken.
 - **The judgement.** One `fence(Acquire)` after the trace, then the tag
   reads: a member is touched when its tag equals F. The stale clear of §4.8
   stands as it is, one range per cycle; a tag that equals F from 255 windows
@@ -905,16 +918,20 @@ checkpoint, the bounded wait and the consent go.
 - **What the token keeps.** States: `FREE`, `OFFERED`, `COLLECTOR|s`,
   `MUTATOR`, `POSTED`, `ASKED`, `NOTHING_PROPOSED`. The take on a record's
   next life is ruled out as the ask's is, under the reading hold.
-- **The proof.** Message passing only, which loom models: a rewrite of
-  `cycle/token/checkpoint_model.rs` with the offer (window relaxed, CAS
-  acquire–release), the tag-then-release-data store before and after it,
-  the collector's relaxed count read, acquire fence and tag read, the
-  exit's take against the collector's, a return gate racing the take, a
-  slot reused after the offer, and a stale clear whose value equals the
-  next window; negative twins (data relaxed, no fence, offer relaxed, a
-  return under `OFFERED`, the offer's read of `FREE` relaxed) must fail.
-  Beside it, a table of every write site the trace reads, with its
-  ordering.
+- **The proof.** Message passing only, which loom models:
+  `cycle/token/offer_model.rs` (2026-10-05) checks the count stored after
+  its tag with a release against the relaxed read, acquire fence and tag
+  read; the frame the take reads; a frame withdrawn and offered again; the
+  last batch's stale clear against the next frame's tag; and the stale
+  clear as a compare-and-swap. Four negative twins fail as they must
+  (count relaxed, offer relaxed, the frame read before the take, the clear
+  as a load and a store). The fifth, an offer with a release alone, passes
+  under loom 0.7, which orders the read-modify-writes of one byte as they
+  execute; the acquire is argued at `TraceToken::offer`. The exit's take
+  against the collector's, a return under `OFFERED` and a slot reused
+  under it are unit cases (`cycle/worker/tests/the_offer.rs`,
+  `the_reading_before_the_claim.rs`), not loom's. The table of every write
+  site the trace reads is still to write.
 - **Decided for the first build** (2026-10-05, defaults Edmond may
   overturn). The blocking stretch is removed: a sleeping thread was never
   traced under the consent either. The AArch64 cost is accepted unmeasured.

@@ -791,6 +791,7 @@ impl MutatorRecord {
     /// ([`ReaderLine::released_unserved`]); the collector's own line, so
     /// relaxed.
     #[inline]
+    #[cfg(not(feature = "recycler-over-counts"))]
     pub(crate) fn was_released_unserved(&self) -> bool {
         self.reader.released_unserved.load(Ordering::Relaxed)
     }
@@ -1316,10 +1317,6 @@ unsafe fn reset_for_a_new_life(released: *mut MutatorRecord) {
         // life ended under a standing request is unlinked by its
         // collector's pass and not by this path.
         (*released).hold.standing_slot.store(0, Ordering::Relaxed);
-        // A thread that ended blocking leaves its blocking stretch to no next life
-        // (`crate::cycle::token::enter_blocking_on_this_thread`).
-        #[cfg(feature = "recycler-over-counts")]
-        (*released).token.clear_the_checkpoint();
         // The clock itself is left where the last life moved it: the
         // collector's next visit advances it once, so that no stamp that
         // life wrote reads fresh against this one's

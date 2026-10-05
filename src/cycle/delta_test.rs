@@ -1,84 +1,61 @@
 //! The collector's Δ-test of the set its scan proved, by the window tags
-//! (`dev/design/recycler-over-counts.md`, §4): a handshake at the mutator's
-//! next safepoint checkpoint, the cut-off T, then one byte read a member.
+//! (`dev/design/recycler-over-counts.md`, §5f): one acquire fence after the
+//! trace, then one byte read a member against the frame of the offer the
+//! collector took.
 //!
-//! **What the Δ-test proves.** An entity untagged at T had no count write
-//! and no write into its slots since the consent, so its count is the one the
-//! mark read and every edge the mark recorded out of it stands at T. The scan
-//! over the record coloured a member potentially unreachable only where every
-//! recorded edge into it came from another member; at a checkpoint every
-//! reference is counted, locals included; so at T nothing outside the set
-//! refers into it, and garbage stays garbage (the Sage's proof, §4.8). A
-//! member carrying the window's number was touched: its row is marked, and
-//! what its recorded edges reach is refused (U, `crate::cycle::split`) while
-//! the rest of the set stays proved, a touched member being made live only
-//! through a tagged write.
+//! **What the Δ-test proves.** The take acquired the offer, whose release
+//! followed every store the mutator made before the frame, so every value
+//! the trace read is the frame's or a later one. A value written after the
+//! frame is stored with a release after its entity's tag, a count after the
+//! entity's own and a slot after its holder's, so the fence after the trace
+//! synchronises with every such store the trace read, and makes every tag
+//! stored before it visible here (release cumulativity). A set none of whose
+//! reads saw a store after the frame was read at the frame, a poll where
+//! every reference the mutator holds is counted; the scan over the record
+//! coloured a member potentially unreachable only where every recorded edge
+//! into it came from another member; so at the frame nothing outside the set
+//! referred into it, and garbage stays garbage. A set any of whose reads saw
+//! a later store carries the frame's number on some member: its row is
+//! marked, and what its recorded edges reach is refused (U,
+//! `crate::cycle::split`) while the rest of the set stays proved, a touched
+//! member being made live only through a tagged write.
 //!
 //! **Stale tags are cleared as they are read.** Garbage is never touched, so
-//! a member keeps the number of the last window that wrote it, and with eight
-//! bits a set grown across many consents would carry the open window's number
-//! somewhere at every attempt. Every tag that is neither 0 nor the window's
-//! predates the consent and is cleared by a one-byte swap
+//! a member keeps the number of the last frame that wrote it, and with eight
+//! bits a set grown across many offers would carry the frame's number
+//! somewhere at every attempt. Every tag that is neither 0 nor the frame's
+//! predates the frame and is cleared by a one-byte swap
 //! ([`crate::refcount::clear_a_stale_window_tag`]); a stale number equal to
-//! the window's refuses this attempt and is cleared at the next.
+//! the frame's refuses this attempt and is cleared at the next. The batch's
+//! release of the byte follows the last clear, and the next offer's swap
+//! acquires it, so no clear lands over the next frame's tags.
 //!
 //! **What follows the test** is the split of the set it proved
 //! (`crate::cycle::split`) and the collector's own free of the part it can
 //! free (`crate::cycle::collector_frees`).
-//!
-//! **The wait for T is bounded**, by the mutator's recall and by
-//! [`CHECKPOINT_WAIT`]: a mutator that polls no more within it — asleep, or in
-//! a long stretch of native work — costs the set its Δ-test and nothing
-//! else, the set going the exact way as a refused one does.
 
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::cycle::arena::TraceScratchArena;
 use crate::cycle::mutator_record::MutatorRecord;
 use crate::cycle::row;
 
-/// How long the collector waits for the mutator's checkpoint before it gives
-/// the Δ-test up: longer than a theft of the mutator's CPU, which no poll
-/// answers. Read on `web-heap` (`dev/BENCHMARKS.md`, 2026-10-05): at 2 ms
-/// 6–38 sets a cell missed while the host held the mutator's vCPU for a few
-/// milliseconds, each going the owner's way; at 20 ms one, the collector's
-/// wall in waits 0.65 s a cell against 0.60 s. A miss costs the collector
-/// the bound and the mutator nothing.
-pub(crate) const CHECKPOINT_WAIT: Duration = Duration::from_millis(20);
-
-/// The bound in force, in nanoseconds: [`CHECKPOINT_WAIT`], or what a
-/// measurement set.
-static WAIT_NANOS: AtomicU64 = AtomicU64::new(CHECKPOINT_WAIT.as_nanos() as u64);
-
-/// Set the bound a measurement reads the Δ-test under, and answer the one it
-/// replaces.
-#[cfg(test)]
-pub(crate) fn set_checkpoint_wait_for_test(wait: Duration) -> Duration {
-    Duration::from_nanos(WAIT_NANOS.swap(wait.as_nanos() as u64, Ordering::Relaxed))
-}
-
-/// Spins before the wait yields its core.
-const SPINS: u32 = 2_000;
-
 /// What the Δ-test of one set answered.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum TagReading {
-    /// No member carries the window's number: garbage at T.
+    /// No member carries the frame's number: garbage at the frame.
     Garbage,
     /// A member carries it, or a member's address could not be recovered
-    /// to read it: touched since the consent, for all the test can tell.
+    /// to read it: touched since the frame, for all the test can tell.
     /// Every such member's row carries the split's mark
     /// (`crate::cycle::shadow::SPLIT_MARK`), the seeds of U
-    /// (`crate::cycle::split`); the rest of the set is garbage at T.
+    /// (`crate::cycle::split`); the rest of the set is garbage at the frame.
     Touched,
-    /// The mutator reached no checkpoint before its recall or the bound.
-    NoCheckpoint,
 }
 
 /// The Δ-test's answer, and whether a member has weak references: an upgrade
-/// after T can make it live again, which the tags cannot see (§4.8, "weak
-/// cells aside"), so a set holding one is never marked proved.
+/// after the frame can make it live again, which the tags cannot see (§4.8,
+/// "weak cells aside"), so a set holding one is never marked proved.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) struct TagTest {
     pub(crate) reading: TagReading,
@@ -88,17 +65,12 @@ pub(crate) struct TagTest {
     pub(crate) unreadable: bool,
 }
 
-/// Sets read untouched, read touched in some member, holding a weakly-held
-/// member, and given up for want of a checkpoint, since the process started; and the nanoseconds the collector
-/// waited for checkpoints, in all and at the longest. Read by the runs of
-/// S68.8 (`tag_reading_counts`).
+/// Sets read untouched, read touched in some member, and holding a
+/// weakly-held member, since the process started. Read by the runs of S68.8
+/// (`tag_reading_counts`).
 static PROVED: AtomicUsize = AtomicUsize::new(0);
 static TOUCHED: AtomicUsize = AtomicUsize::new(0);
 static WEAKLY_HELD: AtomicUsize = AtomicUsize::new(0);
-static NO_CHECKPOINT: AtomicUsize = AtomicUsize::new(0);
-static ASKS_A_BLOCKING_ANSWERED: AtomicUsize = AtomicUsize::new(0);
-static WAITED_NANOS: AtomicU64 = AtomicU64::new(0);
-static LONGEST_WAIT_NANOS: AtomicU64 = AtomicU64::new(0);
 
 /// The counts [`test_the_set_by_its_tags`] keeps.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -107,11 +79,6 @@ pub(crate) struct TagReadingCounts {
     pub(crate) proved: usize,
     pub(crate) touched: usize,
     pub(crate) weakly_held: usize,
-    pub(crate) no_checkpoint: usize,
-    /// Asks a standing blocking stretch answered at once.
-    pub(crate) blocking: usize,
-    pub(crate) waited: Duration,
-    pub(crate) longest_wait: Duration,
 }
 
 /// The counts since the process started; the runs' probes read them.
@@ -121,61 +88,29 @@ pub(crate) fn tag_reading_counts() -> TagReadingCounts {
         proved: PROVED.load(Ordering::Relaxed),
         touched: TOUCHED.load(Ordering::Relaxed),
         weakly_held: WEAKLY_HELD.load(Ordering::Relaxed),
-        no_checkpoint: NO_CHECKPOINT.load(Ordering::Relaxed),
-        blocking: ASKS_A_BLOCKING_ANSWERED.load(Ordering::Relaxed),
-        waited: Duration::from_nanos(WAITED_NANOS.load(Ordering::Relaxed)),
-        longest_wait: Duration::from_nanos(LONGEST_WAIT_NANOS.load(Ordering::Relaxed)),
     }
 }
 
 /// Test the set the batch's scan over its record left potentially
-/// unreachable: ask for the mutator's checkpoint, wait for it, then read the
-/// tag of every member and clear the stale ones.
+/// unreachable: fence, then read the tag of every member against the frame
+/// of the offer this grant took, and clear the stale ones.
 ///
 /// # Safety
-/// The calling thread holds `mutator`'s grant, and `arena`'s rows are those
-/// of a completed mark's completed scan over its record
-/// (`crate::cycle::scan::scan_the_recorded_edges`), still standing: every
-/// member's slot is withheld under the grant, so its header is mapped.
+/// The calling thread holds `mutator`'s grant, taken from an offer, and
+/// `arena`'s rows are those of a completed mark's completed scan over its
+/// record (`crate::cycle::scan::scan_the_recorded_edges`), still standing:
+/// every member's slot is withheld under the grant, so its header is mapped.
 pub(crate) unsafe fn test_the_set_by_its_tags(
     mutator: &MutatorRecord,
     arena: &mut TraceScratchArena,
 ) -> TagTest {
     let token = &mutator.token;
-    let from = Instant::now();
-    // A blocking stretch the ask found is the checkpoint, whatever the byte
-    // reads after: the stretch may end before the wait's first reading, and
-    // its end erases the ask (`checkpoint_model`, "an ask a stretch answers,
-    // the stretch left before the first reading").
-    let mut recalled = false;
-    let reached = if token.ask_for_the_checkpoint() {
-        ASKS_A_BLOCKING_ANSWERED.fetch_add(1, Ordering::Relaxed);
-        #[cfg(test)]
-        crate::cycle::worker::testing::note_an_ask_a_stretch_answered(mutator);
-        true
-    } else {
-        wait_for_the_checkpoint(token, from, || {
-            recalled = arena.read_the_recall_now().is_break();
-            recalled
-        })
-    };
-    token.withdraw_the_checkpoint();
-    let waited = from.elapsed().as_nanos() as u64;
-    WAITED_NANOS.fetch_add(waited, Ordering::Relaxed);
-    LONGEST_WAIT_NANOS.fetch_max(waited, Ordering::Relaxed);
-    if !reached {
-        NO_CHECKPOINT.fetch_add(1, Ordering::Relaxed);
-        #[cfg(test)]
-        crate::cycle::worker::testing::note_a_checkpoint_missed(mutator, recalled);
-        #[cfg(not(test))]
-        let _ = recalled;
-        return TagTest {
-            reading: TagReading::NoCheckpoint,
-            weakly_held: false,
-            unreadable: false,
-        };
-    }
-
+    // After every read of the trace and before every tag read: the fence
+    // synchronises with each released store the trace read, and so orders
+    // every tag the mutator stored before it ahead of the reads below
+    // (module doc). The trace's reads stay as they are: counts and flags
+    // relaxed, every load that yields an address an acquire.
+    std::sync::atomic::fence(Ordering::Acquire);
     let window = token.window();
     let mut touched = false;
     let mut weakly_held = false;
@@ -256,37 +191,3 @@ pub(crate) unsafe fn internal_edges_of_the_set(arena: &TraceScratchArena) -> usi
     }
     edges
 }
-
-/// Wait for the mutator's answer: true once it passed a checkpoint, false
-/// where `recalled` reads the recall at the stop level, or past
-/// [`CHECKPOINT_WAIT`] from `from`. A recall at the wind-down level does not
-/// end the wait, as it does not end the scan whose set this is (design §2.1);
-/// `recalled` is the arena's reading, which releases the grants held behind
-/// this one at each call as a reading at the stride does.
-fn wait_for_the_checkpoint(
-    token: &crate::cycle::token::TraceToken,
-    from: Instant,
-    mut recalled: impl FnMut() -> bool,
-) -> bool {
-    let mut spins = 0;
-    loop {
-        if token.checkpoint_reached() {
-            return true;
-        }
-
-        if recalled() || from.elapsed() >= Duration::from_nanos(WAIT_NANOS.load(Ordering::Relaxed))
-        {
-            return false;
-        }
-
-        if spins < SPINS {
-            spins += 1;
-            std::hint::spin_loop();
-        } else {
-            std::thread::yield_now();
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests;

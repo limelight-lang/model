@@ -748,37 +748,48 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
     }
 }
 
-/// Store only the 4-byte refcount half, relaxed — the narrow-mutator
-/// store (`dev/BENCHMARKS.md`, 2026-07-27). Must stay an aligned atomic
-/// store: the collector reads the containing word concurrently. Under
-/// `recycler-over-counts` it also tags byte 7 with the thread's window, a
-/// whole-byte store that leaves byte 6 and the mutator's flags untouched.
+/// Store only the 4-byte refcount half — the narrow-mutator store
+/// (`dev/BENCHMARKS.md`, 2026-07-27). Must stay an aligned atomic store:
+/// the collector reads the containing word concurrently.
+///
+/// Under `recycler-over-counts` it tags byte 7 with the thread's window
+/// first, a whole-byte store that leaves byte 6 and the mutator's flags
+/// untouched, and stores the count with a release, the decrement as the
+/// increment (`dev/design/recycler-over-counts.md`, §5f, "The write
+/// order"): a collector whose relaxed read returns this count and whose
+/// acquire fence follows its trace reads this tag, and every tag and flag
+/// this thread stored before it. Relaxed without the feature, where no
+/// collector reads the tags.
 #[inline]
 unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        tag_with_the_window(header);
+        (*(header as *const core::sync::atomic::AtomicU32))
+            .store(value, core::sync::atomic::Ordering::Release)
+    };
+    #[cfg(not(feature = "recycler-over-counts"))]
     unsafe {
         (*(header as *const core::sync::atomic::AtomicU32))
             .store(value, core::sync::atomic::Ordering::Relaxed)
-    };
-    #[cfg(feature = "recycler-over-counts")]
-    unsafe {
-        tag_with_the_window(header)
     };
 }
 
 #[cfg(feature = "recycler-over-counts")]
 thread_local! {
-    /// The window this thread's last consent opened, 1..=255, or 0 before
-    /// its first (`dev/design/recycler-over-counts.md`, §2). It stays open
-    /// after the grant ends: the collector releases the token on its own
-    /// thread and cannot close it, and a tag written after the grant names a
-    /// window no later grant carries until the number comes round.
+    /// The frame this thread's last offer turned its window to, 1..=255, or
+    /// 0 before its first (`dev/design/recycler-over-counts.md`, §5f). It
+    /// stays open after the batch is tested: the collector releases the
+    /// token on its own thread and cannot close it, and a tag written after
+    /// the release names a frame no later offer carries until the number
+    /// comes round.
     /// `Cell<u8>` has no drop glue, which is the rule for anything a
     /// thread exit can reach.
     static COLLECTOR_WINDOW: core::cell::Cell<u8> = const { core::cell::Cell::new(0) };
 }
 
 /// Open the window `window` on this thread: every count write and slot
-/// store after this one tags with it. The consent opens
+/// store after this one tags with it. The offer opens
 /// [`the_next_window`] once its swap succeeds; a measurement of the tag's
 /// price and a case set one directly. Crate-private: a window out of step
 /// with the token's would make the tags lie.
@@ -793,10 +804,10 @@ pub(crate) fn this_threads_window() -> u8 {
     COLLECTOR_WINDOW.with(|open| open.get())
 }
 
-/// The number the next consent opens: one past this thread's window, 255
-/// wrapping to 1 — 0 is no window's. Answered without opening it, so that a
-/// consent whose swap fails spends no number. A tag of a window 255 consents
-/// old reads as touched again, which refuses a set and frees nothing.
+/// The number the next offer opens: one past this thread's window, 255
+/// wrapping to 1 — 0 is no window's. Answered without opening it, so that an
+/// offer whose swap fails spends no number. A tag of a frame 255 offers old
+/// reads as touched again, which refuses a set and frees nothing.
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) fn the_next_window() -> u8 {
     COLLECTOR_WINDOW.with(|open| open.get() % 255 + 1)
@@ -819,8 +830,8 @@ pub(crate) unsafe fn window_tag(header: *const RcHeader) -> u8 {
 /// neither 0 nor the window it tests for, back to 0 by a one-byte
 /// compare-and-swap (`dev/design/recycler-over-counts.md`, §4.8). A plain
 /// store could bury a fresh tag the mutator wrote meanwhile; the swap fails on
-/// it instead. Relaxed: the handshake orders the read, and a failed clear
-/// costs nothing but the next attempt's refusal.
+/// it instead. Relaxed: the take's acquire and the Δ-test's fence order the
+/// read, and a failed clear costs nothing but the next attempt's refusal.
 ///
 /// # Safety
 /// `header` points at an entity whose first eight bytes are mapped: a member
@@ -841,7 +852,7 @@ pub(crate) unsafe fn clear_a_stale_window_tag(header: *mut RcHeader, stale: u8) 
 
 /// Write this thread's window number into header byte 7: this entity's
 /// count or one of its slots changed while the window stood. One relaxed
-/// byte store, no branch; before the thread's first consent it writes 0,
+/// byte store, no branch; before the thread's first offer it writes 0,
 /// which no window carries (`dev/design/recycler-over-counts.md`, §2).
 ///
 /// # Safety
@@ -850,12 +861,6 @@ pub(crate) unsafe fn clear_a_stale_window_tag(header: *mut RcHeader, stale: u8) 
 #[cfg(feature = "recycler-over-counts")]
 #[inline]
 pub unsafe fn tag_with_the_window(header: *mut RcHeader) {
-    // Every count write and every slot write tags, so this is where a debug
-    // build checks that none runs inside a blocking stretch, which promises none.
-    debug_assert!(
-        !crate::cycle::token::this_thread_is_blocking(),
-        "a count or slot write inside a blocking stretch"
-    );
     let window = COLLECTOR_WINDOW.with(|open| open.get());
     unsafe { header_byte_store(header, WINDOW_TAG_BYTE, window) };
 }

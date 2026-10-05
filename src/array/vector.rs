@@ -307,7 +307,7 @@ unsafe fn store_element(at: *mut u8, v: Value) {
     unsafe {
         (*(at as *const AtomicU64)).store(words[0], Ordering::Relaxed);
         (*(at.add(DISCRIMINATING_WORD_OFFSET) as *const AtomicU64))
-            .store(words[1], Ordering::Relaxed);
+            .store(words[1], crate::memory::barrier::SLOT_PUBLISH);
     }
 }
 

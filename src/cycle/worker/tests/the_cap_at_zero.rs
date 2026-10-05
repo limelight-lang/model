@@ -57,6 +57,7 @@ fn the_dial_reaches_zero_and_clamps_at_the_maximum() {
 
 /// The elder's ask for `record`, made from a thread of the case's as the
 /// round makes it from the elder's, against the clock now.
+#[cfg(not(feature = "recycler-over-counts"))]
 fn asked_by_the_elder(record: *mut MutatorRecord, threshold: usize) -> Served {
     let sent = Sent(record);
     std::thread::spawn(move || unsafe {
@@ -64,6 +65,20 @@ fn asked_by_the_elder(record: *mut MutatorRecord, threshold: usize) -> Served {
     })
     .join()
     .expect("the ask ran")
+}
+
+/// The elder's answer to what this thread's poll offers of `record`'s R at
+/// `threshold`: the round's clock stamped as the elder's round stamps it, the
+/// offer made where it is due, and the ask over it made from a thread of the
+/// case's as the round makes it from the elder's.
+#[cfg(feature = "recycler-over-counts")]
+fn asked_by_the_elder(record: *mut MutatorRecord, threshold: usize) -> Served {
+    testing::stamp_the_round_clock();
+    let _ = unsafe { crate::cycle::offer::offer_at(threshold) };
+    let sent = Sent(record);
+    std::thread::spawn(move || unsafe { ask_over_an_offer(sent.into_inner()) })
+        .join()
+        .expect("the ask ran")
 }
 
 /// This thread's record with no standing instant and every merge accounted
@@ -139,12 +154,12 @@ fn a_ring_standing_below_the_threshold_under_cap_zero_is_asked_for_after_the_int
     );
     std::thread::sleep(Duration::from_millis(5));
     assert_eq!(asked_by_the_elder(record, SOFT_THRESHOLD), Served::Asked);
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 4);
     assert_ne!(
         unsafe { &*record }.standing_since(),
         0,
         "the ask restamped the instant, as a grant's release does"
     );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 4);
 }
 
 /// The ask is read on the slot free as at the poll: a death under it arms R

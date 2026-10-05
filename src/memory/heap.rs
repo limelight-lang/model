@@ -953,8 +953,7 @@ impl Heap {
     /// owned blocks it sweeps at every call.
     #[inline]
     fn a_sweep_is_due(&self, ci: usize) -> bool {
-        self.sweep_again[ci]
-            || self.gained_since_a_sweep[ci] >= self.owned_count[ci] / SWEEP_SHARE
+        self.sweep_again[ci] || self.gained_since_a_sweep[ci] >= self.owned_count[ci] / SWEEP_SHARE
     }
 
     /// Sweep this heap's blocks of class `ci` for withheld cross-thread frees.
@@ -2088,10 +2087,6 @@ pub extern "C" fn ll_thread_exit() {
     if thread_exit_running() {
         return;
     }
-
-    // A thread that exits blocking runs again: the sequence below writes counts
-    // (`crate::cycle::token::enter_blocking_on_this_thread`).
-    crate::cycle::token::leave_blocking_on_this_thread();
 
     // The collection's gate, because its three closed states — collecting,
     // teardown, reset — are exactly the states in which user code runs over

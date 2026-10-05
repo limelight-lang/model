@@ -14,20 +14,35 @@
 //! |---|---|---|
 //! | [`FREE`] | either | nobody traces this thread; the mutator returns memory at once |
 //! | [`MUTATOR`] | the mutator | the mutator's own claim: a collection through its close, the exit's final claim, an initialisation not yet complete |
-//! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented |
+//! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented (the default build) |
+//! | `OFFERED` | the mutator | the mutator offers a batch of R at the frame its window turned to; the mutator withholds every return (`recycler-over-counts`) |
 //! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
 //! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with the set it proved beside them (`crate::cycle::posted_set`), and the mutator owes a collection over P |
-//! | [`ASKED`], `POSTED` with slot one | the elder | under a collector cap of zero: P is empty, and the mutator owes a collection over R whole ([`TraceToken::ask_to_collect_in_line`]) |
+//! | [`ASKED`], `POSTED` with slot one | the elder | under a collector cap of zero: P is empty, and the mutator owes a collection over R whole (`TraceToken::ask_to_collect_in_line`) |
 //! | [`NOTHING_PROPOSED`], `POSTED` with slot two | collector s | as `POSTED`, and no verdict in P proposes a set: the mutator owes the disposition of P with no trace window |
 //!
 //! `FREE`, `MUTATOR` and a batch's `POSTED` carry slot zero, so a collector's
 //! request expects exactly zero; [`ASKED`] is `POSTED` in every reader that
 //! reads the state, and the mutator's reading alone tells it and
-//! [`NOTHING_PROPOSED`] from a batch's `POSTED`. Every transition is a compare-and-swap that names
+//! [`NOTHING_PROPOSED`] from a batch's `POSTED`.
+//!
+//! **Under `recycler-over-counts` the mutator offers and the collector
+//! takes** (`dev/design/recycler-over-counts.md`, §5f): no request and no
+//! consent. At a poll with the gate open, where every reference the mutator
+//! holds is counted, it turns its window, records how much of R the batch may
+//! take, and swaps `FREE → OFFERED` (`TraceToken::offer`); a collector
+//! swaps `OFFERED → COLLECTOR|s` (`TraceToken::take_the_offer`) and tests
+//! the set it proves against that window. The swap's release and the take's
+//! acquire order every store before the frame ahead of the trace, and
+//! returns are withheld from the offer on, because the take lands at any
+//! instant. Every take of the mutator's own withdraws a standing offer by
+//! its swap ([`TraceToken::take_unless`]); `REQUESTED` is never written.
+//!
+//! Every transition is a compare-and-swap that names
 //! the byte it expects, and a failed swap is acted on by the value it read
 //! back, never inferred; the two exceptions are the releases, stores over a
 //! value only their writer can change. The collector never writes
-//! `COLLECTOR` itself: it requests ([`TraceToken::request`]) and the
+//! `COLLECTOR` itself: it requests (`TraceToken::request`) and the
 //! mutator consents ([`read_and_act_on_this_thread`]) with a release swap,
 //! which is what orders the mutator's stores before its reading against the
 //! collector's loads after its grant, with no fence on either side
@@ -71,6 +86,8 @@
 //! (`rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
 //! claimed").
 
+#[cfg(feature = "recycler-over-counts")]
+use std::sync::atomic::AtomicU16;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
 
@@ -101,25 +118,14 @@ pub(crate) const ASKED: u8 = word(POSTED, 1);
 /// own ending, whose scan proposed nothing.
 pub(crate) const NOTHING_PROPOSED: u8 = word(POSTED, 2);
 
-/// No handshake stands ([`TraceToken::ask_for_the_checkpoint`]).
+/// The mutator offers a batch of R, its window turned to the frame the
+/// collector tests the batch against (`dev/design/recycler-over-counts.md`,
+/// §5f): one swap `FREE → OFFERED` at a poll with the gate open, and any
+/// collector takes it by one swap `OFFERED → COLLECTOR|s`. The mutator
+/// withholds every return under it as under `COLLECTOR`, and every taker of
+/// its own withdraws it by one swap before it touches R. Carries no slot.
 #[cfg(feature = "recycler-over-counts")]
-pub(crate) const CHECKPOINT_NONE: u8 = 0;
-/// The collector asks for the mutator's next safepoint checkpoint.
-#[cfg(feature = "recycler-over-counts")]
-pub(crate) const CHECKPOINT_ASKED: u8 = 1;
-/// The mutator passed a safepoint checkpoint after the ask.
-#[cfg(feature = "recycler-over-counts")]
-pub(crate) const CHECKPOINT_REACHED: u8 = 2;
-/// The mutator stands in a blocking stretch: no poll to come, at a point where a
-/// poll could stand, so that an ask finds its checkpoint reached at once
-/// (`dev/design/recycler-over-counts.md`, §5b).
-#[cfg(feature = "recycler-over-counts")]
-pub(crate) const CHECKPOINT_BLOCKING: u8 = 3;
-/// In a blocking stretch, and a collector's ask took the stretch as its
-/// checkpoint: the byte keeps the stretch, so that the withdrawal leaves it
-/// standing.
-#[cfg(feature = "recycler-over-counts")]
-pub(crate) const CHECKPOINT_BLOCKING_ASKED: u8 = 4;
+pub(crate) const OFFERED: u8 = 5;
 
 /// No recall: the collector traces on (`TraceToken::recall_level`).
 pub(crate) const RECALL_NONE: u8 = 0;
@@ -193,6 +199,10 @@ pub(crate) enum Reading {
     Posted,
     /// `COLLECTOR|s`, found or just consented to: withhold every return.
     Collector,
+    /// `OFFERED`: this thread's offer stands untaken; withhold every return,
+    /// since the take lands at any instant.
+    #[cfg(feature = "recycler-over-counts")]
+    Offered,
     /// `MUTATOR`: this thread's own claim; its window decides.
     Mutator,
 }
@@ -209,6 +219,30 @@ pub(crate) enum TookFrom {
     /// `POSTED`: the collector's last batch stands in P, and this collection
     /// disposes of it.
     Posted,
+}
+
+impl Reading {
+    /// Whether the reading asks every return to be withheld: a collector's
+    /// claim, or an offer it may take at any instant.
+    #[inline]
+    pub(crate) fn withholds(self) -> bool {
+        match self {
+            Reading::Collector => true,
+            #[cfg(feature = "recycler-over-counts")]
+            Reading::Offered => true,
+            _ => false,
+        }
+    }
+}
+
+/// Whether the byte `seen` asks every return to be withheld: `COLLECTOR`, or
+/// `OFFERED` under `recycler-over-counts`.
+#[inline]
+pub(crate) const fn withholds(seen: u8) -> bool {
+    #[cfg(feature = "recycler-over-counts")]
+    return matches!(state(seen), COLLECTOR | OFFERED);
+    #[cfg(not(feature = "recycler-over-counts"))]
+    return state(seen) == COLLECTOR;
 }
 
 /// The token of one mutator thread.
@@ -236,24 +270,23 @@ pub(crate) struct TraceToken {
     /// costs one stride more, and nothing but the byte above decides who holds
     /// the token. Relaxed on both sides, since nothing is published beside it.
     waiting: AtomicU8,
-    /// The window the mutator's last consent opened, 1..=255
-    /// (`dev/design/recycler-over-counts.md`, §2): every count write and
+    /// The frame of the mutator's last offer, 1..=255
+    /// (`dev/design/recycler-over-counts.md`, §5f): every count write and
     /// tagging slot store of the mutator's tags header byte 7 with it from
-    /// the consent on, and the collector reads it after its acquire of the
-    /// grant to know which tag means "touched under this grant". Stored by
-    /// the mutator ahead of the consent's release swap, which publishes it;
-    /// relaxed on both sides.
+    /// the offer on, and the collector reads it after its acquire of the
+    /// take to know which tag means "touched since the frame". Stored by the
+    /// mutator ahead of the offer's release swap, which publishes it; relaxed
+    /// on both sides.
     #[cfg(feature = "recycler-over-counts")]
     window: AtomicU8,
-    /// The handshake at the cut-off T (`dev/design/recycler-over-counts.md`,
-    /// §4.7): [`CHECKPOINT_ASKED`] stored by the collector, under its grant,
-    /// once its scan has proved a set; [`CHECKPOINT_REACHED`] stored by the
-    /// mutator, with a release, at its next poll whose gate is open — a
-    /// safepoint where every reference it holds is counted — and loaded by
-    /// the collector with an acquire, after which every tag the mutator
-    /// stored before that poll is the collector's to read.
+    /// How many of R's entries, from its front, the offer covers: R's count
+    /// at the frame, at most the batch's bound, which sixteen bits hold. An
+    /// entry registered after it names a decrement after the frame, which the
+    /// frame's tag refuses, so the batch takes none past it. Stored and read
+    /// as [`Self::window`] is. Sixteen bits keep the token inside the
+    /// record's first line (`crate::cycle::mutator_record`).
     #[cfg(feature = "recycler-over-counts")]
-    checkpoint: AtomicU8,
+    ceiling: AtomicU16,
     wait: Mutex<()>,
     released: Condvar,
     /// How many times a taker has gone to wait on this token. A case reads
@@ -268,9 +301,9 @@ pub(crate) struct TraceToken {
     /// take of its own: the mutator's side of the ledger the stress probe
     /// balances against the collector's grants served and refusals read
     /// (`crate::cycle::worker::tests::under_stress`).
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     consents: std::sync::atomic::AtomicUsize,
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     refusals: std::sync::atomic::AtomicUsize,
 }
 
@@ -290,14 +323,14 @@ impl TraceToken {
             #[cfg(feature = "recycler-over-counts")]
             window: AtomicU8::new(0),
             #[cfg(feature = "recycler-over-counts")]
-            checkpoint: AtomicU8::new(CHECKPOINT_NONE),
+            ceiling: AtomicU16::new(0),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
             waits: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(all(test, not(feature = "recycler-over-counts")))]
             consents: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(test)]
+            #[cfg(all(test, not(feature = "recycler-over-counts")))]
             refusals: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -336,7 +369,21 @@ impl TraceToken {
     /// word, which releases the grant where the collector holds it behind
     /// another mutator's batch.
     fn recall_without_waiting(&self, level: u8) {
-        let seen = self.read();
+        #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
+        let mut seen = self.read();
+        // An offer no collector took yet has no trace to wind down: the mark
+        // withdraws it, and the returns go back at this thread's next free or
+        // poll. A take that won the race is recalled as any grant is.
+        #[cfg(feature = "recycler-over-counts")]
+        if state(seen) == OFFERED {
+            match self.withdraw_the_offer(FREE) {
+                Ok(()) => {
+                    crate::cycle::offer::note_a_withdrawal_at_a_mark();
+                    return;
+                }
+                Err(actual) => seen = actual,
+            }
+        }
         if state(seen) != COLLECTOR {
             return;
         }
@@ -362,7 +409,8 @@ impl TraceToken {
         }
     }
 
-    /// Whether a collector traces this thread now: the byte at `COLLECTOR`.
+    /// Whether a collector traces this thread now, or may at any instant: the
+    /// byte at `COLLECTOR`, or at `OFFERED`, whose take lands unannounced.
     ///
     /// The readers that never consent read it — the chunk gate, the block
     /// gate, the remote reclaim, the drains' per-pop tests
@@ -373,7 +421,7 @@ impl TraceToken {
     /// consent, which comes after every store this thread made before it.
     #[inline]
     pub(crate) fn collector_is_tracing(&self) -> bool {
-        state(self.read()) == COLLECTOR
+        withholds(self.read())
     }
 
     /// Ask, as collector `slot`, to trace: one swap `FREE → REQUESTED|slot`,
@@ -388,6 +436,7 @@ impl TraceToken {
     /// is acquire too: a standing request answered on the free path is read
     /// through this failure as `COLLECTOR`, and the grant it reads must carry
     /// the stores the mutator's consent released.
+    #[cfg(not(feature = "recycler-over-counts"))]
     pub(crate) fn request(&self, slot: usize) -> Result<(), u8> {
         // Stamped before the swap, so that a consent made at once finds it.
         #[cfg(test)]
@@ -417,6 +466,7 @@ impl TraceToken {
     /// cap left. Relaxed: the collector published nothing of the mutator's
     /// and reads nothing after the swap, and the mutator's take from the ask
     /// finds the posted set's word null, no grant having written it.
+    #[cfg(not(feature = "recycler-over-counts"))]
     pub(crate) fn ask_to_collect_in_line(&self) -> Result<(), u8> {
         // Stamped before the swap, so that a take made at once finds it.
         #[cfg(test)]
@@ -469,35 +519,17 @@ impl TraceToken {
     /// `level` first — the level the stacks of withheld returns hold — so
     /// that a grant starts recalled exactly as hard as the marks stand, and
     /// not by a recall a mark raised under an earlier grant.
+    #[cfg(not(feature = "recycler-over-counts"))]
     pub(crate) fn consent(&self, seen: u8, level: u8) -> Result<(), u8> {
         debug_assert_eq!(state(seen), REQUESTED);
-        // A blocking stretch the thread did not leave answers no ask of the grant this
-        // consent opens (`dev/design/recycler-over-counts.md`, §5b).
-        #[cfg(feature = "recycler-over-counts")]
-        {
-            debug_assert!(
-                !this_thread_is_blocking(),
-                "a consent inside a blocking stretch"
-            );
-            let _ = self.clear_a_stale_blocking();
-        }
         // Ahead of the release swap, which publishes it: the collector reads
         // the recall once before its batch, after its acquire of the grant,
         // and a recall stored after the swap can land behind that reading.
         self.waiting.store(level, Ordering::Relaxed);
-        // The grant's window, ahead of the swap for the same reason. The
-        // thread opens it only once the swap succeeds, so a lost swap spends
-        // no number; no count write falls between the two.
-        #[cfg(feature = "recycler-over-counts")]
-        let window = crate::refcount::the_next_window();
-        #[cfg(feature = "recycler-over-counts")]
-        self.window.store(window, Ordering::Relaxed);
         let granted = word(COLLECTOR, slot(seen));
         self.word
             .compare_exchange(seen, granted, Ordering::Release, Ordering::Acquire)
             .map(|_| {
-                #[cfg(feature = "recycler-over-counts")]
-                crate::refcount::set_window(window);
                 #[cfg(test)]
                 {
                     // Counted on the swap that opened the grant, so that a
@@ -519,213 +551,126 @@ impl TraceToken {
             })
     }
 
-    /// The window the mutator opened at the consent the caller's grant came
-    /// from ([`Self::consent`]): read by the collector after its acquire of
-    /// the grant.
+    /// Offer a batch of R, as the mutator at a poll with the gate open: store
+    /// the recall at `level` — the level the stacks of withheld returns hold
+    /// — the frame `window` and the `ceiling` of R the batch may take, then
+    /// one swap `FREE → OFFERED` with acquire and release
+    /// (`dev/design/recycler-over-counts.md`, §5f, "The offer"). The release
+    /// orders every store this thread made before the frame ahead of the
+    /// collector's take; the acquire orders the last batch's clears of stale
+    /// tags, made before its release of the byte, ahead of every tag the new
+    /// frame stores, so that no clear of a number 255 frames old erases the
+    /// same number fresh. `Err` is the byte read instead, anything but
+    /// `FREE`, and nothing is stored then: the words before the swap are the
+    /// grant's while a collector holds the byte. At `FREE` they are no one
+    /// else's, since under this feature no collector writes over `FREE`, and
+    /// only this thread leaves it.
+    ///
+    /// The caller opens `window` on its thread once the swap succeeds and
+    /// before any count write after it ([`crate::refcount::set_window`]).
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn offer(&self, window: u8, ceiling: usize, level: u8) -> Result<(), u8> {
+        let seen = self.word.load(Ordering::Relaxed);
+        if seen != FREE {
+            return Err(seen);
+        }
+
+        // Stamped before the swap, so that a take made at once finds it.
+        #[cfg(test)]
+        let entry = crate::cycle::worker::testing::note_entering(
+            self.address(),
+            crate::cycle::worker::testing::ByteState::Offered,
+        );
+        self.waiting.store(level, Ordering::Relaxed);
+        self.window.store(window, Ordering::Relaxed);
+        let ceiling = u16::try_from(ceiling).unwrap_or(u16::MAX);
+        self.ceiling.store(ceiling, Ordering::Relaxed);
+        let offered =
+            self.word
+                .compare_exchange(FREE, OFFERED, Ordering::AcqRel, Ordering::Relaxed);
+        #[cfg(test)]
+        if offered.is_err() {
+            crate::cycle::worker::testing::note_not_entered(entry);
+        }
+        offered.map(|_| ())
+    }
+
+    /// Take the mutator's offer, as collector `slot`: one swap `OFFERED →
+    /// COLLECTOR|slot` with an acquire, after which the frame and the
+    /// ceiling are this collector's to read ([`Self::window`],
+    /// [`Self::ceiling`]) — never before it, since an offer withdrawn and
+    /// made again carries the next frame. `Err` is the byte read back: no
+    /// offer stands, or another collector took it.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn take_the_offer(&self, slot: usize) -> Result<(), u8> {
+        let taken = self.word.compare_exchange(
+            OFFERED,
+            word(COLLECTOR, slot),
+            Ordering::Acquire,
+            Ordering::Acquire,
+        );
+        #[cfg(test)]
+        if taken.is_ok() {
+            crate::cycle::worker::testing::note_offer_taken(self.address(), slot);
+        }
+        taken.map(|_| ())
+    }
+
+    /// Withdraw the mutator's offer, as the mutator: one swap `OFFERED →
+    /// to`, `FREE` where a stack of withheld returns reached its mark and the
+    /// returns go back, `MUTATOR` where a take of the mutator's own claims the
+    /// byte. `Err` is the byte read back, with an acquire: `COLLECTOR` is a
+    /// take that won, whose grant the caller then recalls or waits out.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn withdraw_the_offer(&self, to: u8) -> Result<(), u8> {
+        debug_assert!(to == FREE || to == MUTATOR, "a withdrawal to {to:#x}");
+        let withdrawn =
+            self.word
+                .compare_exchange(OFFERED, to, Ordering::Relaxed, Ordering::Acquire);
+        #[cfg(test)]
+        if withdrawn.is_ok() {
+            crate::cycle::worker::testing::note_offer_withdrawn(self.address());
+            crate::cycle::worker::testing::note_a_withdrawal_in_the_rig_section();
+        }
+        withdrawn.map(|_| ())
+    }
+
+    /// Answer an offer with an ask, as the elder under a collector cap of
+    /// zero: one swap `OFFERED → ASKED`, so that an offer made while the cap
+    /// changed is collected over in line rather than left for a take that
+    /// will not come ("Cap zero", `crate::cycle::worker`). The mutator's next
+    /// reading arms R whole on the ask, as on one written over `FREE`.
+    /// Relaxed, as `Self::ask_to_collect_in_line` is.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn ask_over_the_offer(&self) -> Result<(), u8> {
+        #[cfg(test)]
+        let entry = crate::cycle::worker::testing::note_entering(
+            self.address(),
+            crate::cycle::worker::testing::ByteState::Asked,
+        );
+        let asked =
+            self.word
+                .compare_exchange(OFFERED, ASKED, Ordering::Relaxed, Ordering::Relaxed);
+        #[cfg(test)]
+        match asked {
+            Ok(_) => crate::cycle::worker::testing::note_offer_withdrawn(self.address()),
+            Err(_) => crate::cycle::worker::testing::note_not_entered(entry),
+        }
+        asked.map(|_| ())
+    }
+
+    /// The frame of the offer the caller took ([`Self::offer`]): read by the
+    /// collector after its acquire of the take.
     #[cfg(feature = "recycler-over-counts")]
     pub(crate) fn window(&self) -> u8 {
         self.window.load(Ordering::Relaxed)
     }
 
-    /// Ask, as the collector holding the grant, for the mutator's next
-    /// safepoint checkpoint: the cut-off T of the set its scan proved. True
-    /// where a blocking stretch answers it at once, T being the blocking stretch.
-    ///
-    /// One compare-and-swap from the value read, retried from the value a
-    /// failure reads (`checkpoint_model`, "an ask against a blocking stretch"): nothing,
-    /// or a stale answer to an earlier grant's ask, becomes the ask; a blocking stretch
-    /// becomes the asked blocking stretch, which keeps it. Its release orders the trace
-    /// before every write the mutator makes after it reads the ask.
+    /// The entries of R the offer the caller took covers ([`Self::offer`]):
+    /// read by the collector after its acquire of the take.
     #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn ask_for_the_checkpoint(&self) -> bool {
-        let mut seen = self.checkpoint.load(Ordering::Acquire);
-        loop {
-            let (asked, blocking) = match seen {
-                CHECKPOINT_BLOCKING => (CHECKPOINT_BLOCKING_ASKED, true),
-                _ => {
-                    debug_assert!(
-                        seen == CHECKPOINT_NONE || seen == CHECKPOINT_REACHED,
-                        "one ask stands a grant"
-                    );
-                    (CHECKPOINT_ASKED, false)
-                }
-            };
-            match self
-                .checkpoint
-                .compare_exchange(seen, asked, Ordering::AcqRel, Ordering::Acquire)
-            {
-                Ok(_) => return blocking,
-                Err(now) => seen = now,
-            }
-        }
-    }
-
-    /// Whether the mutator passed a checkpoint since the ask, or stands
-    /// in a blocking stretch, read with the acquire that orders every tag it
-    /// stored before
-    /// either ahead of the collector's reads.
-    #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn checkpoint_reached(&self) -> bool {
-        matches!(
-            self.checkpoint.load(Ordering::Acquire),
-            CHECKPOINT_REACHED | CHECKPOINT_BLOCKING | CHECKPOINT_BLOCKING_ASKED
-        )
-    }
-
-    /// Whether a collector's ask for a checkpoint stands unanswered. A case
-    /// reads it to place a write between the ask and its answer.
-    #[cfg(all(test, feature = "recycler-over-counts"))]
-    pub(crate) fn checkpoint_is_asked(&self) -> bool {
-        self.checkpoint.load(Ordering::Acquire) == CHECKPOINT_ASKED
-    }
-
-    /// Withdraw the ask, answered or not, before the grant is released, by
-    /// compare-and-swap from each value read back until the byte holds no
-    /// ask: an ask or an answer becomes nothing, an asked stretch the stretch,
-    /// which no withdrawal may bury (`checkpoint_model`, "a withdrawal
-    /// against a blocking stretch").
-    #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn withdraw_the_checkpoint(&self) {
-        let mut seen = self.checkpoint.load(Ordering::Acquire);
-        loop {
-            let withdrawn = match seen {
-                CHECKPOINT_ASKED | CHECKPOINT_REACHED => CHECKPOINT_NONE,
-                CHECKPOINT_BLOCKING_ASKED => CHECKPOINT_BLOCKING,
-                _ => return,
-            };
-            match self.checkpoint.compare_exchange(
-                seen,
-                withdrawn,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return,
-                Err(now) => seen = now,
-            }
-        }
-    }
-
-    /// Enter a blocking stretch, as the mutator about to block with no poll to
-    /// come, at a point
-    /// where a poll could stand: every reference counted, the gate open. An
-    /// ask standing is answered by the blocking stretch, which an ask's wait reads as
-    /// reached (`checkpoint_model`, "a blocking stretch against an ask").
-    #[cfg(feature = "recycler-over-counts")]
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn enter_blocking(&self) {
-        let seen = self.checkpoint.swap(CHECKPOINT_BLOCKING, Ordering::AcqRel);
-        debug_assert!(
-            seen != CHECKPOINT_BLOCKING && seen != CHECKPOINT_BLOCKING_ASKED,
-            "a blocking stretch inside a blocking stretch"
-        );
-        if seen == CHECKPOINT_ASKED {
-            BLOCKINGS_ANSWERING_AN_ASK.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    /// Leave the blocking stretch, as the mutator running again: the stretch,
-    /// asked or not, becomes
-    /// nothing, by one compare-and-swap from the value read, whose acquire of
-    /// an ask that read the blocking stretch puts that ask's trace before every write
-    /// after the leave (`checkpoint_model`, "an leave against an ask"). A
-    /// byte holding no stretch — one the gate refused — is left as it is.
-    #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn leave_blocking(&self) {
-        let mut seen = self.checkpoint.load(Ordering::Acquire);
-        while matches!(seen, CHECKPOINT_BLOCKING | CHECKPOINT_BLOCKING_ASKED) {
-            match self.checkpoint.compare_exchange(
-                seen,
-                CHECKPOINT_NONE,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    if seen == CHECKPOINT_BLOCKING_ASKED {
-                        BLOCKINGS_LEFT_AFTER_AN_ASK.fetch_add(1, Ordering::Relaxed);
-                    }
-                    return;
-                }
-                Err(now) => seen = now,
-            }
-        }
-    }
-
-    /// Clear a blocking stretch the mutator did not leave — met at a poll or a consent,
-    /// where a blocking thread cannot stand — so that it answers no later ask:
-    /// the release build's mitigation, a debug build asserting first
-    /// (`enter_blocking_on_this_thread`). Answers whether there was one.
-    #[cfg(feature = "recycler-over-counts")]
-    fn clear_a_stale_blocking(&self) -> bool {
-        let mut seen = self.checkpoint.load(Ordering::Acquire);
-        loop {
-            let cleared = match seen {
-                CHECKPOINT_BLOCKING => CHECKPOINT_NONE,
-                CHECKPOINT_BLOCKING_ASKED => CHECKPOINT_ASKED,
-                _ => return false,
-            };
-            match self.checkpoint.compare_exchange(
-                seen,
-                cleared,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    STALE_BLOCKINGS_CLEARED.fetch_add(1, Ordering::Relaxed);
-                    return true;
-                }
-                Err(now) => seen = now,
-            }
-        }
-    }
-
-    /// The checkpoint byte as it stands, for a case.
-    #[cfg(all(test, feature = "recycler-over-counts"))]
-    pub(crate) fn checkpoint_for_test(&self) -> u8 {
-        self.checkpoint.load(Ordering::Acquire)
-    }
-
-    /// Leave the byte holding nothing, for a record's next life.
-    #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn clear_the_checkpoint(&self) {
-        self.checkpoint.store(CHECKPOINT_NONE, Ordering::Relaxed);
-    }
-
-    /// Answer an ask, as the mutator at a safepoint checkpoint: one acquire
-    /// load on every poll, and a release store where an ask stands.
-    ///
-    /// Both orderings carry the proof (`dev/design/recycler-over-counts.md`,
-    /// §4.8). The release store puts every tag stored before it ahead of the
-    /// collector's reading of the answer. The acquire load, which reads the
-    /// collector's release of its ask, puts the whole trace ahead of every
-    /// write the mutator makes after it, so that no count the trace read is
-    /// one written after T. Relaxed, it would cost no test anything: the
-    /// failure is load buffering, which the loom model cannot exhibit
-    /// (`checkpoint_model`, "What it does not check").
-    ///
-    /// The answer is a compare-and-swap from the ask, so that an ask the
-    /// collector withdrew between the load and the answer is never answered
-    /// late (`checkpoint_model`, "a late answer against a withdrawal"); an
-    /// unasked poll pays the load alone. A blocking stretch met here is stale, and is
-    /// cleared.
-    #[cfg(feature = "recycler-over-counts")]
-    #[inline]
-    pub(crate) fn reach_the_checkpoint(&self) {
-        match self.checkpoint.load(Ordering::Acquire) {
-            CHECKPOINT_ASKED => {
-                let _ = self.checkpoint.compare_exchange(
-                    CHECKPOINT_ASKED,
-                    CHECKPOINT_REACHED,
-                    Ordering::Release,
-                    Ordering::Acquire,
-                );
-            }
-            CHECKPOINT_BLOCKING | CHECKPOINT_BLOCKING_ASKED => {
-                if self.clear_a_stale_blocking() {
-                    self.reach_the_checkpoint();
-                }
-            }
-            _ => {}
-        }
+    pub(crate) fn ceiling(&self) -> usize {
+        usize::from(self.ceiling.load(Ordering::Relaxed))
     }
 
     /// Release collector `slot`'s claim: one store — `POSTED` when the batch
@@ -809,7 +754,9 @@ impl TraceToken {
     ///
     /// From `FREE` and `POSTED` the swap to `MUTATOR` is the take. From
     /// `REQUESTED|s` it is a refusal: the swap lands and collector `s` is
-    /// woken to read it. Under `COLLECTOR` the mutator blocks on the mutex
+    /// woken to read it. From `OFFERED` it withdraws this thread's offer, and
+    /// a collector's take that won the race is waited out as any claim is.
+    /// Under `COLLECTOR` the mutator blocks on the mutex
     /// and is woken by [`release_claim`](Self::release_claim); the byte is
     /// re-read under the mutex, so a release between the read and the wait
     /// is not lost. `MUTATOR` is the caller's own claim, and the caller tells
@@ -856,6 +803,10 @@ impl TraceToken {
         loop {
             let took = match state(seen) {
                 FREE | REQUESTED => TookFrom::Free,
+                // This thread's own offer, withdrawn by the take's swap below:
+                // R stays whole for the claim.
+                #[cfg(feature = "recycler-over-counts")]
+                OFFERED => TookFrom::Free,
                 POSTED if hold_at_posted => return None,
                 POSTED => TookFrom::Posted,
                 COLLECTOR => {
@@ -925,6 +876,7 @@ impl TraceToken {
     fn note_the_take(&self, seen: u8) {
         use crate::cycle::worker::testing;
         match state(seen) {
+            #[cfg(not(feature = "recycler-over-counts"))]
             REQUESTED => {
                 self.refusals.fetch_add(1, Ordering::Relaxed);
                 testing::note_request_ended(
@@ -945,13 +897,13 @@ impl TraceToken {
     }
 
     /// Requests the mutator consented to so far.
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     pub(crate) fn consents(&self) -> usize {
         self.consents.load(Ordering::Relaxed)
     }
 
     /// Requests the mutator refused by a take of its own so far.
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     pub(crate) fn refusals(&self) -> usize {
         self.refusals.load(Ordering::Relaxed)
     }
@@ -979,7 +931,7 @@ impl TraceToken {
     /// Write `requested`, a `REQUESTED|s` byte, over `FREE`: a case standing
     /// in for a collector's request, which the collector thread makes with
     /// its own swap.
-    #[cfg(test)]
+    #[cfg(all(test, not(feature = "recycler-over-counts")))]
     pub(crate) fn request_for_test(&self, requested: u8) {
         assert_eq!(state(requested), REQUESTED);
         self.word
@@ -1075,6 +1027,7 @@ pub(crate) fn recall_this_threads_token(level: u8) {
 /// stored the level ahead of its swap, where the collector reads it, and the
 /// word is what releases the grant where the collector holds it behind
 /// another mutator's batch. Nothing unless a collector holds the token.
+#[cfg(not(feature = "recycler-over-counts"))]
 pub(crate) fn tell_this_threads_holder() {
     let record = crate::cycle::mutator_record::this_thread_record();
     if record.is_null() {
@@ -1139,120 +1092,16 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
     }
 }
 
-/// Answer the collector's ask for a safepoint checkpoint on this thread's
-/// token ([`TraceToken::reach_the_checkpoint`]). Called by the poll alone,
-/// where its gate is open: inside a teardown, a reset or a collection the
-/// runtime holds references it has not counted, and a checkpoint there would
-/// let the collector free what one of them names
-/// (`dev/design/recycler-over-counts.md`, §7.16).
-#[cfg(feature = "recycler-over-counts")]
-#[inline]
-pub(crate) fn reach_the_checkpoint_on_this_thread() {
-    #[cfg(debug_assertions)]
-    debug_assert!(
-        !BLOCKING.with(std::cell::Cell::get),
-        "a poll inside a blocking stretch"
-    );
-    let record = crate::cycle::mutator_record::this_thread_record();
-    if !record.is_null() {
-        unsafe { &(*record).token }.reach_the_checkpoint();
-    }
-}
-
-#[cfg(all(feature = "recycler-over-counts", debug_assertions))]
-thread_local! {
-    /// Whether this thread stands in a blocking stretch: a debug build's check
-    /// that nothing
-    /// a blocking stretch forbids — a count write, a poll, a consent — runs inside one.
-    static BLOCKING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Whether this thread stands in a blocking stretch, in a debug build; false
-/// otherwise.
-#[cfg(feature = "recycler-over-counts")]
-#[inline]
-pub(crate) fn this_thread_is_blocking() -> bool {
-    #[cfg(debug_assertions)]
-    return BLOCKING.with(std::cell::Cell::get);
-    #[cfg(not(debug_assertions))]
-    false
-}
-
-/// Blocking stretches entered, stretches that answered an ask standing, stretches
-/// left that found an ask over them, and stale stretches a poll or consent
-/// cleared, since the process started.
-#[cfg(feature = "recycler-over-counts")]
-static BLOCKINGS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "recycler-over-counts")]
-static BLOCKINGS_ANSWERING_AN_ASK: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "recycler-over-counts")]
-static BLOCKINGS_LEFT_AFTER_AN_ASK: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-#[cfg(feature = "recycler-over-counts")]
-static STALE_BLOCKINGS_CLEARED: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// The blocking stretches' counts, in the order of the statics above.
-#[cfg(feature = "recycler-over-counts")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn blocking_counts() -> [usize; 4] {
-    [
-        BLOCKINGS.load(Ordering::Relaxed),
-        BLOCKINGS_ANSWERING_AN_ASK.load(Ordering::Relaxed),
-        BLOCKINGS_LEFT_AFTER_AN_ASK.load(Ordering::Relaxed),
-        STALE_BLOCKINGS_CLEARED.load(Ordering::Relaxed),
-    ]
-}
-
-/// Enter a blocking stretch on this thread before it blocks with no poll to
-/// come (`dev/design/recycler-over-counts.md`, §5b): a checkpoint, not a poll —
-/// nothing applied, nothing armed, no user code. Under a closed gate — a
-/// teardown, a reset, a collection, where the runtime holds references it
-/// has not counted — it stores nothing, and answers false; a thread with no
-/// record enters none either. The caller's contract is the poll's: every
-/// reference counted. A no-op without `recycler-over-counts`.
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn enter_blocking_on_this_thread() -> bool {
-    #[cfg(feature = "recycler-over-counts")]
-    {
-        if !crate::cycle::collect::may_collect() {
-            return false;
-        }
-        let record = crate::cycle::mutator_record::this_thread_record();
-        if record.is_null() {
-            return false;
-        }
-        #[cfg(debug_assertions)]
-        BLOCKING.with(|blocking| blocking.set(true));
-        BLOCKINGS.fetch_add(1, Ordering::Relaxed);
-        unsafe { &(*record).token }.enter_blocking();
-        true
-    }
-    #[cfg(not(feature = "recycler-over-counts"))]
-    false
-}
-
-/// Leave the blocking stretch on this thread, running again after one
-/// [`enter_blocking_on_this_thread`] answered true for. A no-op without `recycler-over-counts`.
-pub(crate) fn leave_blocking_on_this_thread() {
-    #[cfg(feature = "recycler-over-counts")]
-    {
-        let record = crate::cycle::mutator_record::this_thread_record();
-        if !record.is_null() {
-            unsafe { &(*record).token }.leave_blocking();
-        }
-        #[cfg(debug_assertions)]
-        BLOCKING.with(|blocking| blocking.set(false));
-    }
-}
-
 /// [`read_and_act_on_this_thread`] past the three states that ask for no act:
 /// a request's consent and `POSTED`'s arming, out of the line of every free
 /// the reading sits on, whose body would otherwise keep two more registers
 /// (`dev/BENCHMARKS.md`, "S65.30: the free against S65.7's").
 #[cold]
 #[inline(never)]
+#[cfg_attr(
+    feature = "recycler-over-counts",
+    allow(unused_mut, unused_variables, clippy::never_loop)
+)]
 fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
     loop {
         match state(seen) {
@@ -1267,6 +1116,9 @@ fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
             }
             COLLECTOR => return Reading::Collector,
             MUTATOR => return Reading::Mutator,
+            #[cfg(feature = "recycler-over-counts")]
+            OFFERED => return Reading::Offered,
+            #[cfg(not(feature = "recycler-over-counts"))]
             _ => match token.consent(seen, crate::cycle::deferred_slot_reuse::withheld_recall()) {
                 Ok(()) => {
                     #[cfg(test)]
@@ -1276,6 +1128,10 @@ fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
                 }
                 Err(actual) => seen = actual,
             },
+            // No collector requests under the offer, so `REQUESTED` never
+            // stands.
+            #[cfg(feature = "recycler-over-counts")]
+            _ => unreachable!("a request under recycler-over-counts: {seen:#x}"),
         }
     }
 }
@@ -1485,7 +1341,7 @@ mod tests;
 #[cfg(loom)]
 mod free_path_model;
 
-// The loom model of the handshake at the checkpoint, the same way: under
-// `--cfg loom` and the feature alone, run by hand as its file says.
+// The loom model of the offer, the same way: under `--cfg loom` and the
+// feature alone, run by hand as its file says.
 #[cfg(all(loom, feature = "recycler-over-counts"))]
-mod checkpoint_model;
+mod offer_model;
