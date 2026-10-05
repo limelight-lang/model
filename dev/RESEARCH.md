@@ -1032,3 +1032,62 @@ mean and peak held garbage, RSS); two loads where tracing should lose (a large
 live heap with rare cycles, a long live list). Gate against the default build:
 total CPU lower, held garbage no worse than its 71–78 MB mean, the longest pause
 under its 67–160 ms; a stage 2 with concurrent marking against the 5 ms gate.
+
+## 2026-10-05 — proving a group of objects out of cycle collection at runtime
+
+Asked by Edmond: "an algorithm, probably from Microsoft, that proves
+acyclicity at runtime". Read by a research agent; what it verified by reading
+a source is marked, the rest is its inference or memory.
+
+**The answer, most likely** (verified, full text read): Parkinson, Clebsch
+(Microsoft Azure Research, Project Verona) and Wrigstad, *Reference Counting
+Deeply Immutable Data Structures with Cycles: an Intellectual Abstract*,
+ISMM 2024, doi:10.1145/3652024.3665507. At `freeze`, one DFS computes the
+frozen graph's strongly connected components (Purdom's path-based algorithm
+with union-find, O(|E|·α)); each component's representative holds one count of
+references from outside it; the condensation is a DAG, so counting at the
+component's grain reclaims cycles with no tracing. Costs: a status field a
+object (verona-rt tags the header's low bits: `SCC_PTR`, `RC`, `PENDING`,
+`NONATOMIC_RC`), a `find()` on every retain and release, a freeze at about
+twice a mark-and-sweep of the same graph. Holds only for deeply immutable
+graphs: no write after the freeze. It confines cycles to known units rather
+than proving acyclicity.
+
+**Related, same group:**
+- *Dynamic Region Ownership for Concurrency Safety*, PLDI 2025,
+  doi:10.1145/3729313 (verified for the mechanism): regions with one owning
+  entry, a barrier on every store; "cycles in the mutable heap cannot cross
+  region boundaries", so each region gets its own cycle detector. No
+  performance figures published.
+- verona-rt `RegionRc` (source fetched): region-local RC with Lins' lazy
+  mark-scan, traces stop at sub-region entries.
+- *Dynamically Checked Deep Immutability in Python*, PLDI 2026,
+  doi:10.1145/3808352, and PEP 795: not read (no access).
+
+**Elsewhere:** Bacon & Rajan, ECOOP 2001 — statically acyclic ("green")
+classes never buffered (secondary sources only). php-src: `GC_NOT_COLLECTABLE`
+for strings, resources (#17194), enums and static fake closures (PHP 8.5,
+#19866); draft #17130 flags objects whose typed properties can only hold
+acyclic scalars (verified on the PR pages). CPython lazily untracks tuples of
+untracked members during a collection (verified, devguide). Armstrong &
+Virding, IWMM 1995: without destructive update every pointer points to older
+data, so the heap is acyclic (abstract). Perceus and Lean's counting do not
+handle cycles at all (abstracts).
+
+**What may apply here** (inference, none measured):
+1. A class-level "acyclic" bit at allocation (Bacon–Rajan green, php-src
+   #17130): never a candidate, a leaf in every trace; cleared by a dynamic
+   property. First figure to read: the share of candidates whose class
+   qualifies.
+2. A depth-1 "holds no collectable value" bit on mutable containers, set
+   lazily by a trace that finds no collectable child (CPython's untracking),
+   cleared by the slot-write path that already writes the window tag.
+3. Freeze and component counting (the ISMM paper) for data built once per
+   worker: removed from cycle collection for good.
+4. Request regions (Pyrona): traces stop at the region's entry, and a request
+   still being built is not traced from outside — the measured waste of the
+   Δ-test (72 % of the touched sets are live requests being built). Costs an
+   owner word and a barrier on every store.
+5. The collector's trace could compute components on the fly; a component
+   whose members carry no window tag across epochs keeps its stamp. No paper
+   found for this on a mutable heap.
