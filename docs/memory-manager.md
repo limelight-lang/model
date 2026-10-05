@@ -411,6 +411,15 @@ otherwise, and its parked frees would sit forever, the thread refilling
 instead: 34.2M to 2.3M ops/s on the bleeding pattern when it was
 missing. mimalloc's full queue exists for the same reason.
 
+The sweep reads one header line a block of the class, so it is gated:
+it runs at once where the last sweep found pending frees on an eighth
+of the class's blocks or more (or on any entity block under a trace),
+else once the heap has gained an eighth of its blocks since, and
+always before a refusal from the pool is answered with null. Ungated,
+a heap nobody frees into pays a full sweep at every block it draws —
+3,400–4,600 block reads a call on the rig's ring loads, a third to a
+half of the mutator's time; gated, about eight reads a block drawn.
+
 ### Thread exit: abandonment and adoption
 
 A dying thread hands its blocks over: empty ones to the pool, ones still

@@ -60,6 +60,12 @@ pub const MAX_SMALL: usize = 8192;
 /// inline array is one load against a compile-time-constant bound.
 pub const NUM_CLASSES: usize = SIZE_CLASSES.len();
 
+/// The share of a class's owned blocks a heap gains between two sweeps of
+/// them that found nothing ([`Heap::a_sweep_is_due`]): at most this many
+/// block reads a block gained, and that share of the owned blocks drawn
+/// ahead of cross-thread frees standing in a full one.
+const SWEEP_SHARE: u32 = 8;
+
 /// Direct lookup table at 16-byte granularity: one array read, zero
 /// branches. Profiling on a real varying-size workload (8..1000 bytes)
 /// showed the previous linear scan — fully unrolled by the compiler into
@@ -600,6 +606,16 @@ pub struct Heap {
     /// Also what lets [`Heap::abandon_all`] enumerate at thread exit;
     /// `available` cannot, since a full block is unlinked from it.
     owned: [*mut HeapBlockHeader; NUM_CLASSES],
+    /// The blocks on `owned`, by class.
+    owned_count: [u32; NUM_CLASSES],
+    /// Blocks this heap gained for a class, adopted or drawn from the pool,
+    /// since its last sweep of the class's owned blocks; and whether that
+    /// sweep asks for the next at once. What [`Heap::a_sweep_is_due`] reads.
+    gained_since_a_sweep: [u32; NUM_CLASSES],
+    sweep_again: [bool; NUM_CLASSES],
+    /// The sweeps `alloc_no_block` ran, by class. Test-only.
+    #[cfg(test)]
+    sweeps: [u32; NUM_CLASSES],
     /// Live slots this heap took on by adopting abandoned blocks — objects
     /// belonging to threads that are already gone, which this heap will
     /// never free and must not be blamed for.
@@ -652,6 +668,11 @@ impl Heap {
             available: [std::ptr::null_mut(); NUM_CLASSES],
             empty_reserve: [std::ptr::null_mut(); NUM_CLASSES],
             owned: [std::ptr::null_mut(); NUM_CLASSES],
+            owned_count: [0; NUM_CLASSES],
+            gained_since_a_sweep: [0; NUM_CLASSES],
+            sweep_again: [false; NUM_CLASSES],
+            #[cfg(test)]
+            sweeps: [0; NUM_CLASSES],
             #[cfg(test)]
             adopted_live: 0,
             #[cfg(test)]
@@ -867,8 +888,10 @@ impl Heap {
         // thread does the freeing strands every full block and refills
         // forever. (Measured, the hard way: 34.2M -> 2.3M ops/s on
         // `mt_bench`'s bleeding pattern.) This is what mimalloc's full queue
-        // is for.
-        if self.collect_owned(ci) {
+        // is for. The sweep reads every owned block of the class, so it runs
+        // only when it is due ([`Heap::a_sweep_is_due`]).
+        let swept = self.a_sweep_is_due(ci);
+        if swept && self.sweep(ci) {
             return self.alloc_class(ci);
         }
 
@@ -877,24 +900,73 @@ impl Heap {
         // fresh is how a thread-churning workload grows without bound
         // (larson: 1.7 GiB resident against a 2.5 MiB live set).
         if self.adopt(ci) {
+            self.gained_since_a_sweep[ci] += 1;
             return self.alloc_class(ci);
         }
 
         if self.refill(ci).is_null() {
+            // The pool refused: what other threads freed into this heap's
+            // own blocks is all that is left to serve from, due or not.
+            if !swept && self.sweep(ci) {
+                return self.alloc_class(ci);
+            }
             return std::ptr::null_mut();
         }
 
+        self.gained_since_a_sweep[ci] += 1;
         self.alloc_class(ci)
     }
 
+    /// Sweep class `ci`'s owned blocks ([`Heap::collect_owned`]) and set when
+    /// the next sweep is due: at the next call where the blocks it found
+    /// with frees pending were a [`SWEEP_SHARE`]th of the owned ones or
+    /// more — a heap other threads free into, bleeding larson's at every
+    /// call, as it must — or, for entity blocks, where any block had frees
+    /// pending under a trace, whose withheld returns the sweep moves where
+    /// the deaths' mark counts them (`cycle::deferred_slot_reuse`); else
+    /// once this heap has gained a share of its owned blocks. Answers
+    /// whether slots came back.
+    fn sweep(&mut self, ci: usize) -> bool {
+        #[cfg(test)]
+        {
+            self.sweeps[ci] += 1;
+        }
+        let (found, pending) = self.collect_owned(ci);
+        self.gained_since_a_sweep[ci] = 0;
+        self.sweep_again[ci] = pending >= (self.owned_count[ci] / SWEEP_SHARE).max(1)
+            || (pending > 0
+                && self.block_kind == BLOCK_KIND_ENTITY
+                && crate::cycle::deferred_slot_reuse::returns_are_withheld());
+        found
+    }
+
+    /// Whether `alloc_no_block` sweeps class `ci`'s owned blocks before it
+    /// adopts or draws a block: where the last sweep asked for it
+    /// ([`Heap::sweep`]), or once this heap has gained a [`SWEEP_SHARE`]th
+    /// of its owned blocks since. A sweep reads a cache line a block, and on
+    /// a heap no other thread frees into it finds nothing — 3,400–4,600
+    /// blocks a call, 34–54 % of a ring load's mutator time
+    /// (`dev/BENCHMARKS.md`, 2026-10-05). Gated, it costs at most
+    /// `SWEEP_SHARE` block reads a block gained or a pending block found,
+    /// and cross-thread frees into a full block wait for at most that share
+    /// of new blocks, or for the pool's refusal. Below `2 * SWEEP_SHARE`
+    /// owned blocks it sweeps at every call.
+    #[inline]
+    fn a_sweep_is_due(&self, ci: usize) -> bool {
+        self.sweep_again[ci]
+            || self.gained_since_a_sweep[ci] >= self.owned_count[ci] / SWEEP_SHARE
+    }
+
     /// Sweep this heap's blocks of class `ci` for withheld cross-thread frees.
-    /// Returns true if any block gained slots.
+    /// Answers whether any block gained slots, and how many blocks had frees
+    /// pending — under a trace an entity block's are withheld, not gained.
     ///
-    /// O(blocks this heap owns), but only on the path that would otherwise
-    /// take a whole new block from the pool — always the better trade.
-    fn collect_owned(&mut self, ci: usize) -> bool {
+    /// O(blocks this heap owns), on the path that would otherwise take a
+    /// whole new block from the pool, when [`Heap::a_sweep_is_due`].
+    fn collect_owned(&mut self, ci: usize) -> (bool, u32) {
         let mut block = self.owned[ci];
         let mut found = false;
+        let mut pending_blocks = 0;
         while !block.is_null() {
             let next = unsafe { (*block).links.owned_next };
             let pending = unsafe {
@@ -905,6 +977,7 @@ impl Heap {
                     .is_null()
             };
 
+            pending_blocks += u32::from(pending);
             if pending && self.collect_remote(block) {
                 let b = unsafe { &mut (*block).private };
                 if b.used == 0 {
@@ -919,7 +992,7 @@ impl Heap {
             block = next;
         }
 
-        found
+        (found, pending_blocks)
     }
 
     /// Cold tail: the head block turned out to be full. Unlink it and retry
@@ -1036,6 +1109,7 @@ impl Heap {
 
     /// Add `block` to this heap's owned chain for its class.
     fn own(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        self.owned_count[ci] += 1;
         unsafe {
             (*block).links.owned_prev = std::ptr::null_mut();
             (*block).links.owned_next = self.owned[ci];
@@ -1049,6 +1123,7 @@ impl Heap {
 
     /// Remove `block` from this heap's owned chain.
     fn disown(&mut self, ci: usize, block: *mut HeapBlockHeader) {
+        self.owned_count[ci] -= 1;
         unsafe {
             let prev = (*block).links.owned_prev;
             let next = (*block).links.owned_next;
@@ -1117,6 +1192,9 @@ impl Heap {
             self.owned[ci] = std::ptr::null_mut();
         }
 
+        self.owned_count = [0; NUM_CLASSES];
+        self.gained_since_a_sweep = [0; NUM_CLASSES];
+        self.sweep_again = [false; NUM_CLASSES];
         self.available = [std::ptr::null_mut(); NUM_CLASSES];
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
         #[cfg(test)]
@@ -1493,7 +1571,7 @@ impl Heap {
     #[cfg(test)]
     fn live_slots_after_collect(&mut self) -> u32 {
         for ci in 0..NUM_CLASSES {
-            self.collect_owned(ci);
+            let _ = self.collect_owned(ci);
         }
 
         let mut total = 0;
