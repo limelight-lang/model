@@ -759,6 +759,44 @@ order `advance` builds them; a slice whose plan places more births than the
 bound polls between its steps and ends at the same point on the timeline;
 the draw runs between an entered and a left stretch.
 
+### 5e. The collector's pacing: S68.12 (the plan, before the code)
+
+**What was read** (`dev/BENCHMARKS.md`, the S68.10 protocol entry, "The
+collector's pacing"). Under `web-heap` the collector runs 31 % of its wall;
+a round lasts about 20 ms, of which 10 ms is `FALLBACK_INTERVAL_MIN`, slept
+after every round that made a batch whatever R still holds; R stands at
+28–61k entries on the mean; a batch takes 940 roots on the mean against
+`BATCH_BOUND`'s 1,024. A switch that sleeps 1 ms there cut the garbage by a
+third in both builds (A 28–32 MB, B 27–28 MB), cleared the drain by
+7.3–8.6 s in every cell, the remnant's repeat included, for 25–30 % more
+collector CPU. The sibling the backlog would birth is refused at cap 1, so
+today nothing else drains a standing R faster.
+
+**The change.** A round whose outcome leaves a mutator at the threshold
+after its batch (`Round::backlogged` not empty) sleeps no interval: the
+next round starts at once, as a wake would start it. Every other round
+paces as today — the minimum after a batch or a freeing note with no
+backlog, held after work seen without a batch, doubled when idle. Nothing
+else changes: `BATCH_BOUND` stays (the workspace's copy and P's room bound
+it), the birth of a sibling on two backlogged mutators for
+`BACKLOG_ROUNDS_TO_BIRTH` rounds stays, and the cap is still what bounds
+the collectors.
+
+**What it may cost, to be read.** The collector's CPU (bounded by its one
+core at cap 1); the mutators' — each batch is a grant, a consent and a
+checkpoint, so more batches a second are more handshakes on the owner's
+side; the posted sets read and the frees applied the more often on the
+owner; the take's wait unchanged (no commit is longer); a mutator whose R
+never falls below the threshold keeps the collector busy for as long as it
+does, which at cap 1 is the load's own demand.
+
+**Then read**, the protocol, five cells of A and B: garbage, the drain,
+both CPUs, p99.9, the owner's longest pause; and the ring loads after it.
+
+**Tests.** A round that leaves a mutator above the threshold after its
+batch waits no interval before the next; one that leaves none waits the
+minimum, as today.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at
