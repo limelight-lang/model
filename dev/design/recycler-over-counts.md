@@ -92,7 +92,7 @@ deferred lanes are all as in the default build.
    `ll_gc_maybe_collect` under an open gate alone — inside a teardown, a
    reset or a collection the runtime holds references it has not counted —
    and waited for under the grant up to a bound (`delta_test::CHECKPOINT_WAIT`,
-   2 ms, a placeholder S68.8 reads) or the mutator's recall at the stop level
+   20 ms, as S68.11 read it) or the mutator's recall at the stop level
    — a wind-down does not end the wait, as it does not end the scan — the
    wait releasing the grants held behind this one at each reading, as the
    trace's stride does; a missed checkpoint sends the set the exact way.
@@ -809,47 +809,71 @@ against `token_wait_longest_us`; then the ring loads.
 `FALLBACK_INTERVAL_MIN` and stand as they are; `under_stress`'s sleep of
 two minimums keeps its meaning.
 
-### 5f. Open: a window the mutator turns (Edmond's proposal, 2026-10-05; no Critic yet)
+### 5f. Open: a window the mutator turns (Edmond's proposal, 2026-10-05)
 
-Edmond's proposal, with the model's analysis of it; nothing is built and no
-Critic has read it.
+Edmond's proposal, second form after the first Sage and Critic reviews of
+2026-10-05; nothing is built.
 
-- **The turn.** The mutator turns its window number by exactly one, N to
-  N+1, by a release store at a poll with the gate open (never at a slot
-  free, where a frame may hold ARC-elided temporaries): at its first poll
-  after its withheld returns reach a mark (`DEATHS_MARK`, `CHUNKS_MARK`,
-  `BLOCKS_MARK`, as the recall reads them today), or after the collector
-  flags that its trace has done its reads. It turns no more until the
-  collector closes the window, unless the collector grants one more turn
-  explicitly — say, a collector that finished early and chooses a longer
-  window; each grant allows exactly one.
-- **The reading.** A member is touched when its tag is any number from the
-  window's opening to its last turn. The collector's grants bound that range
-  far below 255, so the tag byte never wraps inside one window. A tag of the
-  last number, written after the turn, refuses its set: needless, never
-  unsound.
-- **The condition.** The collector judges by the last turn, and that turn
-  must follow the trace's last read. The turn's release orders the writes
-  before it; a trace read of a count or a slot written after the turn may
-  see the new value while the tag, another location, reads old. A turn the
-  mutator makes before the trace ends leaves the attempt unjudged unless a
-  granted later turn follows the reads.
-- **What it would remove.** The ask and the bounded wait (`CHECKPOINT_WAIT`,
-  20 ms); the yielding spin, some 13 % of B's collector CPU on the ring loads
-  (`dev/BENCHMARKS.md`, 2026-10-05); the miss that sends a set the exact way.
-  The window's length is bounded by the mutator's own queue of withheld
-  returns, which in B today ends the wait as a miss instead.
-- **What stays.** The withheld returns are tied to the grant, not to the
-  number: the mutator returns them after the collector has read the tags. A
-  longer window refuses more: live sets, and sets that die inside it, for one
-  attempt. The collector keeps, per mutator, a set waiting for a turn.
+A set is judged by tags alone, with no ask and no wait: every write the trace
+could have seen carries a tag the collector is bound to see. That holds once a
+tag is stored before the data it marks, the data with a release, and the trace
+reads the data with an acquire.
+
+- **The order the form rests on.** Every write the trace reads — a count, a
+  slot, an array's storage and length, a table's internals — stores the
+  window's tag first, then the data with a release. The trace reads the data
+  with an acquire, so a value it reads implies the tag stored before it is
+  visible to the collector's later tag read. Today `refcount_store` stores the
+  count first and the tag after it, both relaxed (`refcount.rs`), and the
+  barrier tags first but relaxed (`memory/barrier.rs`); with that order a
+  mutator preempted between the two stores leaves a new count under an old
+  tag, on any machine.
+- **The turn.** The mutator turns its window N to N+1 by itself, with a
+  release, at a poll with the gate open: when its withheld returns reach a
+  mark, or at any other point it chooses. It needs no word from the
+  collector, and the collector does not wait for it.
+- **The signal.** The collector learns of the turn either by an acquire load
+  of the window or by reading a tag of N+1 with an acquire: the mutator
+  stores N+1 only after the turn, so such a tag is the turn's signal. It may
+  look as rarely as it likes, say once in 10,000 roots; reads made between the
+  turn and the look see N+1 tags and refuse their sets, which costs refusals,
+  not soundness.
+- **The judgement.** Once the collector holds the signal it stops finding new
+  candidates, reads the tags of the sets its trace finished, and judges them:
+  a member is touched when its tag is any number from the set's first window
+  to the last turn. Tags are read only after the signal: a write tagged N and
+  made before the turn becomes visible through the turn's release, and a tag
+  read before the signal could miss it.
+- **Sets not finished.** A set whose trace the turn cut short is not judged
+  and not dropped: its members, rows and partial results are kept, and the
+  collector returns to it in a later window, its touched range counted from
+  the window it started in. The range must stay below the tag byte's wrap (255
+  numbers). A set touched in every window is live and never finishes, so the
+  carrying has a cap: past a number of windows, or past a share of the
+  collector's workspace, the set is given up. The cap, and what becomes of the
+  given-up set's roots, are open (Edmond, 2026-10-05: "at some point the
+  shooting has to stop"). Keeping a set across windows needs the collector's
+  workspace to outlive a batch: the arena is rewound at each batch's close
+  today (`cycle/arena.rs`).
+- **What it removes.** The ask, the bounded wait (`CHECKPOINT_WAIT`, 20 ms),
+  the yielding spin (some 13 % of B's collector CPU on the ring loads,
+  `dev/BENCHMARKS.md`, 2026-10-05) and the miss that sends a set the exact
+  way. The collector has other work and is never held by one mutator.
+- **What it costs.** On x86 the stores and loads stay plain moves; the order
+  binds the compiler only. On AArch64 every retain, release and slot store
+  becomes `stlr` and every trace read `ldar` or `ldapr`, unmeasured: the
+  project has no ARM host (`dev/BENCHMARKS.md`, 2026-08-16). A write the
+  form misses — one location the trace reads that keeps a relaxed store — is
+  unsound with no symptom, and loom does not model the load-buffering half
+  (`cycle/token/checkpoint_model.rs`).
+- **What stays open.** How a blocking stretch ends a window without a turn
+  the mutator can make while blocked (the stretch's leave reads the ask
+  today, `cycle/token.rs`); the exit's take and a recall while sets wait
+  across windows; the number the next consent opens once a window spans
+  several turns (`the_next_window`, `refcount.rs`).
 - **Ancestry.** Bacon and Rajan's Recycler judges a concurrently found
-  garbage set across two epochs with its Σ- and Δ-tests (ECOOP 2001; from
-  memory and secondary sources, not re-read).
-- **First question for the Critic:** whether "the turn follows the trace's
-  last read" can be relaxed by storing the tag before the count or the slot
-  with a release, read by the trace with an acquire — and what that costs the
-  mutator's write path on a weakly ordered machine.
+  garbage set across epochs with its Σ- and Δ-tests (ECOOP 2001; from memory
+  and secondary sources, not re-read).
 
 ## 6. The owner's poll
 

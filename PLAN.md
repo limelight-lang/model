@@ -233,14 +233,15 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
-- [ ] S68.13 A window the mutator turns (Edmond, 2026-10-05; design
-      §5f, not reviewed): the mutator turns N to N+1 once, at a poll, when
-      its withheld returns reach a mark or the collector flags its reads
-      done; one more turn only on the collector's explicit grant; touched =
-      any number from the opening to the last turn; the collector judges by
-      a turn after its trace's last read, with no ask and no bounded wait.
-      Next: the Critic (first on the memory-order condition), the model, the
-      Critic, the Sage; nothing built before the ruling.
+- [ ] S68.13 A window the mutator turns (Edmond, 2026-10-05; design §5f,
+      second form after the first Sage and Critic): every write the trace
+      reads stores its tag first and the data with a release, the trace
+      reads with an acquire; the mutator turns N to N+1 by itself at a poll;
+      the collector takes the turn from the window or from a tag of N+1,
+      looks as rarely as it likes, judges the sets it finished and keeps the
+      rest for a later window, up to a cap. No ask, no wait, no spin.
+      Next: the Critic on the second form, then the ARM cost of the
+      release/acquire order; nothing built before the ruling.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
