@@ -67,6 +67,17 @@ reads 0 in every cell), so the gate changes no allocation, only skips sweeps
 that find nothing: 2.6–2.9 % of the mutator's CPU in both builds. The
 garbage moves within the day's spread, the ungated binaries' included.
 
+**Where the collector's time goes once the mutators outrun it**
+(`deferred-then-dead`, 10 s cells at `ac1c342`, `perf record -F 999`): no
+one hot spot. A's collector: the mark's expansion 6.3 %, the opaque-live
+test 6.0 %, the scan 4.3 %. B's: `split_and_free` 7.3 %, the expansion
+5.9 %, the opaque-live test 5.5 %, the frees' preparation 4.1 % and their
+drops 2.2 %; and some 13 % in `sched_yield` and the scheduler — the
+Δ-test's wait for the checkpoint (`delta_test::wait_for_the_checkpoint`,
+a spin then yields), collector CPU spent on its own core while the
+mutator runs to its next poll. A blocking wait would put a wake on the
+mutator's checkpoint path; not built.
+
 ## 2026-10-05 — where the ring loads' mutator time goes: the allocator's sweep of its own blocks, 34 % of it in A and 54 % in B, finds nothing
 
 **Builds.** `4a85acf`, A and B, release test binaries; `deferred-then-dead`,
