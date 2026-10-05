@@ -153,15 +153,20 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       once, C's drops into a proved S held for the owner's sum; the Sage's
       ruling, design §5a items 8–9). The taint is not built: S68.8 measures
       held garbage first (design §3).
-- [ ] S68.7 The loom model of the handshake; the debug build's tag asserts and
+- [x] S68.7 The loom model of the handshake; the debug build's tag asserts and
       the exact validation run beside the verdict. Built: the model
       (`src/cycle/token/checkpoint_model.rs`, eight cases, three defective
       orderings pinned), the exact check beside every proof the preparation
       does not leave past the cap or recalled, the count-free move's tag test,
-      the collector's count write untagged. Open (the Critic of S68.7,
-      finding 4): an assert at the end of an array's mutable view that its
-      tag is the open window — the views hand out references with no end to
-      hook, so it needs a guard over sixteen call sites; and the poll's
+      the collector's count write untagged. Not built (the Critic,
+      2026-10-05, on the S68.7 Critic's finding 4): a check of an array's
+      mutable view — a check at the view's end fires only where a consent
+      happens to land, and reads a freed array where a site frees the one
+      it views (`entity.rs`'s unpublished copy, four tests); the one that
+      holds is a thread's count of open views asserted zero at every
+      consent point, behind a view guard and 14 scope cuts, and no site
+      breaks the rule today. Not needed for the Done-when; the rule's text
+      at `as_table_mut` restated (consent points, not frees). And the poll's
       acquire load, which no loom case can defend (load buffering), stands
       on the argument at `TraceToken::reach_the_checkpoint` alone.
 - [ ] S68.9 What the first reading asks (design §5b): the blocking stretch

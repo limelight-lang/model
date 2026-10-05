@@ -142,14 +142,21 @@ pub(crate) unsafe fn as_table<'a>(a: *mut LLArray) -> (&'a Table, &'a StorageHea
 pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Hash);
     // Every write into the array's slots, its relocations included, comes
-    // through a mutable view, so the view is where the array is tagged as
+    // through a mutable view — but the arena's sever, which empties a slot
+    // of a request-arena holder, which no tag concerns
+    // (`crate::promote`'s `sever_one_edge`) — so the view is where the
+    // array is tagged as
     // the holder whose slots changed (`dev/design/recycler-over-counts.md`,
     // §2) — ahead of any `begin_move` the caller then makes. Tagged before
     // the writes, so that a checkpoint the caller reaches after them (a
     // release that runs a destructor that polls) finds the tag already
-    // stored; which makes it a rule that a view's writes precede the
-    // caller's first free, poll or consent — a consent between them would
-    // open a window the tag does not carry. Every caller keeps it.
+    // stored; which makes it a rule that no slot is written through a view
+    // after the thread reaches a consent point following the tag — an
+    // entity slot's free or a poll, where a consent would open a window the
+    // tag does not carry. A storage chunk's free is no consent point, which
+    // is what lets a vector's growth free the old chunk before the write.
+    // Every caller keeps it; a debug check of it is not built (`PLAN.md`,
+    // S68.7).
     #[cfg(feature = "recycler-over-counts")]
     unsafe {
         crate::refcount::tag_with_the_window(a as *mut RcHeader)
