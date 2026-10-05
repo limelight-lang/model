@@ -8,6 +8,30 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — the 400k-ring probe at `e1e74bc`: the owner's first poll after a proved ring takes 0.05–0.13 ms in every shape; the collector's serve is 1.6–2.1× A's
+
+**Builds.** `e1e74bc`, A and B, release test binaries;
+`what_the_split_costs::measure_one_thread_against_the_split`, one run each
+shape (`LL_PROBE_SHAPE`), the median of three rounds, ms; B at the default
+member cap (1M).
+
+| shape, 400k members | one thread, A | A: collector | A: owner's pause | one thread, B | B: collector | B: owner's first poll |
+|---|---:|---:|---:|---:|---:|---:|
+| objects (a ring) | 51.4 | 23.3 | 42.1 | 52.6 | 48.0 | 0.05 |
+| arrays (a ring of vectors) | 122.1 | 39.9 | 106.0 | 125.9 | 73.2 | 0.13 |
+| held (a clean ring over 200k destructed leaves) | 57.1 | 19.8 | 50.0 | 58.7 | 31.1 | 0.12 |
+
+At 4k and 40k members B's owner reads 0.00–0.15 ms, A's 0.36–4.71.
+**What the owner's column is.** One poll: the application of the
+collector's frees is sliced at `APPLY_STRIDE` (4,072) drops a poll
+(S68.11), so in `held` the 200k leaves that die by counting at the
+application go over some 49 polls after this one, which the probe does not
+time; the S68.8 reading's 7.0 ms for `held` holds all of them in one poll.
+In `objects` and `arrays` the ring has no drop outside C, and the column is
+the whole of the owner's part. The single-thread column is the same in both
+builds within 4 %; the collector's serve in B is the trace, the record
+scan, the Δ-test and its own frees, against A's trace alone.
+
 ## 2026-10-05 — the ring loads at `cb0faf1`: the feature costs 18–21 % of the mutator's time an operation and holds more garbage
 
 **Builds.** `cb0faf1` (S68.10's lane rule, S68.12's 1 ms minimum), A and B,
