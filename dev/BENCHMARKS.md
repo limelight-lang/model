@@ -45,6 +45,18 @@ in lanes for longer; the second refusals that read their roots live
 154–232 a cell. The application's 10.0 ms in one cell is one slice, the
 host's steal not ruled out.
 
+**Where the drain's remnant stands** (the Sage's reading, diagnostic arms at
+`8f2ffa7` with `debug-journal`, not kept; repeat 5, which left the remnant,
+run again). It reproduces: 2,176 and 1,216 bytes at the 12 s drain's end in
+two of three runs of repeat 5. No lane entry names a dead slot at the
+drain's end (0 in each run), so it is no death a lane withholds. A
+collection over R alone at the drain's end frees it all, with the lanes
+untouched: the remnant's root stood in R, where 56,803 entries stood at the
+end in that run — the lanes the drain's X released, refilled by the drain's
+own readings (146k roots read live and deferred again in the drain, 3–5 X
+turns across the two mutators). The ring waits behind them for the
+collector's rate, not for a lane.
+
 ---
 
 ## 2026-10-05 — S68.11 read by the protocol: the collector frees 99.8 % of the cyclic garbage, the owner's longest pause falls from 117–198 ms to 10–34 ms, and the garbage stays twice the default's
