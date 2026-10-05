@@ -133,25 +133,30 @@ to itself. **The touch is the build of a live request.** An arm at
 `2c97ad5` (not kept, one 60 s cell of B) that keeps, for every root a
 second refusal reads live, the closure's path back to the touched row it
 came from: 127,484 roots, every one with a path, 3–5 hops in 80 % of them,
-each hop a tree slot (slot 1 and up; slot 0, the closure's edge, in 11 %);
-the touched row at the path's head carries a count of 181–219 and the
-window's tag — a context object, which every closure of its request
-names. A second arm (not kept, one 60 s cell of B) that has the rig
+each hop a tree slot (slot 1 and up; slot 0, the closure's edge, in 9 %);
+the touched row at the path's head, in the 80 paths two such arms
+printed, carries a count of 181–577 and the window's tag — a context
+object, which every closure of its request names. A second arm (not kept, one 60 s cell of B) that has the rig
 mark each request's eight context objects live at its start and ended at
 its end, and reads the state of every touched member at the Δ-test:
 | touched sets | a live request's context touched | an ended one's only | neither |
 |---|---:|---:|---:|
 | no root re-queued before | 444 | 248 | 12 |
 | a root re-queued before | 808 | 228 | 0 |
-On 2,874 batches, 1,740 touched (61 %): 1,252 of them (72 %) hold a
-context of a request still being built — a live set the scan coloured
-potentially unreachable, and which the Δ-test refuses as it must (how the
-scan comes to colour it is not read; the likeliest way, a closure born
-after its context's count is read adding a recorded edge the count lacks,
-is an assumption);
-476 (17 % of the batches) hold an ended request's context only, the touch
-of its death. A set refused twice is one live at its first refusal: no
-garbage set is written after its death.
+The Δ-test read 3,800 sets on 2,874 batches and found 1,740 touched:
+1,252 of them (72 %) hold a context of a request still being built — a
+live set the scan coloured potentially unreachable, which the Δ-test
+refuses as it must; 476 (12.5 % of the sets read) hold an ended
+request's context only, the touch of its death. A set refused twice is
+one live at its first refusal: no garbage set is written after its death.
+**A race with the build, not a fault of the scan.** A third arm (not kept,
+one 60 s cell of B: 3,523 sets read, 1,456 touched, 994 of them with a
+live context) reads, at every Δ-test, the context object a live request's
+external reference is on wherever it stands in W: 1,015 times, every one
+in a touched set and carrying the window's tag, never in a proved one. The
+object that keeps the request live has its count written in the window
+the scan coloured it in, so the scan's colour rests on a count the build
+changed, the case the Δ-test is for.
 
 ---
 
