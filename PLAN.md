@@ -192,7 +192,8 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       36 ms, with Edmond); the stretches over standing frees read
       (2026-10-05): the waits hold 3.9k drops and the posted set 36 ms on
       the mean, 282 ms at the longest — applying what stands before a
-      stretch is not built, for the Sage.
+      stretch is not built (the Critic: P stays posted, the wait's request
+      pays the slices, the Sage's stretch applies no frees).
 - [ ] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
       fallback timer's minimum 1 ms — built and read (2026-10-05): B's
       garbage 26.5–28.7 MB against A's 24.7–28.3, every drain clear, the
@@ -204,8 +205,12 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       being built, a live set the Δ-test refuses as it must (a race with
       the build: the holder of a live request's external reference stands
       in W only tagged), and 12.5 % of the sets read are garbage touched
-      at its death, so the 10 % gate counts live sets beside garbage. Open for Edmond: the gate's
-      denominator; the
+      at its death, so the 10 % gate counts live sets beside garbage; a
+      second refusal sends 38.6k roots of ended requests to the lanes a
+      cell, 1.7 % of the roots batched. Open for Edmond: the gate's
+      denominator (the Critic: gate the dead roots read live and the
+      collector's CPU a member freed; report the refusal rate split live /
+      ended, not gate it); the
       `under_stress` ledger probe fails under the feature since before this
       step (its "R and P drained" wait at 10 ms; at 1 ms it drains and fails
       "POSTED skips + collections >= batches", which counts the default

@@ -173,6 +173,13 @@ live set the scan coloured potentially unreachable, which the Δ-test
 refuses as it must; 476 (12.5 % of the sets read) hold an ended
 request's context only, the touch of its death. A set refused twice is
 one live at its first refusal: no garbage set is written after its death.
+**What a second refusal sends to the lanes** (an arm at `31d4c18`, not
+kept, one 60 s cell of B: 2,883 batches, 2.31M roots batched): 699 sets
+refused a second time, 539 of them holding a live request's touched
+context (104,428 roots read live) and 160 an ended request's only (38,551
+roots); the roots read live again sum to the rig's 142,979. The roots of
+ended requests — garbage the second refusal reads live and the lanes then
+hold for 1, 3 or 7 X turns — are 1.7 % of the roots batched.
 **A race with the build, not a fault of the scan.** A third arm (not kept,
 one 60 s cell of B: 3,523 sets read, 1,456 touched, 994 of them with a
 live context) reads, at every Δ-test, the context object a live request's
@@ -306,14 +313,17 @@ reading counted as misses. The mutator frees 0.0–0.2M members of cyclic
 garbage against A's 52–55M, and spends 28–33 % less CPU. The garbage is
 1.6–2.3 times A's, the lanes' release at every X turn (S68.10, not built).
 A stretch entered over standing frees keeps the posted set unread through
-it, 222–279 a cell. What that holds (an arm at `03152f4`, not kept, one
-60 s cell of B, 147 such stretches of 8,965): 5 draws, 5.9k drops standing
-on the mean, 2.0 ms at the longest; 142 waits, 3.9k drops standing on the
-mean and 21k at the most, 36 ms on the mean and 282 ms at the longest,
-5.1 s in all. The waits are where a mutator's posted set and its drops
-stand longest; a stretch that applied what stands before it began would
-take them off, at the price of a slice's work per 4,072 drops ahead of the
-blocking call — not built.
+it, 222–279 a cell. What that holds (an arm at `03152f4`, the 1 ms
+minimum of S68.12, not kept, one 60 s cell of B, 147 such stretches of
+8,965): 5 draws, 5.9k drops standing on the mean, stretches of 2.0 ms at
+the longest; 142 waits, 3.9k drops standing on the mean and 21k at the
+most, stretches of 36 ms on the mean and 282 ms at the longest, 5.1 s in
+all — the stretches' lengths, not a timed `POSTED` stand. Applying what
+stands as a stretch begins is not built (the Critic, 2026-10-05): it
+leaves P posted, so the collector skips the thread as before; it puts up
+to five slices ahead of a request's mid-build wait; and the Sage ruled
+the stretch a checkpoint with no frees applied. A poll before the
+blocking call is the program's own way to the same end.
 
 **Where the remaining misses come from: the host takes the vCPU.** A
 diagnostic arm (not kept) timing each event of a build step, one 60 s cell
