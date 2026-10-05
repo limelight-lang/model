@@ -8,6 +8,65 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-05 — the sweep gated (`ac1c342`): a ring load's operation 3–5 times cheaper in both builds, `mt_bench` within its noise
+
+**The change.** `Heap::alloc_no_block` sweeps a class's owned blocks only
+when the sweep is due (`Heap::a_sweep_is_due`): at once where the last one
+found pending frees on an eighth of the blocks or more, or any on an entity
+block under a trace; else once the heap has gained an eighth of its owned
+blocks; and always before a pool refusal is answered with null. Two Critic
+rounds; the first proposal (a process-wide counter of remote arrivals) was
+dropped for this local gate.
+
+**`examples/mt_bench`** (release, 8 threads on 4 vCPUs, `before` the
+parent commit and `after`, alternated, millions of operations a second):
+
+| pattern | before, median of 8 | after, median of 8 |
+|---|---:|---:|
+| independent larson | 6.90 (3.6–7.6) | 6.45 (5.9–7.1) |
+| bleeding larson | 6.00 (4.6–8.2) | 6.60 (5.0–8.6) |
+
+Bleeding's heaps own fewer than 16 blocks a class, where the gate sweeps
+at every call; the medians move within the runs' spread.
+
+**The ring loads** (the protocol of the `cb0faf1` entry: two mutators at
+`cap-1`, 20 s, 2 s warm-up, 12 s drain, one cell each):
+
+| load | arm | ns an operation, `cb0faf1` | ns an operation, gated | mutators at the ceiling, gated |
+|---|---|---:|---:|---:|
+| `partly-overlapping` | A | 168,575 | 42,641 | 2 |
+| | B | 204,777 | 35,643 | 2 |
+| `live-churn` | A | 64,515 | 24,542 | 2 |
+| | B | 41,000 | 14,207 | 2 |
+| `deferred-then-dead` | A | 2,598 | 797 | 2 |
+| | B | 3,072 | 593 | 2 |
+| `deferred-live-large` | A | 2,579 | 825 | 2 |
+| | B | 3,098 | 603 | 2 |
+
+The mutators run 3–5 times faster an operation, B's now below A's on
+every load, and every cell reaches the rig's 1.5 GB ceiling: the
+allocator's sweep had been pacing the mutators, and
+without it they make garbage faster than either collector frees it. The
+cells' garbage and drain figures are therefore not comparable with the
+`cb0faf1` entry's; the operation's cost is.
+
+**`web-heap`**, the protocol's cell (96 s, 20 s warm-up, 12 s drain, two
+mutators at `cap-1`), the `cb0faf1` binaries against the gated ones,
+alternated, repeats 4 and 5 (after three gated cells of each arm the same
+day, which read A 29.7–32.9 MB and B 29.0–35.6):
+
+| | A `cb0faf1` | A gated | B `cb0faf1` | B gated |
+|---|---|---|---|---|
+| garbage mean, MB | 29.9 / 28.5 | 29.1 / 31.6 | 26.1 / 26.7 | 28.8 / 27.0 |
+| mutator CPU, s | 64.2 / 64.7 | 62.7 / 62.6 | 41.4 / 41.5 | 40.4 / 40.1 |
+| longest owner pause, ms | 163.9 / 175.0 | 183.4 / 172.8 | 2.8 / 2.4 | 1.6 / 1.9 |
+| garbage at the drain's end | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+
+No thread frees into another's heap on `web-heap` (`web_frees_from_another_thread`
+reads 0 in every cell), so the gate changes no allocation, only skips sweeps
+that find nothing: 2.6–2.9 % of the mutator's CPU in both builds. The
+garbage moves within the day's spread, the ungated binaries' included.
+
 ## 2026-10-05 — where the ring loads' mutator time goes: the allocator's sweep of its own blocks, 34 % of it in A and 54 % in B, finds nothing
 
 **Builds.** `4a85acf`, A and B, release test binaries; `deferred-then-dead`,
