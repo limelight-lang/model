@@ -389,7 +389,8 @@ cells, requests, A/A check, pilots and analysis script (`README.md` there).
 
 `dev/design/recycler-over-counts.md` — the collector judges and frees a
 garbage set alone by window tags in header byte 7 (Recycler over counts),
-ruled 2026-10-04 and built in S68 as an arm beside the default build.
+ruled 2026-10-04 and built in S68 as an arm beside the default build;
+§5f holds Edmond's open proposal of a window the mutator turns (S68.13).
 `dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md` — material for an article: the path
 of decisions from PHP's synchronous collector to S68, with the figures that
 moved each step; S68's run results are appended to it.

@@ -233,6 +233,43 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
+- [ ] S68.13 A window the mutator turns (Edmond, 2026-10-05; design
+      §5f, not reviewed): the mutator turns N to N+1 once, at a poll, when
+      its withheld returns reach a mark or the collector flags its reads
+      done; one more turn only on the collector's explicit grant; touched =
+      any number from the opening to the last turn; the collector judges by
+      a turn after its trace's last read, with no ask and no bounded wait.
+      Next: the Critic (first on the memory-order condition), the model, the
+      Critic, the Sage; nothing built before the ruling.
+
+**Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
+at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
+the Δ-refusal gate's denominator (the Critic: gate the dead roots read live —
+1.7 % of the roots batched — and the collector's CPU a member freed, 597 ns;
+report the refusal rate split live / ended); the array-bearing load the gate
+names, which the rig does not have and no document shapes; births at cap 4
+counted in time; the disposition wake.
+
+**Optimizations not built (2026-10-05)**, by status:
+- Deferred by Edmond at S67 ("the full walk now, better later"): the epoch
+  used to cut work — re-check only the suspects (roots read live that hit a
+  prune), one layer at a time; an epoch a region, turned round-robin; stamps
+  kept for blocks with no registration.
+- Waiting for a ruling: a blocking wait for the checkpoint in place of the
+  yielding spin (some 13 % of B's collector CPU on the ring loads; a wake on
+  the mutator's checkpoint path), or S68.13 in its place; mimalloc's delayed
+  frees for the allocator (the sweep gate of `ac1c342` stands meanwhile).
+- To be designed: a finer refusal than everything a touched member reaches
+  (72 % of the touched sets are requests still being built).
+- From `dev/RESEARCH.md` (2026-10-05, runtime proofs out of cycle
+  collection), none measured: an acyclic-class bit at allocation; a
+  "holds no collectable value" bit on containers, set by a trace and cleared
+  by the slot write; freeze with component counting for data built once a
+  worker; request regions whose entry stops a trace.
+- Not built by the Critic's advice: the debug check of an array's mutable
+  view (S68.7). Rejected: applying the standing frees before a blocking
+  stretch.
+
 ## Then: a tracing cycle collector beside the trial-deletion one
 
 Ruled by Edmond on 2026-10-04, after the research of that day

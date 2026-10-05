@@ -809,6 +809,48 @@ against `token_wait_longest_us`; then the ring loads.
 `FALLBACK_INTERVAL_MIN` and stand as they are; `under_stress`'s sleep of
 two minimums keeps its meaning.
 
+### 5f. Open: a window the mutator turns (Edmond's proposal, 2026-10-05; no Critic yet)
+
+Edmond's proposal, with the model's analysis of it; nothing is built and no
+Critic has read it.
+
+- **The turn.** The mutator turns its window number by exactly one, N to
+  N+1, by a release store at a poll with the gate open (never at a slot
+  free, where a frame may hold ARC-elided temporaries): at its first poll
+  after its withheld returns reach a mark (`DEATHS_MARK`, `CHUNKS_MARK`,
+  `BLOCKS_MARK`, as the recall reads them today), or after the collector
+  flags that its trace has done its reads. It turns no more until the
+  collector closes the window, unless the collector grants one more turn
+  explicitly — say, a collector that finished early and chooses a longer
+  window; each grant allows exactly one.
+- **The reading.** A member is touched when its tag is any number from the
+  window's opening to its last turn. The collector's grants bound that range
+  far below 255, so the tag byte never wraps inside one window. A tag of the
+  last number, written after the turn, refuses its set: needless, never
+  unsound.
+- **The condition.** The collector judges by the last turn, and that turn
+  must follow the trace's last read. The turn's release orders the writes
+  before it; a trace read of a count or a slot written after the turn may
+  see the new value while the tag, another location, reads old. A turn the
+  mutator makes before the trace ends leaves the attempt unjudged unless a
+  granted later turn follows the reads.
+- **What it would remove.** The ask and the bounded wait (`CHECKPOINT_WAIT`,
+  20 ms); the yielding spin, some 13 % of B's collector CPU on the ring loads
+  (`dev/BENCHMARKS.md`, 2026-10-05); the miss that sends a set the exact way.
+  The window's length is bounded by the mutator's own queue of withheld
+  returns, which in B today ends the wait as a miss instead.
+- **What stays.** The withheld returns are tied to the grant, not to the
+  number: the mutator returns them after the collector has read the tags. A
+  longer window refuses more: live sets, and sets that die inside it, for one
+  attempt. The collector keeps, per mutator, a set waiting for a turn.
+- **Ancestry.** Bacon and Rajan's Recycler judges a concurrently found
+  garbage set across two epochs with its Σ- and Δ-tests (ECOOP 2001; from
+  memory and secondary sources, not re-read).
+- **First question for the Critic:** whether "the turn follows the trace's
+  last read" can be relaxed by storing the tag before the count or the slot
+  with a release, read by the trace with an acquire — and what that costs the
+  mutator's write path on a weakly ordered machine.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at
