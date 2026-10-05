@@ -170,13 +170,15 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       with the loom model's cases and the posting's kind in the rig; the
       exported bracket (`ll_gc_blocking_call`) after the re-reading, on the
       Sage's condition; the cap read at 64k and 1M; then S68.8's runs again.
-- [ ] S68.10 The deferred lanes under turns by X alone (design §5c, the
+- [x] S68.10 The deferred lanes under turns by X alone (design §5c, the
       Sage's second ruling, 2026-10-05): an X turn releases every lane only
       where R stands below the soft threshold — built and read
       (2026-10-05): garbage 41–54 MB in A and 41–53 MB in B, from 74–109
       and 134–212; one drain cell of B of five left 2,176 bytes at 12 s,
       with the Sage. Then the ring loads, and the collector's pacing (K at
-      `BATCH_BOUND`, the 10 ms sleep) read before further lane work.
+      `BATCH_BOUND`, the 10 ms sleep) read before further lane work — both
+      read (2026-10-05), and at S68.12's pacing every drain of ten cells
+      clears.
 - [ ] S68.11 The sets that still fall to the owner (design §5d, the Sage
       2026-10-05): (a) the rig's draw in a blocking stretch and its build
       polling every `POLL_STRIDE` births; (b) the member cap 1M by default;
@@ -186,8 +188,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       collector frees 99.8 % of the cyclic garbage, the owner's longest
       pause 10–34 ms, every one a no-checkpoint set while the host held the
       mutator's vCPU; the Δ-test's wait at 20 ms leaves the owner no
-      collection. Open: the take-on-commit cell; the posted set held unread
-      through a stretch entered over standing frees (222–279 a cell).
+      collection. The take-on-commit cell read (S68.12: a take waits up to
+      36 ms, with Edmond); the stretches over standing frees read
+      (2026-10-05): the waits hold 3.9k drops and the posted set 36 ms on
+      the mean, 282 ms at the longest — applying what stands before a
+      stretch is not built, for the Sage.
 - [ ] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
       fallback timer's minimum 1 ms — built and read (2026-10-05): B's
       garbage 26.5–28.7 MB against A's 24.7–28.3, every drain clear, the
