@@ -57,6 +57,32 @@ own readings (146k roots read live and deferred again in the drain, 3–5 X
 turns across the two mutators). The ring waits behind them for the
 collector's rate, not for a lane.
 
+**The collector's pacing** (the Sage's item 6, read). From the five protocol
+cells above: the collector's wall 109 s, its CPU 33–36 s (31 %), 5.3k
+rounds — about 20 ms a round, of which `FALLBACK_INTERVAL_MIN` (10 ms) is
+the sleep after every round that made a batch, whatever R holds; 3.9k
+batches of 940 roots on the mean against `BATCH_BOUND`'s 1,024; R under load
+at 28–61k entries on the mean. A diagnostic arm that sleeps 1 ms after a
+batch round (`9684193` with a switch, not kept; one protocol cell each of
+repeats 1 and 5):
+
+| | A, 10 ms | A, 1 ms | B, 10 ms | B, 1 ms |
+|---|---|---|---|---|
+| garbage mean, MB | 40.2–53.5 | 28.1 / 31.5 | 40.9–53.3 | 28.4 / 27.1 |
+| garbage peak, MB | 256–360 | 151 / 184 | 255–282 | 202 / 167 |
+| garbage at the drain's end, bytes | 0 | 0 / 0 | 0, one cell 2,176 | 0 / 0 |
+| the drain's last free, s | 6.1–9.4 | 7.1 / 8.6 | 7.0–12.0 | 7.3 / 7.3 |
+| rounds | 5.4k | 17.7k / 17.6k | 5.3k | 11.9k / 11.5k |
+| roots read | 3.7–3.8M | 4.7M / 4.6M | 3.6–3.8M | 4.5M / 4.4M |
+| collector CPU, s | 33.5–34.7 | 44.1 / 44.6 | 33.4–36.0 | 41.5 / 42.4 |
+| mutator CPU, s | 60.1–62.2 | 64.2 / 67.2 | 40.7–42.9 | 40.8 / 42.8 |
+| arrival p99.9, ms | 235–436 | 436 / 402 | 168–302 | 201 / 234 |
+
+The service rate is the sleep's, not the CPU's: at 1 ms both builds hold a
+third less garbage and the drain clears by 7.3–8.6 s, repeat 5 included,
+for 25–30 % more collector CPU. A's mutator pays its owner's collections
+the more often.
+
 ---
 
 ## 2026-10-05 — S68.11 read by the protocol: the collector frees 99.8 % of the cyclic garbage, the owner's longest pause falls from 117–198 ms to 10–34 ms, and the garbage stays twice the default's
