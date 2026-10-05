@@ -1408,6 +1408,7 @@ thread_local! {
 }
 
 /// Note the kind of set the collection over P that is running read.
+#[cfg(feature = "recycler-over-counts")]
 pub(crate) fn note_the_set_kind(kind: usize) {
     PENDING_KIND.with(|pending| pending.set(kind.min(SET_KINDS)));
 }
@@ -2395,6 +2396,7 @@ pub(crate) fn enter_the_rig_section(section: RigSection) {
 }
 
 /// The section `mutator` stands in, as its own thread last named it.
+#[cfg(feature = "recycler-over-counts")]
 fn section_of(mutator: &MutatorRecord) -> usize {
     let mutator = std::ptr::from_ref(mutator) as usize;
     (0..SECTION_SLOTS)
@@ -2407,6 +2409,7 @@ fn section_of(mutator: &MutatorRecord) -> usize {
 /// Count a checkpoint `mutator` missed against the section it stood in when
 /// the wait ended: by the bound, or by its recall at the stop level, which
 /// the withheld returns of its frees raise and no poll would have answered.
+#[cfg(feature = "recycler-over-counts")]
 pub(crate) fn note_a_checkpoint_missed(mutator: &MutatorRecord, recalled: bool) {
     let by = if recalled {
         &RECALLED_BY_SECTION
@@ -2418,6 +2421,7 @@ pub(crate) fn note_a_checkpoint_missed(mutator: &MutatorRecord, recalled: bool) 
 
 /// Count an ask a stretch of `mutator`'s answered at once against the
 /// section it stood in.
+#[cfg(feature = "recycler-over-counts")]
 pub(crate) fn note_an_ask_a_stretch_answered(mutator: &MutatorRecord) {
     ANSWERED_BY_SECTION[section_of(mutator)].fetch_add(1, Ordering::Relaxed);
 }

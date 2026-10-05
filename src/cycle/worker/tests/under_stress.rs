@@ -383,6 +383,7 @@ fn a_mutator_freeing_at_full_rate_under_continuous_requests_balances_its_ledger(
     );
     let _ = testing::take_outcomes();
     let collections_before = crate::gc::verdict_collections_on_this_thread();
+    let disposals_before = crate::gc::disposals_on_this_thread();
     let consents_at_start = token.consents();
     let blocks_out_before = blocks_out_with_the_queue_released();
     let rings_before = rings;
@@ -439,13 +440,15 @@ fn a_mutator_freeing_at_full_rate_under_continuous_requests_balances_its_ledger(
     let outcomes = testing::take_outcomes();
     testing::retire();
     let collections = crate::gc::verdict_collections_on_this_thread() - collections_before;
+    let disposals = crate::gc::disposals_on_this_thread() - disposals_before;
     let consents = token.consents() - consents_at_start;
     let refusals = token.refusals() - refusals_before;
 
     println!(
         "stress churn: {iterations} iterations of {RING} registered and {SLOTS} freed in {churned:?} \
          ({:.1} µs per iteration); collector {outcomes:?}; mutator consents {consents} \
-         (of {} since the record's birth), refusals {refusals}, collections over P {collections}; \
+         (of {} since the record's birth), refusals {refusals}, collections over P {collections}, \
+         dispositions of P with no trace {disposals}; \
          blocks out {blocks_out_before} before, {blocks_out_after} after",
         churned.as_secs_f64() * 1e6 / iterations as f64,
         token.consents() - consents_before,
@@ -462,9 +465,18 @@ fn a_mutator_freeing_at_full_rate_under_continuous_requests_balances_its_ledger(
         "refusals: the mutator made {refusals}, the collector read {}",
         outcomes.refusals
     );
+    // Every batch is read by the owner, or found still posted by a later
+    // round. Under `recycler-over-counts` the collector frees what it proved
+    // itself, and the owner reads most of its batches with no collection: a
+    // disposition of P with no trace window.
+    #[cfg(not(feature = "recycler-over-counts"))]
+    let answered = collections;
+    #[cfg(feature = "recycler-over-counts")]
+    let answered = collections + disposals;
     assert!(
-        outcomes.posted + collections >= outcomes.batches,
-        "POSTED skips {} + collections {collections} >= batches {}",
+        outcomes.posted + answered >= outcomes.batches,
+        "POSTED skips {} + collections {collections} (+ dispositions with no trace \
+         {disposals} under the feature) >= batches {}",
         outcomes.posted,
         outcomes.batches
     );

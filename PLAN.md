@@ -215,11 +215,13 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       cell, 1.7 % of the roots batched. Open for Edmond: the gate's
       denominator (the Critic: gate the dead roots read live and the
       collector's CPU a member freed; report the refusal rate split live /
-      ended, not gate it); the
-      `under_stress` ledger probe fails under the feature since before this
-      step (its "R and P drained" wait at 10 ms; at 1 ms it drains and fails
-      "POSTED skips + collections >= batches", which counts the default
-      build's collections over P).
+      ended, not gate it; the collector's CPU a member freed read: 597 ns
+      against S68.11's 515). The `under_stress` ledger probe: its ledger
+      counted the default build's collections over P alone, and under the
+      feature the owner reads its batches by a disposition with no trace —
+      the dispositions counted beside the collections under the feature
+      (a test that pins a replaced mechanism, Edmond's rule of
+      2026-09-30), green in both builds.
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9; the probe read again 2026-10-05 at `e1e74bc`, the owner's first poll 0.05–0.13 ms in every shape): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the

@@ -180,6 +180,15 @@ context (104,428 roots read live) and 160 an ended request's only (38,551
 roots); the roots read live again sum to the rig's 142,979. The roots of
 ended requests — garbage the second refusal reads live and the lanes then
 hold for 1, 3 or 7 X turns — are 1.7 % of the roots batched.
+**The collector's CPU a member freed** (the Critic's second figure, read
+from the protocol cells already run, five of B each): S68.11 at the 10 ms
+minimum, 33.4–36.0 s of collector CPU over 67.3–69.5M members the
+collector freed, 496–525 ns a member, on 3,822–3,994 batches; S68.12 at
+1 ms, 39.7–41.7 s over the same 67.3–69.5M, 588–617 ns a member, on
+5,721–5,919 batches. The faster pace costs the collector 16 % more a
+member on the mean of five (597 ns against 515), for the batches it adds,
+and holds 26.5–28.7 MB of garbage against 40.9–53.3. (A's collector, which
+frees nothing, spends 42.4–43.1 s beside the owner's 52.5–55.6M.)
 **A race with the build, not a fault of the scan.** A third arm (not kept,
 one 60 s cell of B: 3,523 sets read, 1,456 touched, 994 of them with a
 live context) reads, at every Δ-test, the context object a live request's
