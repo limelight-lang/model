@@ -50,7 +50,35 @@ refusals no higher than S68.12's fails**: 5,617–6,655 touched sets on
 by 23 % and the batches by 70 %. **Collector CPU lower than S68.12's
 fails**: 70.2–75.1 s against 58.1–59.8. The proved sets are the same
 (3,909–4,047 against 3,754–3,904): the extra batches are the refused sets
-batched again. Why the offer refuses more is not read yet.
+batched again.
+
+**Why the offer refuses more** (diagnostic arms of B at `7e1a449`, not kept,
+one 60 s cell each against a cell of C run beside them; C read 1,211–1,527
+touched sets, 29.9–31.6 s of collector CPU in its four such cells). B offers
+R at the first poll it holds `SOFT_THRESHOLD` (64) entries, where C's
+collector served it at its paced rounds: B's batches are smaller and more
+of them, and nearly every batch takes the candidates of a request still
+being built. The offer's threshold decides it:
+
+| B's arm | batches | touched sets | collector CPU, s | garbage mean, MB |
+|---|---:|---:|---:|---:|
+| as built (64) | 4,299 | 3,265 | 36.3 | 33.6 |
+| a merged lane no reason to offer | 4,391 | 3,341 | 36.7 | 29.2 |
+| windows wrapping at 15, not 255 | 4,336 | 3,430 | 36.7 | 30.0 |
+| no offer while the collector serves a batch | 3,965 | 2,882 | 35.4 | 28.4 |
+| no lane released at an X turn | 4,192 | 3,049 | 37.3 | 29.3 |
+| threshold 512 | 2,976 | 2,029 | 35.3 | 27.2 |
+| threshold 768 | 2,604 | 1,792 | 32.9 | 24.3 |
+| threshold 1,024 (`BATCH_BOUND`), three cells | 2,336–2,390 | 1,358–1,551 | 31.9–34.3 | 20.5–21.8 |
+
+At a threshold of a whole batch the touched sets are C's, the garbage a
+quarter under C's, and the collector's CPU 7–10 % over C's: the same
+touch refuses a larger batch, so 52 % more unwalked roots go back into R
+(530k against 349k in a `debug-journal` cell pair) and are batched again.
+Two of the three cells at 1,024 left 0.9 MB of garbage at the drain's end
+(one of them the `debug-journal` build); C's `debug-journal` cell left
+0.6 MB, its plain cells none.
+
 
 ## 2026-10-05 — the sweep gated (`ac1c342`): a ring load's operation 3–5 times cheaper in both builds, `mt_bench` within its noise
 
