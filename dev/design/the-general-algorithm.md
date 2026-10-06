@@ -329,3 +329,22 @@ safely across threads, and only then frees. The race to think through:
 retains a freed entity, and a kill after the retain leaves a live entity
 whose weak references read null. `get()` and the kill must agree, by the
 window's tag or a CAS on `get()`'s side. To the Critic, then the Sage.
+
+## Edmond's answer to Q4, and Q5–Q8 settled by Claude (2026-10-06)
+
+- **Q4, P10** (Edmond: «конечно убираем лишние проверки»): the owner's
+  counts'-sum confirm goes for a proved set with no weak references; its
+  destructors run at once. The revalidation after destructors stays
+  (Edmond: «это верно»). Weakly held sets wait on the open item above.
+- Edmond asked not to be asked what follows from his principles and the
+  Sage's advice; Q5–Q8 are settled by Claude on the Sage's recommendation,
+  each open to his overturning:
+  - **Q5, P2:** the mutator's memory withheld during a large batch is
+    bounded in bytes, measured, not the marks scaled by 16.
+  - **Q6, P8:** the lanes keep the epoch as their clock, the epoch turning
+    on this thread's taken batches with X as a floor; the caught-up rule is
+    decoupled from the offer threshold first.
+  - **Q7, P7:** cap 1 stands; a take while one commits is measured before a
+    second collector is considered.
+  - **Q8, P4:** measured both ways by callgrind, the mutator's instructions
+    in all and those the collection costs it, against A.
