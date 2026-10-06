@@ -450,3 +450,83 @@ goes into §7 as the compiler's obligation, citing the check.
   gate's columns, and the fallback (the owner reads the tags of C's weakly
   held members, kills and commits) is built once a load with weak
   references shows such sets.
+
+## Wave 2: the algorithm polished (Claude's draft, 2026-10-06)
+
+The algorithm of wave 1 with every answer and settlement above folded in;
+the Critic attacks this draft, the Sage judges it, and only a real fork goes
+to Edmond. `recycler-over-counts.md` §1, §2.1, §4.7, §5.9, §6.15, §7.16, §8
+and §9 are rewritten to it in the same commit.
+
+**The mutator.**
+- A −1 that leaves a count above zero puts the entity into R once (the
+  buffered bit). An entity read live again waits out the lanes 1/3/7 before
+  it returns to R (P8). The lanes' clock is the epoch, turning on this
+  thread's taken batches with X as a floor; the caught-up rule is
+  decoupled from the offer threshold (Q6, settled on the Sage's advice).
+- Every count store, the −1 included, writes F into the entity's byte 7,
+  then the count with a release; every slot store the trace reads tags its
+  holder, then the slot with a release (P6). The untagged −1 is deferred
+  (Q9) with its two conditions written down.
+- At its own poll, with the gate open and the token `FREE`, when R reaches
+  the threshold, or has stood below it for the standing interval, or a lane
+  merged into it, the mutator offers: one CAS `FREE` → `OFFERED` carrying
+  R's ceiling, then the window turned F−1 → F. Only this turns the window
+  (P1); the offer is the clear delta, the frame the collector judges
+  against (Q1, P3). The threshold is 64 today; 1k, 4k and 16k are measured
+  once the workspace takes them, the memory withheld meanwhile bounded in
+  bytes (Q5, P2).
+- It never waits for the take (P7): it runs on and withholds returns of
+  memory under `OFFERED` and `COLLECTOR`; a mark reached under `OFFERED`
+  withdraws the offer by CAS, without waiting.
+- At a later poll it applies the collector's drops and runs the
+  destructors of a proved S at once, without judging it again; the
+  revalidation after destructors stays (Q4, P10). A weakly held S goes the
+  way it goes today until a load shows such sets (weak references, settled
+  on the Sage's advice).
+
+**The collector.**
+- It takes an offer by CAS `OFFERED` → `COLLECTOR` with an acquire, then
+  reads F and the ceiling; it never asks and never waits for the mutator.
+- It traces the first K roots under the ceiling over its shadow rows and
+  records every edge it subtracts. It reads no tag during the trace: the
+  prune at F waits for the measured share of expansions it would save (Q2).
+- After the trace: one acquire fence, then one tag byte a member of W. U is
+  every member tagged F and everything it reaches over the recorded edges;
+  U waits for the next window, W − U is garbage, judged once (Q3, P9).
+  Stale tags (neither 0 nor F) on members are cleared by CAS; nothing else
+  in the heap is cleared.
+- Of W − U, S (reached from a destructor or a weak reference, closed under
+  successors) goes to the owner as proved; C is freed by the collector.
+  It releases the token.
+
+**Where the mutator alone does not decide (P1), and where a side waits
+(P7).** Read from `cycle/offer.rs` and `cycle/token.rs` on 2026-10-06 and
+the audits of the same day, not run.
+
+| case | what happens | proposal |
+|---|---|---|
+| no collector stands, the elder's birth refused | no offer (`offer.rs`, `a_taker_stands`) | stays: an offer no one can take withholds every return for nothing |
+| the token not `FREE` (the last batch posted, its drops not yet applied) | no offer until the owner's poll applies them: one batch a mutator at a time | stays; measured: the time from post to apply, and R's length at each offer |
+| an offer withdrawn at a mark | no new offer until a collector's round begins (`WITHDRAWN_AT_ROUND`) | stays: else an untakeable offer is made and withdrawn at every poll |
+| the standing interval | read on the collector's round clock, so the poll reads no clock | stays: a ring stands at most one fallback interval late |
+| cap 0 | the elder turns `OFFERED` into `ASKED` (`token.rs`) | stays: cap 0 is the switch that hands collection back to the owner |
+| the gate closed, the slot-free path | no offer | stays: references there may be uncounted (§7.16) |
+| a thread that never polls | offers nothing, its R is never collected | an edge case; an offer before a blocking call is a new export, left for the per-function wave |
+| a slow path takes the token under `COLLECTOR` (pressure collection, exit, explicit fire, the teardown pass, compaction, the record reset) | it recalls at the stop level and waits for the collector to stop, up to a whole commit (`take_recalling`) | an edge case by ruling (the commit is one act); measured: how often and how long, per load, before a second collector is weighed (Q7) |
+| a mark reached under `OFFERED` | the offer is withdrawn, no wait | none needed |
+| the collector | waits for no mutator: the take is one CAS, there is no handshake after it | none needed |
+
+**Polished reading of the principles.** P1: the mutator alone turns the
+window and makes the offer; the cases above can keep it from offering,
+never make it offer. P7: neither side waits in the steady state; the one
+wait is a slow path's take during a commit, an edge case to be counted.
+P9: one judgement for W − U; U waits one window; the epoch stays as the
+lanes' clock, not the judgement's.
+
+**What the measurements before code are** (the Sage's order): the share of
+the trace's expansions at F; corpses and read-live per batch against the
+oldest root's age; windows a second and coincidence refusals; the owner's
+time by posting kind; withdrawals at a mark; slow-path takes during a
+commit; `tag_sets_weakly_held`; callgrind counts of `ll_retain` and
+`ll_release`, all of the mutator's and the collection's share, against A.
