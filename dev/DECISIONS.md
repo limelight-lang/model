@@ -11,7 +11,7 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ## 2026-10-06 — the general algorithm accepted after two waves
 
-**Decided (Edmond, 2026-10-06: «да алгоритм выглядит хорошо, если ты в нём
+**Decided (Edmond, 2026-10-06 18:35: «да алгоритм выглядит хорошо, если ты в нём
 ничего такого не нашёл...»).** The general algorithm of
 `dev/design/the-general-algorithm.md`, as polished in wave 2 ("Wave 2: the
 algorithm polished") after its Critic and the Sage, with
