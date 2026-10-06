@@ -44,7 +44,14 @@ gate's 5 ms passed; an application splices every chain of the frees standing
 and its drops cascade by count, both unbounded by the stride, and which of
 them took the 45 ms is not read: eleven more cells of B4 (six of 60 s, five
 of 96 s) timing each application past 5 ms with the thread's CPU beside its
-wall read none past 4.4 ms. An intermediate build (R offered once it
+wall read none past 4.4 ms. **Unwalked roots deferred, not written back**
+(a diagnostic arm of B4, not kept, two 60 s cells against two of B4 beside
+them): the roots a refused set leaves unwalked go to a lane, as a root read
+live does, instead of back into R. Touched sets 1,119–1,156 against
+1,447–1,514, proved 2,140–2,142 against 1,853–1,864, but the collector's
+CPU 33.6–34.5 s against 33.1–33.6, the garbage 29.3–36.4 MB against
+21.6–24.5, and 1.3–4.9 KB left at the drain's end: no CPU won. An
+intermediate build (R offered once it
 stood still across any round's start, no backlog change; five cells) read
 touched 13 % and collector CPU 10 % over C, and one application of 18.6 ms.
 
