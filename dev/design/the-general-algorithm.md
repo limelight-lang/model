@@ -445,3 +445,8 @@ goes into §7 as the compiler's obligation, citing the check.
   the Sage's advice, open to Edmond's overturning: it turns on this
   thread's taken batches with X as a floor, and the caught-up rule is
   decoupled from the offer threshold first.
+- **Weak references** (Edmond: «решай это сам»): settled by Claude on the
+  Sage's advice: nothing is built now; `tag_sets_weakly_held` joins the
+  gate's columns, and the fallback (the owner reads the tags of C's weakly
+  held members, kills and commits) is built once a load with weak
+  references shows such sets.
