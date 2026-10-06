@@ -421,3 +421,14 @@ protocol only if the owner's commit then shows as a material pause; make
 gate, the order (kill, then free, no user code between) and the need for a
 CAS; the CAS sits on `get()`'s side, and what is killed is the target's
 tag, not the cell. For Edmond to rule.
+
+### Edmond on the compiler's order of retain and release (2026-10-06)
+
+Edmond (verbatim): «компилятор делает не совсем так. когда он видит unset он
+понимает, что $c нужно увеличить на +1. и он сперва увеличивает $c, а потом
+уже убирает ссылку.» The compiler retains a reference read out of an entity
+before it releases the reference it was read through, which is obligation
+16b of the untagged −1 (the Sage). It is kept by the compiler today; it
+goes into §7 as a stated obligation when the untagged −1 is built, so that
+no later optimisation sinks a retain below a release. The untagged −1's
+remaining condition is the holder's tag in `write_through`.
