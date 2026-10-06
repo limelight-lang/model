@@ -160,3 +160,80 @@ both next, and nothing here is accepted before Edmond rules.
 Sound as stated, by the Critic: P1 (but the thread that never polls), P6 as
 a goal, P8's first half, P10's first clause, the judgement's fence and tag
 read, and the prune's soundness for frees.
+
+## Wave 1: the Sage's judgement (2026-10-06)
+
+The Sage (Fable) read the page, the Critic's findings and Claude's answers
+against the design and the code, running nothing.
+
+**Conclusion.** The amended algorithm is sound for what the collector frees,
+but not yet live in the sense P8 asks; nine of the eleven findings are
+right and Claude's answers hold; two the Sage answers differently.
+
+- **Finding 1, answered differently.** The window advances at every offer
+  (`the_next_window`), so a member pruned in F carries a stale F in F+1, is
+  expanded and cleared; the repeat is the 1/255 coincidence, not forever.
+  The no-prune bit buys nothing; the existing second-chance bit is the
+  liveness rule: pruned once, posted unwalked; pruned twice, read live.
+- **Finding 2, answered differently.** A member pruned at F leaves its
+  out-edges unsubtracted and unrecorded, so a ring's root reads live with
+  nothing in the record tying it to the prune; telling it apart needs the
+  taint over the raises the design rejected (§5a item 5). Today the same
+  ring is refused as U and requeued once; with the prune it waits a lane.
+  The prune at F is worse for held garbage than the built U split; its only
+  gain, trace work, is unmeasured.
+- **Finding 4.** The owner's tag read in place of the sum is sound and
+  stronger: a weak upgrade is a count store and tags; the window cannot turn
+  while P stands. For an S that is not weakly held the confirm is redundant,
+  so P10's first clause can hold literally there.
+- **Finding 5.** Scaling the marks with the batch is a trade of P2 against
+  P7 to be priced in bytes; a longer trace is a longer window, so the
+  refusals grow with the batch as well.
+- **Finding 6.** A third reading of "a clear delta": the Recycler's
+  deferral, roots old enough that the transient ones died by counting. The
+  record scan's read-live count is 2.5 times the heap scan's, unexplained.
+- **Finding 9, answered differently.** Not a third clock: the epoch turns on
+  this thread's taken batches, with X as the floor; the caught-up rule is
+  decoupled from the offer threshold first.
+- **Finding 10.** `ll_gc_blocking_call` exists in no source file; an offer
+  before a blocking call is a new export. The commit-length wait is one act
+  by ruling; its only lever is a second collector.
+- **Finding 11.** The gain is the owner's collections leaving the mutator;
+  callgrind gives instruction counts where the rig has no PMU.
+
+**Ranked open problems.** P5's prune regresses liveness against the second
+chance; `write_through` is the one untagged slot store, closed only by its
+tagged count stores; eight-bit windows turn with the offer rate; the offer
+is gated by the collector and the drops backlog, so P1's letter needs its
+edge cases listed; a lost wake under `OFFERED` can withdraw at a mark round
+after round; the owner's second stage stays for S.
+
+**Questions for Edmond** (the Sage's recommendation in brackets).
+1. P3's "clear delta": the offer, a wait after it, or roots older than an
+   age? (the offer now; measure the age)
+2. P5's prune at F: measure its share of the trace's expansions first,
+   build it with a side bitmap, or drop it? (measure first)
+3. P9: refuse W whole or U only? (U)
+4. P10: the owner reads one tag a member before destructors, in place of
+   the sum? (yes)
+5. P2: the mutator's memory withheld during a 16k batch: marks times 16, or
+   a byte bound? (a byte bound, measured)
+6. P8's clock: the epoch re-based on taken batches, or a clock on offers?
+   (the epoch)
+7. P7: a second collector to take while one commits, or cap 1 stands?
+   (measure first; cap 1 stands)
+8. P4's form: "GC-attributable mutator instructions several times under
+   A's", by callgrind? (yes)
+9. The untagged −1 not reaching zero: an arm after P6's cheaper wins, or
+   not? (after: it saves two instructions where the TLS read and the frame
+   cost nine)
+
+**Order of the waves.** Polish: §1, §2.1, §4.7 rewritten to the offer, an
+edge-case table for P1 and P7. Measure before code: the share of
+expansions at F, corpses and read-live per batch against the oldest root's
+age, windows a second and coincidence refusals, owner time by posting kind,
+withdrawals at a mark, callgrind counts of `ll_retain` and `ll_release`.
+Then code: P6 (the window beside the heap's fast TLS, the frame removed);
+P2's prerequisites (workspace and P for 16k, marks in bytes, then 1k, 4k,
+16k); P8–P10 (epoch re-based, the sum replaced by the tag read); P5 only if
+its measured share is material. Per-function analysis last.
