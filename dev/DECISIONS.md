@@ -9,6 +9,22 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-06 — the general algorithm accepted after two waves
+
+**Decided (Edmond, 2026-10-06: «да алгоритм выглядит хорошо, если ты в нём
+ничего такого не нашёл...»).** The general algorithm of
+`dev/design/the-general-algorithm.md`, as polished in wave 2 ("Wave 2: the
+algorithm polished") after its Critic and the Sage, with
+`recycler-over-counts.md` §1–§9 rewritten to the offer, is accepted. Nothing
+was found that breaks it; open, and named on the page: `write_through`'s
+untagged slot store (a condition of the deferred untagged −1 only), the
+liveness defect of the second chance spent on a cut trace (for the code
+wave), the edge cases of P1 and P7 to be measured. Settled by Claude on the
+Sage's advice, open to his overturning: a second refusal sends U to the
+lanes (P8); the epoch keeps one clock with the stamps, taken batches a
+second trigger; 16b written into §7, in force only with the untagged −1.
+Next, wave 3: the measurements before code, then code from P6.
+
 ## 2026-10-06 — S68.13 back to the accepted §5f: the offer's threshold, the still rule and the gate's change reverted
 
 **Decided (Edmond, 2026-10-06: «я хочу вернуть курс взад. да.»).** Claude

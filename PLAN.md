@@ -271,6 +271,29 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       by it on 2026-10-06. The request machinery stays in the default
       build's protocol.
 
+- [ ] S68.14 Wave 3 of the rework (Edmond, 2026-10-06: the general algorithm
+      accepted, `dev/design/the-general-algorithm.md`): measurements before
+      code, then code. Measure on `web-heap` in A and B, cap 1: the share
+      of the trace's expansions at F; corpses and read-live a batch against
+      the oldest root's age; windows a second and coincidence refusals;
+      first and second refusals a batch (`split_counts`); the owner's time
+      by posting kind; withdrawals at a mark; slow-path takes during a
+      commit, how often and how long; polls held back by drop slices; the
+      time from post to apply and R's length at each offer; bytes withheld
+      a batch and the offer-to-take latency; `tag_sets_weakly_held`; why
+      the record scan reads 2.5 times the heap scan's read-live; callgrind
+      counts of `ll_retain` and `ll_release` and the mutator's instructions,
+      all and the collection's share, against A. Then code, each piece
+      through the Critic and the Sage: P6 (the window beside the heap's fast
+      TLS, the frame removed); the second chance marked only on the split's
+      `Unwalked`; P2's prerequisites (workspace and P for 16k, marks in
+      bytes, then 1k, 4k, 16k); P8–P10 (the epoch's second trigger, the
+      sum replaced for an S with no weak references); P5 only if its
+      measured share is material. S68.13's failed gate stays open for
+      Edmond.
+      Done when: every measurement above read in `dev/BENCHMARKS.md`, and
+      each code piece green in both builds with its own gate.
+
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
 the Δ-refusal gate's denominator (the Critic: gate the dead roots read live —
