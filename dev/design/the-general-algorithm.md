@@ -351,3 +351,52 @@ window's tag or a CAS on `get()`'s side. To the Critic, then the Sage.
     second collector is considered.
   - **Q8, P4:** measured both ways by callgrind, the mutator's instructions
     in all and those the collection costs it, against A.
+
+### The Critic on killing weak references, and Claude's answers (2026-10-06)
+
+The Critic (opus) read `weak.rs`, `weak/table.rs`, the split, the commit
+and the finalization, running nothing.
+
+1. **`get()` loads the target, then retains it: no collector-side CAS or
+   fence closes the gap.** The mutator loads X; the collector nulls the
+   cell, fences, reads X's tag 0 and frees X; the mutator's retain writes
+   into the freed slot and `get()` returns it. *Accept:* the check must sit
+   on the mutator's side, after it publishes a claim.
+2. **The kill defeats itself wherever it is placed.** Before the Δ-test a
+   live member's weak reference reads null for good; after it, an upgrade
+   in between is missed; killing member by member and undoing a partial
+   kill lets `get()` return null and later the object. *Accept:* the
+   condemnation is revocable while pending and final for the whole set at
+   one point.
+3. **The collector cannot reach the cell, and nulling it strands the
+   owner's table row.** The weak table is the owner's thread-local, moved
+   in place by its removals and freed at growth; a row left for a slot
+   reused by X′ hands `WeakReference::create($x2)` a dead cell. *Accept:*
+   the collector condemns the target, never the cell; the owner removes
+   the rows and nulls the cells.
+4. **The owner's flag write on a weakly held member races the commit's
+   `DEAD_IN_PLACE`** (two-byte load and store against the same bytes; a
+   double free suspected, not shown). *Accept:* `weakref_die` makes the
+   same claim and writes no flags on a dead target.
+5. **`WeakMap` has nothing to CAS**: its entries live in the map's storage,
+   the owner's. *Accept:* purged by the owner before the splice when
+   `WeakMap` is built.
+
+**The Critic's protocol.** Two reserved tag values, DYING and DEAD (windows
+wrap at 253). The collector: a verdict word set pending; each weakly held
+member of C CAS 0 → DYING (any other value is an upgrade since the test:
+abort); one CAS pending → committed for the whole set; then DEAD and the
+commit, and a list of killed targets posted with the chains. `get()` and
+`weakref_die` claim by a CAS on the tag byte before the retain: DEAD reads
+null, DYING vetoes a pending verdict or reads null after a committed one.
+Cost: a byte load and a `lock cmpxchg` a `get()` (about 20 cycles,
+unmeasured); the owner removes the rows and nulls the cells before it
+splices the chains. **A cheaper fallback, no change to `get()`:** the owner
+reads the tags of C's weakly held members at its poll (the window cannot
+turn while P stands); none F, it nulls the cells and commits C itself.
+
+**Claude's answer.** Both hold as the Critic argues them; the fallback is
+the smaller step, the protocol the one that keeps the commit on the
+collector. Measured first: `web-heap` produced no weakly held set in six
+cells (`tag_sets_weakly_held` 0, 2026-10-06), so neither is built before a
+load with weak references shows the share. To the Sage, then Edmond.
