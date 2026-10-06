@@ -315,3 +315,17 @@ Q1–Q3 literally, reading the code, running nothing.
 **Sound as stated:** none of R1–R3 word for word. Sound as the build reads
 them: the equality test with F, the CAS clear on members only, the fence
 then the tag pass, the U split and the S closure.
+
+## Open: the collector kills the weak references itself (Edmond, 2026-10-06)
+
+Edmond (verbatim): «коллектор может узнать есть ли на объект слабые ссылки.
+и если они есть... такой же флаг должен быть кажется у объекта да? короче
+если есть он сперва должен убить слабую ссылку через CAS + безопасная
+операция между потоками и только потом собрать мусор - это надо
+продумать!» The collector reads `HAS_WEAK_REFERENCES` (it does at the
+Δ-test); where a member has weak references it first kills them by a CAS,
+safely across threads, and only then frees. The race to think through:
+`$weak->get()` reads the target and then retains it; a kill between the two
+retains a freed entity, and a kill after the retain leaves a live entity
+whose weak references read null. `get()` and the kill must agree, by the
+window's tag or a CAS on `get()`'s side. To the Critic, then the Sage.
