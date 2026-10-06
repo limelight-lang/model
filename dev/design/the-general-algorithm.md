@@ -400,3 +400,24 @@ the smaller step, the protocol the one that keeps the commit on the
 collector. Measured first: `web-heap` produced no weakly held set in six
 cells (`tag_sets_weakly_held` 0, 2026-10-06), so neither is built before a
 load with weak references shows the share. To the Sage, then Edmond.
+
+### The Sage on killing weak references (2026-10-06)
+
+The Sage (Fable), reading the code, running nothing: the Critic's five
+findings are right, finding 1 the decisive one. The DYING/DEAD protocol is
+sound with four amendments (the verdict has three states, pending, vetoed,
+committed; it is read with an acquire after the DYING read; the abort's
+undo cannot be stopped, or the verdict gains a "none" state; the kill list
+goes ahead of the chains' splice on every apply path), and rests on one
+premise to write into the design: every cell write, slot return and window
+turn is the owner's. Its price is a `lock cmpxchg` on every `get()` of
+every program and five new cross-thread invariants. The fallback (the owner
+reads one tag a weakly held member of C, kills and commits C itself) is
+sound and the smaller step. **Recommended:** build neither now (`web-heap`
+and S68.5 read no weakly held set; the build handles one correctly as S);
+build the fallback when a load with weak references shows such sets, the
+protocol only if the owner's commit then shows as a material pause; make
+`tag_sets_weakly_held` a gate column. Edmond's wording is right about the
+gate, the order (kill, then free, no user code between) and the need for a
+CAS; the CAS sits on `get()`'s side, and what is killed is the target's
+tag, not the cell. For Edmond to rule.
