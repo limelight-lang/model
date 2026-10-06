@@ -1114,38 +1114,10 @@ fn reclaims(index: usize, record: &MutatorRecord) -> bool {
     false
 }
 
-/// The threshold a mutator offers R at: a whole batch, [`BATCH_BOUND`], or a
-/// case's. An offer at the rounds' [`SOFT_THRESHOLD`] comes at nearly every
-/// poll that follows a batch, and nearly every such batch takes the
-/// candidates of a request still being built and is refused: on `web-heap`
-/// 3,265 touched sets a 60 s cell against 1,358–1,551 at a whole batch
-/// (`dev/BENCHMARKS.md`, "S68.13 read by the protocol"). A ring below it
-/// goes once nothing was written into it for a while, or at the standing
-/// interval (`crate::cycle::offer`). The crate's cases offer at the rounds'
-/// threshold, as their rings are built for it, but for the rig's cells,
-/// which offer as the crate ships ([`testing::OffersAsShipped`]).
+/// The threshold a mutator offers R at: the rounds' own.
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) fn threshold_for_offers() -> usize {
-    #[cfg(test)]
-    if !testing::offers_as_shipped() {
-        return threshold_for_rounds();
-    }
-
-    BATCH_BOUND
-}
-
-/// The count of R past a batch that reads as a backlog: a whole offer's
-/// under the feature, or the batch's `threshold` in a case that does not
-/// offer as the crate ships.
-#[cfg(feature = "recycler-over-counts")]
-fn backlog_threshold(threshold: usize) -> usize {
-    #[cfg(test)]
-    if !testing::offers_as_shipped() {
-        return threshold;
-    }
-
-    let _ = threshold;
-    BATCH_BOUND
+    threshold_for_rounds()
 }
 
 /// The threshold the rounds serve at: the module's own, or a case's.
@@ -2534,11 +2506,6 @@ unsafe fn batch(
     #[cfg(test)]
     testing::between_the_post_and_the_advance();
     drop(posts);
-    // Under the feature R is offered at its own threshold, and a backlog is
-    // R that a whole offer would take again.
-    #[cfg(feature = "recycler-over-counts")]
-    let backlog = reader.has_at_least_by_count(backlog_threshold(threshold));
-    #[cfg(not(feature = "recycler-over-counts"))]
     let backlog = reader.has_at_least_by_count(threshold);
 
     // The batch's work toward the epoch's turn: every position its trace

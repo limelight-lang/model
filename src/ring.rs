@@ -775,20 +775,6 @@ impl<'a> Reader<'a> {
         })
     }
 
-    /// Where the next entry is written: the tail block and its tail. Only a
-    /// write moves it, and a pack, which moves it to a place no write left;
-    /// a reader's take leaves it. For the ring's owner, the one writer.
-    #[cfg(feature = "recycler-over-counts")]
-    pub(crate) fn write_position(&self) -> (usize, usize) {
-        let tail_block = self.0.tail_block.load(Ordering::Acquire);
-        if tail_block.is_null() {
-            return (0, 0);
-        }
-
-        let tail = unsafe { (*ring(tail_block)).writer.tail.load(Ordering::Relaxed) };
-        (tail_block as usize, tail)
-    }
-
     /// Whether at least `entries` stand unread, by loads of the front block
     /// alone ([`Reader::front_block_reading`]). Zero `entries` is true of
     /// any ring with a front block.

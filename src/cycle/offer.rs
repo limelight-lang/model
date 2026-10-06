@@ -7,12 +7,12 @@
 //! **When.** At a poll with the gate open, never on the slot-free path, whose
 //! reading may hold temporaries the compiler did not count (§4.7), and only
 //! with the byte at `FREE`, the last batch tested and disposed of. Then on
-//! four branches over R, read off its front block: R at the threshold, a
-//! whole batch ([`worker::threshold_for_offers`]); R standing non-empty
-//! below it for the standing interval since the last release of the byte;
-//! R below it with nothing written into it for [`STILL_INTERVAL`] on that
-//! clock, the mutator between requests or in a drain; or a deferred lane merged into R since the merges were last
-//! accounted for. Time is the collector's clock as its last round read it
+//! the round's three branches over R, read off its front block as the
+//! collector read them before ([`crate::cycle::worker`], "The thread, and the
+//! round over the records"): R at the threshold; R standing non-empty below
+//! it for the standing interval since the last release of the byte; or a
+//! deferred lane merged into R since the merges were last accounted for. The
+//! interval is measured on the collector's clock as its last round read it
 //! ([`crate::cycle::worker::round_clock`]), so the poll reads no clock: a
 //! ring stands at most one fallback interval past its own.
 //!
@@ -36,7 +36,7 @@ use std::cell::Cell;
 use crate::cycle::mutator_record::{self, MutatorRecord};
 use crate::cycle::token::{FREE, state};
 use crate::cycle::worker;
-use crate::ring::Reader;
+use crate::ring::{FrontBlockReading, Reader};
 
 thread_local! {
     /// The collector rounds begun when this thread's last offer was withdrawn
@@ -44,11 +44,6 @@ thread_local! {
     /// made until a round begins after it ([`worker::rounds_begun`]). No drop
     /// glue, as every thread-local the exit reaches.
     static WITHDRAWN_AT_ROUND: Cell<u64> = const { Cell::new(u64::MAX) };
-    /// R's write position as a poll of this thread read it below the
-    /// threshold, and the round clock when it was first read there: R still
-    /// at it for [`STILL_INTERVAL`] is offered ([`is_due`]). Copy, with no
-    /// drop glue.
-    static STILL_SINCE: Cell<((usize, usize), u64)> = const { Cell::new(((0, 0), 0)) };
 }
 
 /// Note that a stack's mark withdrew this thread's offer, for the pacing of
@@ -103,7 +98,7 @@ unsafe fn offer(threshold: usize, from_the_poll: bool) -> bool {
     // reading never saw.
     let merges = mutator.merges();
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
-    if !is_due(mutator, &reader, merges, threshold) {
+    if !is_due(mutator, reader.front_block_reading(), merges, threshold) {
         return false;
     }
 
@@ -126,7 +121,6 @@ unsafe fn offer(threshold: usize, from_the_poll: bool) -> bool {
     crate::refcount::set_window(window);
     crate::cycle::deferred_slot_reuse::note_an_offer();
     WITHDRAWN_AT_ROUND.with(|at| at.set(u64::MAX));
-    STILL_SINCE.with(|still| still.set(((0, 0), 0)));
     if from_the_poll {
         worker::wake_a_taker(mutator.collector());
     }
@@ -139,11 +133,13 @@ unsafe fn offer(threshold: usize, from_the_poll: bool) -> bool {
 /// the merges seen are this thread's words between the releases of its
 /// byte, which the collector's release restamps
 /// ([`MutatorRecord::note_standing_since`]).
-fn is_due(mutator: &MutatorRecord, reader: &Reader, merges: u32, threshold: usize) -> bool {
-    let Some(ring) = reader
-        .front_block_reading()
-        .filter(|ring| ring.holds_at_least(1))
-    else {
+fn is_due(
+    mutator: &MutatorRecord,
+    ring: Option<FrontBlockReading>,
+    merges: u32,
+    threshold: usize,
+) -> bool {
+    let Some(ring) = ring.filter(|ring| ring.holds_at_least(1)) else {
         mutator.note_standing_since(0);
         mutator.note_merges_seen(merges);
         return false;
@@ -159,14 +155,6 @@ fn is_due(mutator: &MutatorRecord, reader: &Reader, merges: u32, threshold: usiz
     }
 
     let now = worker::round_clock();
-    #[cfg(test)]
-    let still_counts = worker::testing::offers_r_that_stood_still();
-    #[cfg(not(test))]
-    let still_counts = true;
-    if still_counts && stood_still(reader.write_position(), now) {
-        return true;
-    }
-
     match mutator.standing_since() {
         // No round has read the clock yet: no collector stands to take a
         // standing ring, and the instant waits for the first.
@@ -177,27 +165,4 @@ fn is_due(mutator: &MutatorRecord, reader: &Reader, merges: u32, threshold: usiz
         }
         since => now.saturating_sub(since) >= worker::standing_interval_nanos(),
     }
-}
-
-/// How long R below the threshold stands with nothing written into it
-/// before it is offered, on the round clock: past the pauses inside a
-/// request, short of the gap between two requests on `web-heap`.
-const STILL_INTERVAL: u64 = 5_000_000;
-
-/// Whether R, read below the threshold with its write position at
-/// `position` and the round clock at `now`, has had nothing written into it
-/// for [`STILL_INTERVAL`]: the mutator between requests or in a drain, the
-/// candidates R holds not those of a request still being built
-/// (`dev/BENCHMARKS.md`, "S68.13 read by the protocol"). A position not the
-/// last one read starts the reading over.
-fn stood_still(position: (usize, usize), now: u64) -> bool {
-    STILL_SINCE.with(|still| {
-        let (read, since) = still.get();
-        if read != position || since == 0 {
-            still.set((position, now));
-            return false;
-        }
-
-        now.saturating_sub(since) >= STILL_INTERVAL
-    })
 }

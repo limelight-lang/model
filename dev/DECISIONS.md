@@ -9,22 +9,18 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
-## 2026-10-06 — S68.13's gate reads the collector's CPU with the mutator's, against A
+## 2026-10-06 — S68.13 back to the accepted §5f: the offer's threshold, the still rule and the gate's change reverted
 
-**Decided by Claude sessions without Edmond's consent (2026-10-06), awaiting
-his ruling.** Edmond asked who set a collector CPU bound when the collector
-took the owner's work; the sessions read the question as a ruling. "Collector CPU lower than S68.12's" is
-dropped from S68.13's gate: the collector does the collections the owner
-did in A, so its CPU is read together with the mutator's, and the two
-together are held at or under A's. The clause came in at `ccd73ab`
-(2026-10-05), on the expectation that removing the checkpoint's yielding
-spin would cut the collector's CPU by its share, a share read on the ring
-loads (some 13 %), not on `web-heap`, where the wait cost about 0.65 s a
-cell. Read on `web-heap` (`dev/BENCHMARKS.md`, 2026-10-05): 116.5 s
-together against A's 149.4 and S68.12's 113.4. S68.13 closes on it, its
-offer at a whole batch and of R nothing was written into for 5 ms.
-
----
+**Decided (Edmond, 2026-10-06: «я хочу вернуть курс взад. да.»).** Claude
+sessions had, without his word, offered R at a whole batch (1024) and once
+nothing was written into it for 5 ms (`029b355`), replaced the gate's
+"collector CPU lower than S68.12's" with the mutator's and the collector's
+CPU together against A's, and closed S68.13 (`2c5b95f`, `791ad3d`). All
+three are reverted: the offer stands at the rounds' threshold, the gate as
+accepted, the step open. The readings of the variant stay in
+`dev/BENCHMARKS.md` as data. Next, a Critic and the Sage on Edmond's
+"a −1 that does not reach zero stores no tag", which a session dropped on a
+Critic's word without bringing it back to him.
 
 ## 2026-10-05 — the fallback timer's minimum is 1 ms
 

@@ -858,13 +858,8 @@ checkpoint, the bounded wait and the consent go.
   ordering, finding 2).
 - **The offer.** At a poll with the gate open, never on the slot-free path
   (a free's reading may hold ARC-elided temporaries, §4.7), when its root
-  queue R holds a whole batch (`BATCH_BOUND`), or R below it had nothing
-  written into it for 5 ms on the collectors' round clock, or R has
-  stood non-empty below it for `STANDING_INTERVAL` since the last release,
-  or the merged lanes are due (the threshold and the still R from the
-  readings of 2026-10-05, `dev/BENCHMARKS.md`: at the rounds' 64 nearly
-  every batch took a request still being built, and below a whole batch
-  the drain waited the interval),
+  queue R passes a threshold, or R has stood non-empty below it for
+  `STANDING_INTERVAL` since the last release, or the merged lanes are due,
   the mutator turns its window F-1 to F, records on the token R's end as
   the batch's ceiling, and moves the token by one CAS `FREE` → `OFFERED`
   with acquire–release. The acquire orders the last batch's stale clears
@@ -942,10 +937,7 @@ checkpoint, the bounded wait and the consent go.
   traced under the consent either. The AArch64 cost is accepted unmeasured.
   Withheld returns are not handed to the collector. One window turn per
   offer, not the Sage's variant "e".
-- **Open.** A thread that registers a burst and then stops polling leaves
-  up to a batch less one unoffered, against 63 at the rounds' threshold:
-  neither the still rule nor the standing interval fires without a poll
-  (Critic, 2026-10-05, the offer's threshold, finding 5). The prune at a touched member (colour live, do not expand) has
+- **Open.** The prune at a touched member (colour live, do not expand) has
   no room on the row: its four colours are taken (`shadow.rs`), and the
   existing live colour feeds the scan, the read-live posts and the
   maturation, which would age a ring let go after the frame; it needs a

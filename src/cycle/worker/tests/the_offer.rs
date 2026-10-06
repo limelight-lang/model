@@ -1,7 +1,7 @@
 //! The mutator's offer under `recycler-over-counts` (`crate::cycle::offer`;
 //! `dev/design/recycler-over-counts.md`, §5f): when the poll offers — R at
-//! the threshold, a ring standing below it for the interval or with nothing
-//! written into it for a while, a lane merged since the merges were last accounted for — and what the offer carries;
+//! the threshold, a ring standing below it for the interval, a lane merged
+//! since the merges were last accounted for — and what the offer carries;
 //! the returns an offer withholds, the mark that withdraws it, and the
 //! offer after a withdrawal waiting for a round.
 //!
@@ -119,37 +119,6 @@ fn a_ring_below_the_threshold_is_offered_an_interval_after_it_first_stood() {
     testing::stamp_the_round_clock();
     assert!(unsafe { offer_at(THRESHOLD) }, "offered an interval later");
     assert_eq!(mutator.standing_since(), stood_since, "the instant stands");
-    withdraw_and_collect();
-}
-
-/// A ring below the threshold with nothing written into it for the still
-/// interval is offered; a poll inside the interval offers nothing, and a
-/// write into R starts the interval over.
-#[test]
-fn a_ring_nothing_was_written_into_for_a_while_is_offered_below_the_threshold() {
-    let _g = test_guard();
-    reset_lanes();
-    let _still = testing::OffersRThatStoodStill::new();
-    let mut arena = Arena::new();
-    let _ = a_record_with_nothing_standing();
-    garbage_rings(&mut arena, 1, "OfferStoodStillNode");
-    let past_the_interval = || {
-        std::thread::sleep(Duration::from_millis(6));
-        testing::stamp_the_round_clock();
-    };
-
-    assert!(!unsafe { offer_at(2 * THRESHOLD) }, "the first reading");
-    garbage_rings(&mut arena, 1, "OfferStoodStillNode");
-    past_the_interval();
-    assert!(
-        !unsafe { offer_at(2 * THRESHOLD) },
-        "written into: read again"
-    );
-    assert!(!unsafe { offer_at(2 * THRESHOLD) }, "inside the interval");
-    past_the_interval();
-    assert!(unsafe { offer_at(2 * THRESHOLD) }, "still for the interval");
-    assert_eq!(state(token().read()), OFFERED);
-    assert_eq!(token().ceiling(), THRESHOLD, "R's count");
     withdraw_and_collect();
 }
 

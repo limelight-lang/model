@@ -10,6 +10,9 @@ what was tried, measured, and accepted or rejected.
 
 ## 2026-10-05 — S68.13 with an offer at a whole batch and of R nothing was written into for 5 ms: every drain clears, the garbage falls 20 % under S68.12's and the touched sets meet it; the collector's CPU stays 9 % over
 
+The variant was reverted on 2026-10-06 (`dev/DECISIONS.md`): it changed the
+accepted §5f without Edmond's word. Its readings stay here as data.
+
 **Builds.** B4, the commit after this entry: the offer's threshold at
 `BATCH_BOUND` (1,024), R below it offered once nothing was written into it
 for 5 ms on the round clock, a backlog read against the offer's threshold;

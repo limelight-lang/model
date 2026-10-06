@@ -233,7 +233,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
-- [x] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
+- [ ] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
       third form after two Critic rounds, the Sage, and three Critics by
       aspect): every count store, decrement included, and every slot store
       the trace reads stores its tag first and the data with a release; the
@@ -254,11 +254,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       Done when: the loom model passes and each twin fails; `cargo test`
       green in both builds; five cells of A and B on `web-heap` with the
       no-checkpoint column gone, touched refusals no higher than S68.12's,
-      the mutator's and the collector's CPU together no higher than A's
-      (Claude sessions, 2026-10-06, without Edmond's consent, in place of
-      "collector CPU lower than S68.12's":
-      the collector does the owner's collections, so its CPU is read with
-      the mutator's), an offer-to-take latency
+      collector CPU lower than S68.12's cells, an offer-to-take latency
       column with its p99, the drain and standing-R cells within §5c, owner
       pause and garbage within §9; the write-site table complete; cases for
       a newborn in a reused slot, an exit over `OFFERED`, a return under
@@ -267,18 +263,13 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       loom cases with their twins but the acquire's, which loom 0.7 cannot
       show; A 1316 and B 1305 tests green). An offer needs a collector
       standing to take it. The write-site table is in §5f. Read on
-      `web-heap` against S68.12's build on one box (`dev/BENCHMARKS.md`):
-      at the rounds' threshold the touched sets doubled; offered at a whole
-      batch and once R stood still 5 ms, the touched sets meet S68.12's, the
-      garbage is 20 % lower and every drain clears; the collector's CPU is
-      9 % over S68.12's, the two together 116.5 s against A's 149.4 (and
-      S68.12's 113.4). One cell's application took 45 ms, not met again in
-      eleven. Closed 2026-10-06 by Claude sessions without Edmond's
-      consent, awaiting his ruling on the CPU clause and on the offer's
-      threshold and still rule, which change the accepted §5f; the
-      offer-to-take p99 (32 ms) was read on the first form only, and R
-      standing under §5c has no column of its own. The request machinery
-      stays in the default build's protocol.
+      `web-heap` against S68.12's build (`dev/BENCHMARKS.md`, 2026-10-05),
+      the gate fails: touched refusals 2.4 times S68.12's, collector CPU
+      20 % over. Open for Edmond: what to do with the failed gate. A
+      variant offered at a whole batch and of R still 5 ms (`029b355`,
+      read in the journal) went to main without his word and was reverted
+      by it on 2026-10-06. The request machinery stays in the default
+      build's protocol.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
