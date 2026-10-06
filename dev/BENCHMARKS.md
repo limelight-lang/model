@@ -8,6 +8,76 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-06 — S68.14's measurements before code: a batch whose roots waited 10 ms or more is three-quarters dead, a younger one a third; the prune at F would skip 5 % of the expansions
+
+**Builds.** A and B at `3f08af4` with the rig's wave 3 counters of this entry's commit
+(`testing::wave_three`, test builds only). `web-heap` by the protocol's cell
+on this box (`dev/tools/arms.sh … web`, 46.78 ms, two mutators on CPUs 1–2,
+cap 1 on CPU 3): A three repeats, B three repeats, no cell void; the
+latencies from two repeats more of each with `LL_RIG_STANDINGS=1`, whose
+lock on the handshake the main cells leave out. The `ll_retain` and
+`ll_release` counts by callgrind on a loop of +1/−1 pairs on one entity
+already in R (a scratch driver over the crate, 1M and 2M pairs, the
+difference read; no PMU on this box).
+
+| | A | B |
+|---|---|---|
+| mutator CPU, s | 71.1–72.3 | 48.7–49.2 |
+| collector CPU, s | 52.1–53.4 | 62.5–64.2 |
+| garbage mean, MB | 34.9–36.2 | 30.4–32.5 |
+| instructions an `ll_retain` / an `ll_release` (above zero) | 13 / 22 | 26 / 36 |
+| sets posted, until the owner's poll takes them: count, mean, longest | 9,577–10,671, 6.3–7.3 ms, 331–364 ms | 17,033–17,778, 7.5–7.9 ms, 367–375 ms |
+
+B alone, three repeats:
+
+| reading | value |
+|---|---|
+| offers a second (all mutators) | 127–139 |
+| offer to take: median, p99, longest (with the standings) | 48 µs, 13.6–15.4 ms, 375–387 ms |
+| offers withdrawn at a mark | 0 |
+| polls held back by standing drop slices | 0.97–1.01 % of the polls at the offer |
+| R at an offer, counted to the block past the bound: mean, largest | 1,613–1,730, 9,154 |
+| offers whose R reached the bound of 1,024 | 38–41 % |
+| expansions of an entity tagged F / of those at a count of 0 | 4.65–4.82 % / 0 |
+| Δ-tests touched / proved | 7,851–8,923 / 4,117–4,149 |
+| U refused first / second time (read live) | 3,530–3,832 / 4,321–5,091 |
+| roots read live at a second refusal | 592k–698k |
+| sets weakly held | 0 |
+| slow-path takes that waited on a collector | 0 (no fire in this load) |
+
+Batches by the span from their mutator's previous offer, three repeats
+together (roots dead: proposed, or at a count of 0 after the collector's
+own frees):
+
+| span | batches | roots a batch | dead | read live | unwalked |
+|---|---|---|---|---|---|
+| under 1 ms | 9,137 | 466 | 55.8 % | 34.0 % | 10.1 % |
+| 1–10 ms | 24,529 | 503 | 36.8 % | 29.6 % | 33.7 % |
+| 10–100 ms | 11,779 | 736 | 76.5 % | 9.0 % | 14.5 % |
+| 100 ms–1 s | 1,302 | 800 | 92.7 % | 6.1 % | 1.3 % |
+| over 1 s | 9 | 579 | 97.1 % | 2.9 % | 0 % |
+
+**Reading.**
+- **The roots' age.** A batch whose roots had 10 ms or more to die by
+  counting is three-quarters dead or more; the half of the batches offered
+  1–10 ms after the last carry a third dead, a third read live and a third
+  unwalked. This is the third reading of P3 the Sage named (finding 6),
+  measured; changing when the mutator offers is a change of the accepted
+  rule and goes to Edmond.
+- **The second chance.** More sets are refused a second time than a first
+  (4.3–5.1k against 3.5–3.8k): a root posted unwalked comes back with its
+  second chance spent (`queue/compaction.rs`), the defect the Sage found,
+  and the 1–10 ms batches post a third of their roots unwalked.
+- **The prune at F (P5).** 4.7–4.8 % of the trace's expansions meet an
+  entity tagged F, none at a count of 0: the prune would skip at most that
+  directly, plus what only those entities reach, unmeasured.
+- **P4.** B's mutator spends 0.67–0.69 of A's CPU, from the collections
+  leaving it; per operation it executes 2.0 times A's instructions on a +1
+  and 1.6 times on a −1 above zero.
+- Not read here: coincidence refusals (a stale tag equal to F), which no
+  counter tells from a write; the record scan's read-live against the heap
+  scan's; a slow path's take during a commit, which this load does not make.
+
 ## 2026-10-06 — sets touched by decrements alone: 2 % of S68.13's touched sets on `web-heap`, so an untagged −1 would win back almost none
 
 **Builds.** A diagnostic arm of B at `5ccfbaa` (S68.13 as accepted, offer at

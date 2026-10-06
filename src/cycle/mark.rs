@@ -661,6 +661,10 @@ unsafe fn expand_the_worklist<R: CellReader>(
         let kind = unsafe { cells::entity_kind(entity) };
         // A collector's expansion opens a run in the record its scan reads
         // instead of the heap (`crate::cycle::recorded_edges`).
+        #[cfg(all(test, feature = "recycler-over-counts"))]
+        if R::CONCURRENT {
+            unsafe { crate::cycle::worker::testing::wave_three::note_an_expansion(entity) };
+        }
         #[cfg(feature = "recycler-over-counts")]
         if R::CONCURRENT && !arena.open_run(entry.row) {
             // A block the record drew reads the recall, as every draw does.

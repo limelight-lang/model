@@ -120,6 +120,12 @@ unsafe fn offer(threshold: usize, from_the_poll: bool) -> bool {
     // Opened once the swap landed, and before any count write after it.
     crate::refcount::set_window(window);
     crate::cycle::deferred_slot_reuse::note_an_offer();
+    #[cfg(test)]
+    worker::testing::wave_three::note_an_offer(
+        mutator.token.address(),
+        ceiling,
+        worker::BATCH_BOUND,
+    );
     WITHDRAWN_AT_ROUND.with(|at| at.set(u64::MAX));
     if from_the_poll {
         worker::wake_a_taker(mutator.collector());

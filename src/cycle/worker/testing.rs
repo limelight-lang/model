@@ -2591,3 +2591,165 @@ pub(crate) fn note_a_withdrawal_in_the_rig_section() {
 pub(crate) fn withdrawals_by_section() -> [usize; RIG_SECTIONS] {
     std::array::from_fn(|section| WITHDRAWN_BY_SECTION[section].load(Ordering::Relaxed))
 }
+
+/// Wave 3's readings of the offer and the batch
+/// (`dev/design/the-general-algorithm.md`, "What the measurements before
+/// code are"; `PLAN.md`, S68.14), recorded always: relaxed counters, and a
+/// lock at an offer and a take alone, not on the handshake the standings'
+/// table puts its lock on.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) mod wave_three {
+    use std::cell::Cell;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, Instant};
+
+    use super::lock;
+
+    /// The polls that reached the offer's reading, and those a standing
+    /// slice of the collector's drops sent back before it.
+    static POLLS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+    /// The offers made: how many, their ceilings summed, the largest, and
+    /// those at the batch's bound.
+    static CEILINGS: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+
+    /// The trace's expansions under a take: all, those of an entity tagged
+    /// with the batch's frame, and of those the ones at a count of 0.
+    static EXPANSIONS: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+
+    /// The batches by the span from their mutator's previous offer to this
+    /// one ([`SPANS`]), each bucket's batches, roots posted, roots dead
+    /// (proposed, or at a count of 0 after the collector's own frees), roots
+    /// read live and roots unwalked.
+    static BY_SPAN: Mutex<[[u64; 5]; SPANS.len() + 1]> = Mutex::new([[0; 5]; SPANS.len() + 1]);
+
+    /// The buckets' upper bounds; past the last, its own bucket.
+    pub(crate) const SPANS: [Duration; 4] = [
+        Duration::from_millis(1),
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+    ];
+
+    /// By a token's address, its last offer and the span that offer closed.
+    type LastOffers = HashMap<usize, (Instant, Option<Duration>)>;
+
+    /// Each token's last offer, and the span its standing offer closed.
+    static LAST_OFFER: Mutex<Option<LastOffers>> = Mutex::new(None);
+
+    thread_local! {
+        /// The frame of the batch this collector traces, 0 outside one.
+        static FRAME: Cell<u8> = const { Cell::new(0) };
+        /// The batch this collector serves: its span, then its roots posted,
+        /// dead, read live and unwalked.
+        static BATCH: Cell<(Option<Duration>, [u64; 4])> = const { Cell::new((None, [0; 4])) };
+    }
+
+    /// A poll reached the offer's reading (`held` false), or a standing
+    /// slice of drops sent it back (`held` true).
+    pub(crate) fn note_a_poll(held: bool) {
+        POLLS[usize::from(held)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The mutator owning the token at address `token` offered a batch
+    /// under `ceiling`, `bound` being the batch's bound.
+    pub(crate) fn note_an_offer(token: usize, ceiling: usize, bound: usize) {
+        CEILINGS[0].fetch_add(1, Ordering::Relaxed);
+        CEILINGS[1].fetch_add(ceiling as u64, Ordering::Relaxed);
+        CEILINGS[2].fetch_max(ceiling as u64, Ordering::Relaxed);
+        if ceiling >= bound {
+            CEILINGS[3].fetch_add(1, Ordering::Relaxed);
+        }
+        let now = Instant::now();
+        let mut last = lock(&LAST_OFFER);
+        let map = last.get_or_insert_with(HashMap::new);
+        let span = map.get(&token).map(|(at, _)| now - *at);
+        map.insert(token, (now, span));
+    }
+
+    /// A collector took the offer on the token at address `token`, whose
+    /// frame is `frame`.
+    pub(crate) fn note_a_take(token: usize, frame: u8) {
+        FRAME.with(|f| f.set(frame));
+        let span = lock(&LAST_OFFER)
+            .as_ref()
+            .and_then(|map| map.get(&token))
+            .and_then(|(_, span)| *span);
+        BATCH.with(|b| b.set((span, [0; 4])));
+    }
+
+    /// A root's verdict posted under the batch.
+    pub(crate) fn note_a_verdict(verdict: crate::cycle::queue::verdicts::Verdict) {
+        use crate::cycle::queue::verdicts::Verdict;
+        BATCH.with(|b| {
+            let (span, mut counts) = b.get();
+            counts[0] += 1;
+            match verdict {
+                Verdict::Proposed | Verdict::ZeroCount => counts[1] += 1,
+                Verdict::ReadLive => counts[2] += 1,
+                Verdict::Unwalked => counts[3] += 1,
+            }
+            b.set((span, counts));
+        });
+    }
+
+    /// The batch this collector served is released: its tallies go to their
+    /// span's bucket, a batch with no previous offer to its mutator to none.
+    pub(crate) fn note_a_release() {
+        FRAME.with(|f| f.set(0));
+        let (span, counts) = BATCH.with(|b| b.replace((None, [0; 4])));
+        let Some(span) = span else { return };
+        let bucket = SPANS
+            .iter()
+            .position(|bound| span < *bound)
+            .unwrap_or(SPANS.len());
+        let mut by_span = lock(&BY_SPAN);
+        by_span[bucket][0] += 1;
+        for (into, count) in by_span[bucket][1..].iter_mut().zip(counts) {
+            *into += count;
+        }
+    }
+
+    /// An expansion of `entity` under the frame this collector traces, if
+    /// it traces one.
+    ///
+    /// # Safety
+    /// `entity` is a header the trace may read.
+    pub(crate) unsafe fn note_an_expansion(entity: *const crate::refcount::RcHeader) {
+        let frame = FRAME.with(Cell::get);
+        if frame == 0 {
+            return;
+        }
+        EXPANSIONS[0].fetch_add(1, Ordering::Relaxed);
+        if unsafe { crate::refcount::window_tag(entity) } == frame {
+            EXPANSIONS[1].fetch_add(1, Ordering::Relaxed);
+            // The count as a number, read for the reading's own column.
+            let count = unsafe { crate::refcount::header_refcount(entity) };
+            if count == 0 {
+                EXPANSIONS[2].fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+
+    /// Every reading since the last call, as `(polls, ceilings, expansions,
+    /// by_span)`, all zeroed.
+    pub(crate) fn take() -> ([u64; 2], [u64; 4], [u64; 3], [[u64; 5]; SPANS.len() + 1]) {
+        let swap = |cells: &[AtomicU64]| -> Vec<u64> {
+            cells
+                .iter()
+                .map(|cell| cell.swap(0, Ordering::Relaxed))
+                .collect()
+        };
+        let polls = swap(&POLLS);
+        let ceilings = swap(&CEILINGS);
+        let expansions = swap(&EXPANSIONS);
+        (
+            [polls[0], polls[1]],
+            [ceilings[0], ceilings[1], ceilings[2], ceilings[3]],
+            [expansions[0], expansions[1], expansions[2]],
+            std::mem::take(&mut *lock(&BY_SPAN)),
+        )
+    }
+}

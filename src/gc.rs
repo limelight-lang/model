@@ -355,6 +355,8 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     #[cfg(not(feature = "recycler-over-counts"))]
     let (freed_by_the_collector, frees_stand) = (0, false);
     if frees_stand {
+        #[cfg(all(test, feature = "recycler-over-counts"))]
+        crate::cycle::worker::testing::wave_three::note_a_poll(true);
         if freed_by_the_collector > 0 {
             crate::cycle::queue::verdicts::note_freeing_disposition();
         }
@@ -398,6 +400,8 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // open gate alone, where every reference is counted, and after the fire,
     // whose collection may have left the byte `FREE` and R drained
     // (`crate::cycle::offer`).
+    #[cfg(all(test, feature = "recycler-over-counts"))]
+    crate::cycle::worker::testing::wave_three::note_a_poll(false);
     #[cfg(feature = "recycler-over-counts")]
     let _ = unsafe { crate::cycle::offer::offer_if_due() };
 

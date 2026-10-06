@@ -1500,7 +1500,11 @@ pub(crate) unsafe fn take_an_offer(
     let taken = mutator.token.take_the_offer(slot);
     drop(hold);
     match taken {
-        Ok(()) => unsafe { serve_the_grant(mutator, slot, threshold, standing) },
+        Ok(()) => {
+            #[cfg(test)]
+            testing::wave_three::note_a_take(mutator.token.address(), mutator.token.window());
+            unsafe { serve_the_grant(mutator, slot, threshold, standing) }
+        }
         Err(seen) => served_without_a_take(seen),
     }
 }
@@ -1918,6 +1922,8 @@ unsafe fn serve_the_grant(
             // instant as soon as the store lands.
             #[cfg(test)]
             testing::note_release();
+            #[cfg(all(test, feature = "recycler-over-counts"))]
+            testing::wave_three::note_a_release();
             let released = match (self.posted.get(), self.proposed.get()) {
                 (false, _) => crate::cycle::token::FREE,
                 (true, true) => crate::cycle::token::POSTED,
@@ -2680,6 +2686,8 @@ impl FinishThePosts<'_> {
     fn post(&mut self, index: usize, verdict: Verdict) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
         journal_verdict(self.root(index), verdict);
+        #[cfg(all(test, feature = "recycler-over-counts"))]
+        testing::wave_three::note_a_verdict(verdict);
         // Every `ReadLive` posted here is deferred.
         let posted = self.verdicts.post(self.root(index), verdict);
         posted.expect("the batch was clamped to P's room");

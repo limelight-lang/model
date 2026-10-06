@@ -86,7 +86,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ALLOCATING", false),
         ("ARMED", false),                 // test-only const Cell, no drop glue
         ("AT_THE_SURPLUS_UNLINK", false), // test-only const Cell of an fn pointer, no drop glue
-        ("BETWEEN_THE_READS", false),     // test-only const Cell of an fn pointer, no drop glue
+        ("BATCH", false), // test-only const Cell of a Copy pair, no drop glue (`recycler-over-counts`)
+        ("BETWEEN_THE_READS", false), // test-only const Cell of an fn pointer, no drop glue
         ("BLOCKS", false),
         ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
@@ -119,6 +120,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("EXPANSIONS", false),     // test-only const Cell of a raw pointer, no drop glue
         ("FAIL_AT", false),        // test-only const Cell, no destructor registration
         ("FILLER", false),         // test-only const Cell of a raw pointer, no drop glue
+        ("FRAME", false), // test-only const Cell<u8>, no drop glue (`recycler-over-counts`)
         ("FREED", false),
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue

@@ -3673,6 +3673,7 @@ impl CellReading {
         let requests: usize = figures.iter().map(|one| one.records.len()).sum();
         let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
         let offers = offer_counts();
+        let (wave, by_span) = wave_three();
         let run_for = seconds_from_env("LL_RIG_SECONDS");
         let window = run_for.saturating_sub(seconds_from_env("LL_RIG_WARM_UP_SECONDS"));
         let busy: Duration = figures.iter().map(|one| one.busy).sum();
@@ -3903,6 +3904,27 @@ impl CellReading {
                 "build_step_longest_us",
                 longest_build_step().as_micros().to_string(),
             ),
+            // Wave 3's readings (`PLAN.md`, S68.14), zeros without
+            // `recycler-over-counts` (`testing::wave_three`): the polls that
+            // reached the offer's reading and those a slice of drops held
+            // back; the offers, their mean and largest ceiling and those at
+            // the bound; the trace's expansions, at the frame, and at the
+            // frame with a count of 0; and by the span from the mutator's
+            // previous offer (under 1, 10, 100, 1,000 ms, then above), each
+            // bucket's batches, roots, roots dead (proposed or at 0), roots
+            // read live and roots unwalked, `;` between figures and `/`
+            // between buckets. A ceiling is R's count read to the end of the
+            // block that passes the bound, not the batch.
+            ("polls_at_the_offer", wave[0].to_string()),
+            ("polls_held_by_drops", wave[1].to_string()),
+            ("offers_made", wave[2].to_string()),
+            ("offer_ceiling_mean", wave[3].to_string()),
+            ("offer_ceiling_largest", wave[4].to_string()),
+            ("offers_at_the_bound", wave[5].to_string()),
+            ("expansions", wave[6].to_string()),
+            ("expansions_at_the_frame", wave[7].to_string()),
+            ("expansions_at_the_frame_at_zero", wave[8].to_string()),
+            ("batches_by_span", by_span),
         ]
     }
 
@@ -4699,6 +4721,41 @@ fn joined(counts: &[usize]) -> String {
         .map(usize::to_string)
         .collect::<Vec<_>>()
         .join(";")
+}
+
+/// [`testing::wave_three::take`] flat, the ceiling as a mean, and the
+/// buckets as one column; zeros without the feature.
+fn wave_three() -> ([u64; 9], String) {
+    #[cfg(feature = "recycler-over-counts")]
+    {
+        let (polls, ceilings, expansions, by_span) = testing::wave_three::take();
+        let mean = ceilings[1].checked_div(ceilings[0]).unwrap_or(0);
+        let flat = [
+            polls[0],
+            polls[1],
+            ceilings[0],
+            mean,
+            ceilings[2],
+            ceilings[3],
+            expansions[0],
+            expansions[1],
+            expansions[2],
+        ];
+        let buckets = by_span
+            .iter()
+            .map(|bucket| {
+                bucket
+                    .iter()
+                    .map(u64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(";")
+            })
+            .collect::<Vec<_>>()
+            .join("/");
+        (flat, buckets)
+    }
+    #[cfg(not(feature = "recycler-over-counts"))]
+    ([0; 9], String::new())
 }
 
 /// [`crate::cycle::split::split_counts`], zeros without the feature.
