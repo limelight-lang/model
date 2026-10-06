@@ -8,6 +8,32 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-06 — sets touched by decrements alone: 2 % of S68.13's touched sets on `web-heap`, so an untagged −1 would win back almost none
+
+**Builds.** A diagnostic arm of B at `5ccfbaa` (S68.13 as accepted, offer at
+64), not kept: windows 1..127; a +1, a slot store and a count written
+outright tag F with the high bit; a decrement that leaves the count above
+zero tags F without it unless the byte already holds the high form; the
+Δ-test counts the touched sets none of whose touched members carries the
+high bit. Beside it B at `5ccfbaa` unchanged. `web-heap` by the protocol's
+cell on this box (`dev/tools/arms.sh … 3 web`, 46.78 ms, two mutators on
+CPUs 1–2, cap 1 on CPU 3), three repeats alternated, no cell void.
+
+| | diagnostic | B |
+|---|---|---|
+| Δ-tests proved / touched | 3,846–3,923 / 4,932–5,377 | 3,866–3,925 / 4,685–5,221 |
+| touched by decrements alone | 106–141 (2.1–2.7 %) | — |
+| members read touched, high / decrement | 8.18–8.87 M / 144–207 | — |
+| collector CPU, s | 74.4–75.6 | 75.1–77.0 |
+| mutator CPU, s | 55.0–55.8 | 55.7–56.9 |
+| garbage mean, MB | 33.3–38.7 | 34.9–38.6 |
+
+**Reading.** The touched sets of S68.13 are touched by +1s and slot stores,
+not by decrements: a −1 that does not reach zero, left untagged, would
+free 2–3 % of them in the batch that found them. The arm's own counts sit
+within B's spread.
+
+
 ## 2026-10-05 — S68.13 with an offer at a whole batch and of R nothing was written into for 5 ms: every drain clears, the garbage falls 20 % under S68.12's and the touched sets meet it; the collector's CPU stays 9 % over
 
 The variant was reverted on 2026-10-06 (`dev/DECISIONS.md`): it changed the
