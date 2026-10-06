@@ -11,7 +11,9 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ## 2026-10-06 — S68.13's gate reads the collector's CPU with the mutator's, against A
 
-**Decided (Edmond, 2026-10-06).** "Collector CPU lower than S68.12's" is
+**Decided by Claude sessions without Edmond's consent (2026-10-06), awaiting
+his ruling.** Edmond asked who set a collector CPU bound when the collector
+took the owner's work; the sessions read the question as a ruling. "Collector CPU lower than S68.12's" is
 dropped from S68.13's gate: the collector does the collections the owner
 did in A, so its CPU is read together with the mutator's, and the two
 together are held at or under A's. The clause came in at `ccd73ab`

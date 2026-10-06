@@ -255,7 +255,8 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       green in both builds; five cells of A and B on `web-heap` with the
       no-checkpoint column gone, touched refusals no higher than S68.12's,
       the mutator's and the collector's CPU together no higher than A's
-      (Edmond, 2026-10-06, in place of "collector CPU lower than S68.12's":
+      (Claude sessions, 2026-10-06, without Edmond's consent, in place of
+      "collector CPU lower than S68.12's":
       the collector does the owner's collections, so its CPU is read with
       the mutator's), an offer-to-take latency
       column with its p99, the drain and standing-R cells within §5c, owner
@@ -272,7 +273,9 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       garbage is 20 % lower and every drain clears; the collector's CPU is
       9 % over S68.12's, the two together 116.5 s against A's 149.4 (and
       S68.12's 113.4). One cell's application took 45 ms, not met again in
-      eleven. Closed 2026-10-06 on Edmond's ruling on the CPU clause; the
+      eleven. Closed 2026-10-06 by Claude sessions without Edmond's
+      consent, awaiting his ruling on the CPU clause and on the offer's
+      threshold and still rule, which change the accepted §5f; the
       offer-to-take p99 (32 ms) was read on the first form only, and R
       standing under §5c has no column of its own. The request machinery
       stays in the default build's protocol.
