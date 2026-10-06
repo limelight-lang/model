@@ -250,8 +250,9 @@ its measured share is material. Per-function analysis last.
   garbage, 1 is not yet. Read against the build: the signal is the offer,
   which turns the window to F; "1" is a tag equal to F and "0" any other,
   so the marks need no clearing across the heap at each window (the stale
-  clear touches members only). "0 is garbage" holds of a member of the set
-  the trace found white, not of any entity.
+  clear touches members only). "0 is garbage" holds of a member of W not
+  reached from a member tagged F (the Critic, below), not of any entity
+  and not of every white member.
 - **Q2, P5's prune at F** (Edmond: «согласен» with the Sage): its share of
   the trace's expansions is measured before anything is built.
 - **Q3, refuse W or U** (Edmond, verbatim): «в наборе - ничего не значит.
@@ -263,3 +264,54 @@ its measured share is material. Per-function analysis last.
   reach, is refused and W − U freed (`cycle/split.rs`); a ring with no
   member marked 1 that a ring with one refers into waits too, since the
   touched member may be live and hold it.
+
+## The Critic on Edmond's rules (2026-10-06)
+
+Edmond asked that his own rules be judged («мои правила могут быть не
+верными!! критик обязан их судить!»). The Critic (opus) took his answers to
+Q1–Q3 literally, reading the code, running nothing.
+
+1. **"0 is 100 % garbage" and "a ring with no 1 is destroyed" free live
+   objects.** At the frame `G.a → x1`, `x1 ↔ x2`, `x2.z → z1`, `z1 ↔ z2`.
+   During the trace the mutator runs `$t = G->a; $t->next->g = $t; G->a =
+   null;`: x1 and x2 are tagged F, the trace reads x1's count stale, and
+   all four come out white. x1 is live through `$t`, so z1 and z2 are too;
+   the ring {z1, z2} carries no 1. The suspect part is what a touched
+   member reaches, not a ring: U, the members tagged F and all they reach,
+   waits; W − U is freed at once. A ring with no 1 that refers *into* a
+   touched ring may be freed. This is the built split (`cycle/split.rs`).
+2. **"Destroys in any case" needs three guards.** A weakly held member goes
+   to the owner (an upgrade after the reading resurrects it); "destroy" is
+   finalize, with the revalidation after destructors kept; S is closed
+   under successors, so no destructor reads a part the collector freed. A
+   fourth for later: once more than one batch may be in flight, a ring
+   posted and not yet taken needs an "in a posted set" mark, or it is
+   proved and freed twice.
+3. **"1" means two things.** In R1 it is a window's number (below 2 may be
+   collected), in R2 "not yet". Read as the window just closed, every root
+   carries it (each entered R by a −1 tagged in that window) and nothing is
+   collected; read as a bit set on every write and never cleared, every
+   entity reads 1 for ever. The test is equality with the frame F of the
+   batch's offer.
+4. **The tags are read after the trace, not during it.** Read when the
+   trace meets an entity, x1 and x2 of finding 1 read 0 before the stores
+   that touch them, and live x1 is freed. One acquire fence after the
+   trace, then one byte a member, is required and is the cheapest sound
+   form.
+5. **"Below 2" and "never cleared" do not survive eight-bit windows.**
+   After the wrap "below F" refuses every stale tag; tags never cleared
+   keep a ring grown across 255 windows refused for ever. The CAS clear on
+   members of W, after their reading, is what the rule needs; no clearing
+   across the heap is right.
+6. **Two preconditions.** The window closes only where every reference is
+   counted (§7.16: at a poll); and every count store tags, so an untagged
+   −1 conflicts with R2 as stated.
+7. **P5, P9, P10 as worded.** P5 literally enters corpses at count 0, the
+   opposite of reading (a), which is right. P9's "judge once" holds for
+   W − U; U waits a window, a stale coincidence refuses once, S keeps the
+   revalidation after destructors. P10 holds before destructors for an S
+   with no weak references.
+
+**Sound as stated:** none of R1–R3 word for word. Sound as the build reads
+them: the equality test with F, the CAS clear on members only, the fence
+then the tag pass, the U split and the S closure.
