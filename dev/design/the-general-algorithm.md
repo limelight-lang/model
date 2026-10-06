@@ -685,30 +685,58 @@ attempt cleared its set's stale tags. On `web-heap` second refusals
 outnumber first ones (4.3–5.1k against 3.5–3.8k), and batches offered 1–10
 ms after the last post a third of their roots unwalked.
 
-**The repair.** P's entry has no free bit: two carry the verdict, the third
-is the mutator's deferral mark, and a header stands on any eight-byte
-boundary. So the fact goes on the batch, not on the entry:
-- The collector counts the roots it posts `Unwalked` because U refused
-  them, and stores the count in the mutator's record, relaxed, before its
-  release of the token (`POSTED` or `NOTHING_PROPOSED`), which the
-  mutator's reading acquires.
-- The disposition writes an `Unwalked` entry back with the mark only when
-  that count is the batch's whole number of `Unwalked` entries: a batch
-  whose unwalked roots are all refusals marks them, as today; a batch with
-  any root a cut left unwalked marks none. A batch mixing the two (a stop
-  during the posts after a completed split) gives its refused roots one
-  chance more, which costs liveness only.
-- The count is zeroed by the disposition that read it, on every path that
-  disposes of P (the poll's, an in-line collection's close, the pressure
-  path, the exit). A path that takes P's unwalked entries as roots of its
-  own batch (`BatchForm::AllRoots`) traces them and writes no mark.
+**The repair** (revised after the Critic, below). P's entry has no free
+bit: two carry the verdict, and bit 2 is the mutator's deferral mark, which
+it writes on unwalked roots of an `AllRoots` batch. So the fact goes beside
+P, by position:
+- The collector keeps, per batch, a bitset of up to `BATCH_BOUND` bits
+  indexed by the order of its posts, and P's tail index at its first post.
+  A post sets its bit when the root is written back marked: refused by this
+  batch's U, or carrying `SECOND_CHANCE_MARK` on the collector's copy of its
+  R entry (an incoming mark is kept). It stores the bitset and the base in
+  the mutator's record in `ReleaseOnDrop::drop`, unconditionally, before the
+  release of the token, which the mutator's take acquires.
+- Every disposition of P, whatever the batch's form, takes the bitset from
+  the record (copied and cleared before its first write-back) and writes an
+  `Unwalked` entry back with the mark exactly where the entry's position
+  from the base has its bit set; an entry outside the batch's range gets
+  no mark. `reset_for_a_new_life` clears it too.
+- A cut root that came in unmarked goes back unmarked, a refused root or a
+  marked one goes back marked: the mark means "a Δ-test refused this root
+  once", and only a Δ-test or an incoming mark sets it.
 
 **Why it is sound.** The mark only chooses between another refusal and a
 lane: a root read live is never freed, and a root without the mark is
-refused again at worst, which §4.8 bounds by the next window's clear. The
-change can only remove marks the build writes today.
+refused again at worst, which §4.8 bounds for garbage by the next window's
+clear. For a live set touched every window the mark is what bounds the
+refusals; the repair keeps it across cut batches.
 
-**Gate.** `cargo test` green in both builds, with a case per path: a cut
-batch's unwalked roots come back unmarked, a refused U's come back marked,
-a mixed batch's come back unmarked. On `web-heap`, three repeats: second
-refusals below first refusals, unwalked roots no worse, garbage within §9.
+**Gate.** `cargo test` green in both builds, with cases: a cut batch's
+unwalked roots come back unmarked, a refused U's marked, a marked root cut
+comes back marked, an `AllRoots` close that ends early keeps the bits, a
+stale bitset after an unwound disposition marks nothing of the next batch.
+On `web-heap`, three repeats: second refusals below first refusals, roots
+refused three times or more (a test-only count by address) near zero,
+unwalked roots no worse, garbage within §9.
+
+### Wave 3: the Critic on the repair (2026-10-06)
+
+The Critic (opus) read the draft against the code, running nothing; the
+draft above is revised to its findings.
+1. **The first draft wiped incoming marks**: a live set refused, then cut,
+   came back unmarked and was refused again without bound; the gate would
+   have counted the loss as a gain. The mark is now the incoming mark or a
+   refusal, and the gate counts roots refused three times or more.
+2. **No mixed batch**: after a completed scan every root is posted through
+   `verdict_for` with no recall reading (`worker.rs`, the posting loop), so
+   a count stood for one bit. A bitset by position is as cheap and exact.
+3. **`AllRoots`**: the disposition ignores the form today, and an
+   `AllRoots` close that ends early writes unwalked roots back; one rule
+   on every path now.
+4. **Where to store and zero**: in `ReleaseOnDrop::drop`, unconditionally;
+   copied and cleared before the first write-back; `reset_for_a_new_life`
+   included, else an unwound disposition's stale state marks the next
+   batch's cut roots.
+5. Checked and holding: P never holds two batches but after an unwind; the
+   take's acquire covers every disposition; `Unwalked` arises only the two
+   ways named.
