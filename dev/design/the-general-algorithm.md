@@ -254,3 +254,12 @@ its measured share is material. Per-function analysis last.
   the trace found white, not of any entity.
 - **Q2, P5's prune at F** (Edmond: «согласен» with the Sage): its share of
   the trace's expansions is measured before anything is built.
+- **Q3, refuse W or U** (Edmond, verbatim): «в наборе - ничего не значит.
+  вопрос в том, есть ли кольцо... если коллектор находит кольцо в котоорм
+  нет элементов с 1, в таком случае он уничтожает кольцо в любом случае.
+  элементы с 1 ждут следующего окна». The unit is the ring, not the set: a
+  ring with no member marked 1 is destroyed; members marked 1 wait for the
+  next window. Read against the build: U, the touched members and what they
+  reach, is refused and W − U freed (`cycle/split.rs`); a ring with no
+  member marked 1 that a ring with one refers into waits too, since the
+  touched member may be live and hold it.
