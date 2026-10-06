@@ -433,3 +433,9 @@ the Critic looks for orders that break it (a borrowed read with no unset:
 an overwrite, a scope exit, an argument, a return, an elision the compiler
 takes where it proves the holder survives), then the Sage. If it holds it
 goes into §7 as the compiler's obligation, citing the check.
+
+- **Q9, the untagged −1** (Edmond, verbatim): «я не эксперт и не знаю ...
+  стоит ли его делать? ну если пока это мешает - не делай. потом сделаем
+  эту оптимизацию». Deferred: not built now, kept as a later optimisation,
+  with its conditions (the holder's tag in `write_through`, the compiler's
+  retain-before-release under the Critic's check).
