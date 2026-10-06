@@ -237,3 +237,20 @@ Then code: P6 (the window beside the heap's fast TLS, the frame removed);
 P2's prerequisites (workspace and P for 16k, marks in bytes, then 1k, 4k,
 16k); P8–P10 (epoch re-based, the sum replaced by the tag read); P5 only if
 its measured share is material. Per-function analysis last.
+
+## Edmond's answers (2026-10-06)
+
+- **Q1, P3's "clear delta"** (Edmond, verbatim): «коллектор стартует после
+  того как мутатор дал сигнал о том, что он закрыл окно и таким образом
+  образовал дельту. Чёткая дельта, это когда в памяти есть отметка 0 и 1. и
+  таким образом коллектору не нужно собирать мусор два раза. нет. он идёт и
+  собирает сразу. видит 0 - 100% мусор, 1 - ещё нет.» The collector starts
+  on the mutator's signal that it closed its window; the delta is a mark in
+  memory, 0 or 1; the collector collects at once, in one pass: 0 is
+  garbage, 1 is not yet. Read against the build: the signal is the offer,
+  which turns the window to F; "1" is a tag equal to F and "0" any other,
+  so the marks need no clearing across the heap at each window (the stale
+  clear touches members only). "0 is garbage" holds of a member of the set
+  the trace found white, not of any entity.
+- **Q2, P5's prune at F** (Edmond: «согласен» with the Sage): its share of
+  the trace's expansions is measured before anything is built.
