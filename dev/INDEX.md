@@ -391,6 +391,9 @@ cells, requests, A/A check, pilots and analysis script (`README.md` there).
 garbage set alone by window tags in header byte 7 (Recycler over counts),
 ruled 2026-10-04 and built in S68 as an arm beside the default build;
 §5f holds the frame the mutator offers (S68.13): Edmond's proposal, built after three Critics by aspect.
+`dev/design/the-general-algorithm.md` — wave 1 of the 2026-10-06 rework:
+Edmond's ten principles over the recycler, and where the accepted design and
+the build stand against each.
 `dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md` — material for an article: the path
 of decisions from PHP's synchronous collector to S68, with the figures that
 moved each step; S68's run results are appended to it.
