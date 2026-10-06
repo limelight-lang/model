@@ -42,7 +42,9 @@ mutator's CPU 4 % under (52.6 s against 54.8). **Collector CPU lower than S68.12
 against 58.6 on the medians (+9 %). One cell's application took 45.1 ms, the
 gate's 5 ms passed; an application splices every chain of the frees standing
 and its drops cascade by count, both unbounded by the stride, and which of
-them took the 45 ms is not read. An intermediate build (R offered once it
+them took the 45 ms is not read: eleven more cells of B4 (six of 60 s, five
+of 96 s) timing each application past 5 ms with the thread's CPU beside its
+wall read none past 4.4 ms. An intermediate build (R offered once it
 stood still across any round's start, no backlog change; five cells) read
 touched 13 % and collector CPU 10 % over C, and one application of 18.6 ms.
 
