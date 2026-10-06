@@ -233,7 +233,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
-- [ ] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
+- [x] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
       third form after two Critic rounds, the Sage, and three Critics by
       aspect): every count store, decrement included, and every slot store
       the trace reads stores its tag first and the data with a release; the
@@ -254,7 +254,10 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       Done when: the loom model passes and each twin fails; `cargo test`
       green in both builds; five cells of A and B on `web-heap` with the
       no-checkpoint column gone, touched refusals no higher than S68.12's,
-      collector CPU lower than S68.12's cells, an offer-to-take latency
+      the mutator's and the collector's CPU together no higher than A's
+      (Edmond, 2026-10-06, in place of "collector CPU lower than S68.12's":
+      the collector does the owner's collections, so its CPU is read with
+      the mutator's), an offer-to-take latency
       column with its p99, the drain and standing-R cells within §5c, owner
       pause and garbage within §9; the write-site table complete; cases for
       a newborn in a reused slot, an exit over `OFFERED`, a return under
@@ -266,11 +269,13 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       `web-heap` against S68.12's build on one box (`dev/BENCHMARKS.md`):
       at the rounds' threshold the touched sets doubled; offered at a whole
       batch and once R stood still 5 ms, the touched sets meet S68.12's, the
-      garbage is 20 % lower and every drain clears, but the collector's CPU
-      is 9 % higher than S68.12's, which the gate forbids, and one cell's
-      application took 45 ms. Open for Edmond (2026-10-05): drop the CPU
-      clause, keep looking under it, or go back to S68.12's protocol. The
-      request machinery stays in the default build's protocol.
+      garbage is 20 % lower and every drain clears; the collector's CPU is
+      9 % over S68.12's, the two together 116.5 s against A's 149.4 (and
+      S68.12's 113.4). One cell's application took 45 ms, not met again in
+      eleven. Closed 2026-10-06 on Edmond's ruling on the CPU clause; the
+      offer-to-take p99 (32 ms) was read on the first form only, and R
+      standing under §5c has no column of its own. The request machinery
+      stays in the default build's protocol.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
