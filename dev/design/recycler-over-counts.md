@@ -15,7 +15,9 @@ Immediate, owner-written, non-atomic reference counting; destructors run as
 today for everything not collected as a cycle; copy-on-write reads exact
 counts. Candidates and the ring R, batches of K roots, the token and its
 recall, the withheld returns, the collector's stamps, the epoch and the
-deferred lanes are all as in the default build, but for one thing: the
+deferred lanes are all as in the default build, but for two things: the
+epoch's clock is to be re-based on the thread's taken batches (Q6,
+`the-general-algorithm.md`), and the
 collector does not ask for a batch, the mutator offers one at its own poll
 (§5f), so the consent and the checkpoint of the default build have no part
 here.
@@ -94,10 +96,10 @@ here.
    nothing, and its R is not collected until it does (an edge case of P7,
    `the-general-algorithm.md`).
 8. The collector reads byte 7 of every member of W. Any member carrying the
-   window's number, or one whose address cannot be recovered to read it:
-   the set is not judged. A member with weak references keeps the set
-   unproved as well — an upgrade after T makes it live with no tag — and
-   S68.6 takes it and what it reaches the exact way. A set marked proved
+   window's number, or one whose address cannot be recovered to read it,
+   seeds U, which is refused (§5.9); the rest of W is judged. A member with
+   weak references keeps S unproved — an upgrade after T makes it live with
+   no tag — and S68.6 takes it and what it reaches the exact way. A set marked proved
    lists every member the test read: one the pool closed short, or whose
    walk left a row out, is a part of the garbage that may not be freed
    while the rest names it (the Critic of S68.5, findings 1–2). None: W is garbage at T and stays
@@ -141,10 +143,15 @@ here.
 ## 5. Splitting and freeing
 
 9. U = the members of W tagged with the frame's number and everything they
-   reach over the recorded edges; U waits for a later window and W − U is
-   judged at once (`cycle/split.rs`; Edmond's Q3,
-   `the-general-algorithm.md`). S = every member of W − U reachable from a
-   member with a destructor or weak references; C = W − U − S. S is closed under successors, so no destructor in
+   reach over the recorded edges, a member whose address cannot be read
+   counting as tagged. U's roots go back to R once; refused a second time
+   they read live and wait out the lanes, or, where a member was unreadable,
+   U stays in W as a seed of S, posted unmarked (`worker.rs`, the split).
+   W − U is judged at once (Edmond's Q3, `the-general-algorithm.md`). S =
+   every member of W − U reachable from a seed: a destructor, weak
+   references, or a member the collector does not free (another owner's or
+   a non-slotted block, outside cells, any kind
+   `collector_frees::eligible` refuses; `split.rs`); C = W − U − S. S is closed under successors, so no destructor in
    S can resurrect C.
 10. The collector frees C itself, member by member, in this order: build the
     member's drops (what its `dispose` would release outside C, edges into S
@@ -857,9 +864,10 @@ checkpoint, the bounded wait and the consent go.
   (a free's reading may hold ARC-elided temporaries, §4.7), when its root
   queue R passes a threshold, or R has stood non-empty below it for
   `STANDING_INTERVAL` since the last release, or the merged lanes are due,
-  the mutator turns its window F-1 to F, records on the token R's end as
-  the batch's ceiling, and moves the token by one CAS `FREE` → `OFFERED`
-  with acquire–release. The acquire orders the last batch's stale clears
+  the mutator records on the token the next window F and R's end as the
+  batch's ceiling, moves the token by one CAS `FREE` → `OFFERED` with
+  acquire–release, and once the swap has landed, before any count write,
+  sets its own window to F (`token.rs`, `offer`; `offer.rs`). The acquire orders the last batch's stale clears
   (§4.8) before the new frame's tags: a clear of a stale F from 255 windows
   back would otherwise erase a fresh F (Critic, ordering, finding 1); every
   exit of a batch (posted, dropped unread, `NOTHING_PROPOSED`) is a release
@@ -1030,7 +1038,8 @@ for the sets the design routes to the collector, a set routed to the owner
 for its destructors being bounded by them (the Sage, 2026-10-04, on S68.9) — held garbage no worse,
 Δ-refusals under 10 % of batches; `tag_sets_weakly_held` reported in every
 cell, a load that shows such sets deciding the fallback for them
-(`the-general-algorithm.md`, weak references, 2026-10-06). A loom model of the handshake at T; a debug
+(`the-general-algorithm.md`, weak references, 2026-10-06). A loom model of the offer, the take and the tag reads
+(`offer_model.rs`); a debug
 build asserting the tag at every primitive; a debug build running the exact
 validation beside the collector's verdict and checking both agree, and
 asserting the collector writes byte 7 of no entity outside W (as

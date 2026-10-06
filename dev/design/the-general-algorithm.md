@@ -466,8 +466,10 @@ and §9 are rewritten to it in the same commit.
   decoupled from the offer threshold (Q6, settled on the Sage's advice).
 - Every count store, the −1 included, writes F into the entity's byte 7,
   then the count with a release; every slot store the trace reads tags its
-  holder, then the slot with a release (P6). The untagged −1 is deferred
-  (Q9) with its two conditions written down.
+  holder, then the slot with a release (P6), but for the untagged stores of
+  §5f's table: `write_through`, root slots, severs, keys before `set_used`.
+  `write_through` stays the open problem the Sage ranked. The untagged −1 is
+  deferred (Q9) with its two conditions written down.
 - At its own poll, with the gate open and the token `FREE`, when R reaches
   the threshold, or has stood below it for the standing interval, or a lane
   merged into it, the mutator offers: one CAS `FREE` → `OFFERED` carrying
@@ -475,15 +477,16 @@ and §9 are rewritten to it in the same commit.
   (P1); the offer is the clear delta, the frame the collector judges
   against (Q1, P3). The threshold is 64 today; 1k, 4k and 16k are measured
   once the workspace takes them, the memory withheld meanwhile bounded in
-  bytes (Q5, P2).
+  bytes (Q5, P2). The poll does not offer while slices of the collector's
+  drops stand to be applied (`gc.rs`).
 - It never waits for the take (P7): it runs on and withholds returns of
   memory under `OFFERED` and `COLLECTOR`; a mark reached under `OFFERED`
   withdraws the offer by CAS, without waiting.
 - At a later poll it applies the collector's drops and runs the
   destructors of a proved S at once, without judging it again; the
-  revalidation after destructors stays (Q4, P10). A weakly held S goes the
-  way it goes today until a load shows such sets (weak references, settled
-  on the Sage's advice).
+  revalidation after destructors stays (Q4, P10). A weakly held S comes
+  unproved and goes the exact way, as today, until a load shows such sets
+  (weak references, settled on the Sage's advice).
 
 **The collector.**
 - It takes an offer by CAS `OFFERED` → `COLLECTOR` with an acquire, then
@@ -492,12 +495,17 @@ and §9 are rewritten to it in the same commit.
   records every edge it subtracts. It reads no tag during the trace: the
   prune at F waits for the measured share of expansions it would save (Q2).
 - After the trace: one acquire fence, then one tag byte a member of W. U is
-  every member tagged F and everything it reaches over the recorded edges;
-  U waits for the next window, W − U is garbage, judged once (Q3, P9).
+  every member tagged F or whose address cannot be read, and everything it
+  reaches over the recorded edges; U waits for the next window, W − U is
+  garbage, judged once (Q3, P9). U refused a second time reads live and
+  waits out the lanes (§4.8's second chance, accepted 2026-10-05), or, with
+  an unreadable member, stays in W as a seed of S, posted unmarked.
   Stale tags (neither 0 nor F) on members are cleared by CAS; nothing else
   in the heap is cleared.
-- Of W − U, S (reached from a destructor or a weak reference, closed under
-  successors) goes to the owner as proved; C is freed by the collector.
+- Of W − U, S (reached from a destructor, a weak reference, or a member the
+  collector does not free: another owner's or a non-slotted block, outside
+  cells, a kind `eligible` refuses; closed under successors) goes to the
+  owner, proved unless weakly held; C is freed by the collector.
   It releases the token.
 
 **Where the mutator alone does not decide (P1), and where a side waits
@@ -507,7 +515,11 @@ the audits of the same day, not run.
 | case | what happens | proposal |
 |---|---|---|
 | no collector stands, the elder's birth refused | no offer (`offer.rs`, `a_taker_stands`) | stays: an offer no one can take withholds every return for nothing |
-| the token not `FREE` (the last batch posted, its drops not yet applied) | no offer until the owner's poll applies them: one batch a mutator at a time | stays; measured: the time from post to apply, and R's length at each offer |
+| the token `POSTED` (the last batch's set waits for the owner's poll) | no offer until the poll takes P: one batch a mutator at a time | stays; measured: the time from post to apply, and R's length at each offer |
+| slices of the collector's drops stand, the token `FREE` | the poll applies one slice and returns before the offer (`gc.rs`) | stays; measured: the share of polls it holds back |
+| no collector thread stands (the first offer, or after the elder unwinds) | the poll spawns one, joining the previous thread (`a_taker_stands`, `birth.rs`): the mutator waits on a collector thread's teardown | an edge case of P7, rare; counted |
+| the offer's wake | locks the collector's mutex (`wake_pending`) | stays: a short lock, not a wait on the collector's work |
+| the take refused by a reading hold (exit `RETURNING`) | the collector skips the offer; it stands, returns stay withheld | an edge case; measured with the withdrawals |
 | an offer withdrawn at a mark | no new offer until a collector's round begins (`WITHDRAWN_AT_ROUND`) | stays: else an untakeable offer is made and withdrawn at every poll |
 | the standing interval | read on the collector's round clock, so the poll reads no clock | stays: a ring stands at most one fallback interval late |
 | cap 0 | the elder turns `OFFERED` into `ASKED` (`token.rs`) | stays: cap 0 is the switch that hands collection back to the owner |
@@ -520,13 +532,101 @@ the audits of the same day, not run.
 **Polished reading of the principles.** P1: the mutator alone turns the
 window and makes the offer; the cases above can keep it from offering,
 never make it offer. P7: neither side waits in the steady state; the one
-wait is a slow path's take during a commit, an edge case to be counted.
-P9: one judgement for W − U; U waits one window; the epoch stays as the
-lanes' clock, not the judgement's.
+waits are a slow path's take during a commit and a collector thread's
+birth, edge cases to be counted. P9: one judgement for W − U; U waits one
+window, and a lane if refused again; the epoch stays as the lanes' clock,
+not the judgement's.
 
 **What the measurements before code are** (the Sage's order): the share of
 the trace's expansions at F; corpses and read-live per batch against the
 oldest root's age; windows a second and coincidence refusals; the owner's
 time by posting kind; withdrawals at a mark; slow-path takes during a
 commit; `tag_sets_weakly_held`; callgrind counts of `ll_retain` and
-`ll_release`, all of the mutator's and the collection's share, against A.
+`ll_release`, all of the mutator's and the collection's share, against A;
+the time from post to apply and R's length at each offer; bytes withheld a
+batch and the offer-to-take latency; first and second refusals a batch
+(`split_counts`); polls held back by standing drop slices; and why the
+record scan reads 2.5 times the heap scan's read-live.
+
+### Wave 2: the Critic on the draft, and Claude's answers (2026-10-06)
+
+The Critic (opus) read the draft and the code, running nothing; nine
+findings, each answered in the draft above or in `recycler-over-counts.md`.
+
+1. "U waits one window" left out the second chance: refused again, U's
+   roots read live and wait a lane (`worker.rs`, the split; §4.8). Written
+   in. Edmond's Q3 («элементы с 1 ждут следующего окна») speaks of one
+   refusal; whether a second refusal may send U to the lanes is put to the
+   Sage as a possible fork with Q3.
+2. §4.8 said a touched set is not judged and a weakly held S is proved;
+   the code splits U and posts a weakly held S unmarked. §4.8 and the draft
+   rewritten to the code.
+3. Not every slot store tags its holder: §5f's table lists `write_through`,
+   root slots, severs, keys before `set_used`. Written in; `write_through`
+   stays open.
+4. The P1/P7 table missed four cases: drop slices standing hold the offer
+   back (`gc.rs`), a collector thread's birth joins the previous thread,
+   the wake locks the collector's mutex, a reading hold leaves an offer
+   standing. Added as rows.
+5. §5f put the window's turn before the swap; the code stores F on the
+   token, swaps, then sets the thread's window. §5f rewritten to the code.
+6. U's and S's seeds were narrower than the code (unreadable members;
+   members the collector does not free). Written in.
+7. §1 said the epoch is as in the default build; Q6 re-bases it. Written
+   in. Whether re-basing moves the maturation stamps or only the lanes is
+   put to the Sage.
+8. The handshake in §9 renamed to the offer's model.
+9. Five measurements added to the list.
+
+### The Critic on the compiler's retain before release (2026-10-06)
+
+The Critic (opus) read the rfc and the runtime, running nothing; the
+compiler is in neither repository, so what it does is unchecked; what the
+rfc tells it to do is checked.
+
+**Verdict.** Edmond's statement matches the chain rule
+(`rfc/model/memory/static-lifetimes.md`) for `unset`, and is not enough as
+the obligation: `unset` is one of about eight operations that break the
+path a borrow is read through, and the common one is a slot overwrite.
+Stated over the whole path, the order makes the untagged −1 that does not
+reach zero sound, with the −1 kept a release store.
+
+1. **An overwrite, no `unset`.** `function swap($new) { $old = $this->h;
+   $this->h = $new; return $old; }` with `x ↔ y` held by `$this->h`: the
+   store drops x 2 → 1 untagged, the collector reads `{x, y}` white and
+   untouched and frees them, and `return $old` retains freed memory.
+   Tagged −1: refused. The chain rule: converted before the store.
+2. **"The last counted reference" is decided by counts**, which a ring
+   holds up; the rfc rejects the same reasoning twice (Y11,
+   `questions.md:772`; `static-lifetimes.md`). What is forbidden is sinking
+   the retain below the −1 or hoisting the −1 above it; sinking a release
+   is harmless.
+3. **Four rfc texts, four policies:** Y11 (a local always counted,
+   strictest), the chain rule (Edmond's), `lowering.md` and
+   `arc-optimizations.md` (pair cancellation, silent on a −1 that does not
+   reach zero), and §7.16 (no uncounted reference across a poll, which the
+   untagged −1 takes back).
+4. **Breakers in another frame:** a destructor run by an intermediate
+   release, a borrowed receiver, by-reference writes, user hooks
+   (`__set`, `offsetUnset`, …), `yield` and fibers; "a within-frame
+   property" (`static-lifetimes.md:128`) is false for these.
+5. **The order of the stores:** `lowering.md` shows plain inline `++`/`--`;
+   on AArch64 the −1 can show before the +1's tag. §7 must state both
+   stores' order.
+6. **The runtime's own paths hold**, with two comments worded by counts
+   (`element::get`, `box_element`).
+
+**Proposed 16b** (the Critic's wording): a borrow is covered by a counted
+path from a root; before any operation that can remove a reference on that
+path (a store, unset, scope exit or last-use drop of the root; a store,
+removal, pop, clear or separating copy of a slot on the path or of a
+may-alias of a holder on it; a call, destructor or hook that may do either;
+a `yield` or fiber suspension), the borrow is dead or converted: its +1, a
+tagged count store, sequenced before that −1's release store, and no
+transformation moves either across the other. Whether the −1 can reach zero
+is not an argument. Checkable by a verifier after the ARC passes, and in
+debug by a stress mode running trial deletion at every −1 that does not
+reach zero.
+
+Not written into §7: the untagged −1 is deferred (Q9). To the Sage, then
+to Edmond with the verdict.
