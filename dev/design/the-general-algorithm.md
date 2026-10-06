@@ -91,3 +91,72 @@ code, not run; the counts are from `dev/BENCHMARKS.md` with their dates.
   16k are to be measured once the workspace allows them.
 - **The second stage.** What of the owner's recheck and the epoch can go
   once the judgement is immediate and the prune at F is built.
+
+## Wave 1: the Critic's findings and Claude's answers (2026-10-06)
+
+The Critic (opus) attacked "The principles" and "The algorithm", reading the
+code, running nothing. Each finding with Claude's answer; the Sage judges
+both next, and nothing here is accepted before Edmond rules.
+
+1. **The prune at F keeps a garbage structure forever (liveness).** Stale tags
+   are cleared on members of W only; a pruned member never enters W, so a
+   stale tag equal to F prunes it again at every attempt. *Accept.* A root
+   whose trace pruned anything is posted unwalked with a no-prune bit (the
+   second-chance bit's mechanism); its next trace enters everything, W forms
+   and its tags are cleared.
+2. **"Live for this batch" in the live colour proves liveness.** The live
+   colour feeds the read-live posts, the lanes and the stamps, so garbage
+   dropped after the frame waits a lane. *Accept.* The prune is a fourth
+   outcome, neither live nor member (the side bitmap §5f's Open item asks
+   for); a root met only through it is posted unwalked and stamps nothing.
+3. **The epoch cannot go.** The judgement reads no epoch already; the epoch
+   is the clock of the maturation stamps and the lanes, and a stamp cannot be
+   retired by window tags. *Accept.* P9's "no epoch" holds for the
+   judgement; the epoch stays as the stamps' clock. Whether the lanes keep
+   it is finding 9.
+4. **P10 has two readings.** Dropping the validation after destructors is a
+   use-after-free (a `__destruct` stores `$this` into a global). Dropping the
+   counts'-sum confirm before them buys nothing measurable. *Accept,* with
+   the Critic's alternative to rule on: the owner's confirm reads the tags of
+   S for F in place of the sum (the window cannot turn while P stands), which
+   also lets a weakly held S be proved instead of retraced. The validation
+   after destructors stays: it is PHP's semantics, not a second judgement.
+5. **P2: a 10k–16k batch is clamped and defeats itself.** P is one block
+   (about 8,159 verdicts); the withholding marks (8,192 deaths, 16 blocks)
+   recall a long trace, a cut batch goes to the owner and K halves.
+   *Accept.* Before P2 is measured, P grows and the marks scale with the
+   batch, or a cut batch's work is kept; both are prerequisites, not tuning.
+6. **P3: "a clear delta" has two readings.** If it is the offer, it is built.
+   If the collector waits after the offer, the withheld returns reach a mark,
+   the offer is withdrawn, and no batch is ever taken. *Accept the risk;*
+   the meaning is Edmond's to state. Claude's proposal: the delta is defined
+   on R (roots never offered, the oldest's wait, lanes due), the take follows
+   at once, and no delay after the offer is built before it is measured.
+7. **P5: "unless their count is 0" has three readings.** *Accept reading
+   (a):* an F-tagged entity at count 0 gets no row and no expansion, as the
+   corpse rule does today; expanding a corpse subtracts its released
+   children twice.
+8. **P9: "a set none of whose members carries F" drops the U split.**
+   *Accept.* U, the closure of the touched members, is refused; W − U is
+   judged.
+9. **P8: the lanes against turns by X.** B turns only by X, so the lanes
+   wait 8, 24, 56 s, and a larger offer threshold would release every lane
+   at every X turn. *Accept.* Proposal: the lanes count the mutator's own
+   offers, with a time floor, independent of the epoch and of the batch
+   size.
+10. **P7: inherent and removable waits.** Inherent: withheld returns from
+    offer to release, a recall's stride, exit and teardown waiting out the
+    heap's reads. Removable: the commit-length wait (unproved), one batch at
+    a time (needs an "in a posted set" mark first, or a destructor runs
+    twice), the withdrawal's wait for the next round (policy), a thread that
+    never polls. *Accept.* Proposal for the last: the park
+    (`ll_gc_blocking_call`) offers when R is not empty, still the mutator's
+    decision, at a point where every reference is counted.
+11. **P4 cannot hold per operation.** B's +1/−1 carry A's work plus a tag.
+    *Accept the reading, not the restatement:* P4's goal is Edmond's; the
+    Critic's "GC-attributable mutator instructions several times fewer" is a
+    measurable form for him to accept or reject.
+
+Sound as stated, by the Critic: P1 (but the thread that never polls), P6 as
+a goal, P8's first half, P10's first clause, the judgement's fence and tag
+read, and the prune's soundness for frees.
