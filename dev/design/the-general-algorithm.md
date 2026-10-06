@@ -439,3 +439,9 @@ goes into §7 as the compiler's obligation, citing the check.
   эту оптимизацию». Deferred: not built now, kept as a later optimisation,
   with its conditions (the holder's tag in `write_through`, the compiler's
   retain-before-release under the Critic's check).
+- **Q6, the epoch** (Edmond, verbatim): «эпоха нужна... я не уверен втом,
+  что она не нужна». The epoch stays, the clock of the maturation stamps
+  and the lanes; P9's "no epoch" holds for the judgement only. Settled on
+  the Sage's advice, open to Edmond's overturning: it turns on this
+  thread's taken batches with X as a floor, and the caught-up rule is
+  decoupled from the offer threshold first.
