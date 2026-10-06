@@ -16,7 +16,8 @@ today for everything not collected as a cycle; copy-on-write reads exact
 counts. Candidates and the ring R, batches of K roots, the token and its
 recall, the withheld returns, the collector's stamps, the epoch and the
 deferred lanes are all as in the default build, but for two things: the
-epoch's clock is to be re-based on the thread's taken batches (Q6,
+epoch is also to turn on the thread's taken batches, beside the proofs'
+price, the stamps and the lanes keeping one clock (Q6,
 `the-general-algorithm.md`), and the
 collector does not ask for a batch, the mutator offers one at its own poll
 (§5f), so the consent and the checkpoint of the default build have no part
@@ -99,7 +100,9 @@ here.
    window's number, or one whose address cannot be recovered to read it,
    seeds U, which is refused (§5.9); the rest of W is judged. A member with
    weak references keeps S unproved — an upgrade after T makes it live with
-   no tag — and S68.6 takes it and what it reaches the exact way. A set marked proved
+   no tag — and S68.6 takes it and what it reaches the exact way. The weak
+   flag is read over all of W, U included, so a weakly held member of U
+   alone keeps S unproved: conservative (the Sage, 2026-10-06). A set marked proved
    lists every member the test read: one the pool closed short, or whose
    walk left a row out, is a part of the garbage that may not be freed
    while the rest names it (the Critic of S68.5, findings 1–2). None: W is garbage at T and stays
@@ -1006,6 +1009,28 @@ crate's cells, which are bound by contract (`cells.rs`).
     built under this feature (§5f, "Decided for the first build"):
     `ll_gc_blocking_call` exists in no source file, and an offer before a
     blocking call would be a new export.
+16b. *In force only with the untagged −1 that does not reach zero (Q9,
+    deferred; today every −1 tags).* A borrow, a reference the mutator
+    holds without a count of its own (an ARC-elided load, a borrowed
+    parameter, receiver or result, a pointer runtime code read out of a
+    slot), is covered by a counted path from a root (a counted local or
+    temporary, a static slot, an arena or FFI root) through counted heap
+    edges to the borrowed entity. Before any operation that can remove a
+    reference on that path — a store, unset, scope exit or last-use drop
+    of the root; a store, removal, pop, clear or separating copy of a slot
+    on the path or of a may-alias of a holder on it; a call, destructor or
+    user hook that may do either; a `yield` or fiber suspension — the
+    borrow is dead or converted: its +1, a tagged count store, is
+    sequenced before that operation's −1, a release store, and no
+    transformation (ARC pairing, code motion, inlining) sinks the +1 below
+    that −1 or hoists the −1 above it; sinking a release stays allowed.
+    Whether the −1 can reach zero is not an argument: a count a ring holds
+    above zero is the case this protects. The holder's tag on count-free
+    moves (`write_through`, cancelled pairs) is a separate condition of
+    Q9. Edmond's rule (retain before release at `unset`) is this
+    obligation at one of its points; checked against the rfc, not the
+    compiler, which is in neither repository (the Critic and the Sage,
+    2026-10-06, `the-general-algorithm.md`).
 17. The store barrier receives the holder (`ll_store_*_in(ctx, owner_cat,
     holder, slot, new)`): an ABI change, enforced — under the feature the
     untagged `ll_store_ptr`/`_box`/`_owned` names are not exported, so an

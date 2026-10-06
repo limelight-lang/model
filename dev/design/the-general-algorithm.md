@@ -464,6 +464,9 @@ and §9 are rewritten to it in the same commit.
   it returns to R (P8). The lanes' clock is the epoch, turning on this
   thread's taken batches with X as a floor; the caught-up rule is
   decoupled from the offer threshold (Q6, settled on the Sage's advice).
+  One clock: the stamps' epoch and the lanes' are bits of one cell, so the
+  stamps retire with it; taken batches are a second trigger beside the
+  proofs' price (`SPENT_PER_PROOF`), not a replacement.
 - Every count store, the −1 included, writes F into the entity's byte 7,
   then the count with a release; every slot store the trace reads tags its
   holder, then the slot with a release (P6), but for the untagged stores of
@@ -499,7 +502,10 @@ and §9 are rewritten to it in the same commit.
   reaches over the recorded edges; U waits for the next window, W − U is
   garbage, judged once (Q3, P9). U refused a second time reads live and
   waits out the lanes (§4.8's second chance, accepted 2026-10-05), or, with
-  an unreadable member, stays in W as a seed of S, posted unmarked.
+  an unreadable member, stays in W as a seed of S, posted unmarked: Q3 for
+  the first refusal, P8 for the second, since the first attempt cleared
+  every stale tag, so a second F is a real write and the root is live at
+  that frame (the Sage).
   Stale tags (neither 0 nor F) on members are cleared by CAS; nothing else
   in the heap is cleared.
 - Of W − U, S (reached from a destructor, a weak reference, or a member the
@@ -630,3 +636,38 @@ reach zero.
 
 Not written into §7: the untagged −1 is deferred (Q9). To the Sage, then
 to Edmond with the verdict.
+
+### Wave 2: the Sage (2026-10-06)
+
+The Sage (Fable), reading the code, running nothing.
+
+**Conclusion.** The polished draft is faithful to the code and the
+accepted rules; Claude's nine answers hold. No fork for Edmond.
+
+1. **A liveness defect in the build** (for the code wave):
+   `queue/compaction.rs` sets `SECOND_CHANCE_MARK` on every `Unwalked`
+   write-back, and `post_the_rest_unwalked` (`worker.rs`) posts `Unwalked`
+   for a trace cut by a recall or stop. A root cut once and refused once
+   reads live and goes to a lane, with no first Δ-test having cleared its
+   set's stale tags. Read-live is always safe; the fix marks only the
+   split's `Unwalked` (a verdict bit beside `VERDICT_DEFER_MARK`). Checked
+   by Claude in the code; not fixed in this wave.
+2. **The second refusal is a consequence of Q3, not a conflict.** Q3 speaks
+   of one refusal; a second F after the first attempt cleared every stale
+   tag is a real write, the root is live, and P8 sends a live root to the
+   lanes. Settled by Claude on the Sage's advice, written into the draft;
+   `split_counts` (second refusals, roots read live again) is a gate
+   column so Edmond can overturn on data.
+3. **Q6 is one clock.** The stamps' epoch and the lanes' are low bits of
+   one cell (`epoch.rs`; `LANE_WAITS` in `queue.rs`): a root back from a
+   lane must find its last reading's stamps retired. Taken batches become a
+   second trigger beside `SPENT_PER_PROOF`, X the floor. Settled by Claude
+   on the Sage's advice.
+4. **16b.** The Critic is right and the wording complete enough; written
+   into §7 word for word, marked in force only with the untagged −1, with
+   the stores' order; `static-lifetimes.md`'s "within-frame property"
+   corrected in the rfc. Later, with the arm: the verifier after the ARC
+   passes, the stress mode, and the four rfc texts reconciled (one policy
+   worded four ways).
+5. A weakly held member of U alone keeps S unproved: conservative, noted
+   in §4.8.
