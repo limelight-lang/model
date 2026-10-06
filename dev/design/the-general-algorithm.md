@@ -428,7 +428,8 @@ Edmond (verbatim): «компилятор делает не совсем так.
 понимает, что $c нужно увеличить на +1. и он сперва увеличивает $c, а потом
 уже убирает ссылку.» The compiler retains a reference read out of an entity
 before it releases the reference it was read through, which is obligation
-16b of the untagged −1 (the Sage). It is kept by the compiler today; it
-goes into §7 as a stated obligation when the untagged −1 is built, so that
-no later optimisation sinks a retain below a release. The untagged −1's
-remaining condition is the holder's tag in `write_through`.
+16b of the untagged −1 (the Sage). Edmond's statement, not yet checked:
+the Critic looks for orders that break it (a borrowed read with no unset:
+an overwrite, a scope exit, an argument, a return, an elision the compiler
+takes where it proves the holder survives), then the Sage. If it holds it
+goes into §7 as the compiler's obligation, citing the check.
