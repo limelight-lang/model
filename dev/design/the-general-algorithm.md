@@ -671,3 +671,44 @@ accepted rules; Claude's nine answers hold. No fork for Edmond.
    worded four ways).
 5. A weakly held member of U alone keeps S unproved: conservative, noted
    in §4.8.
+
+## Wave 3: the second chance spent on a cut trace (Claude's draft, 2026-10-06)
+
+**The defect** (the Sage, wave 2; measured in `dev/BENCHMARKS.md`, "S68.14's
+measurements before code"). The disposition writes every `Unwalked` entry of
+P back into R with `SECOND_CHANCE_MARK` (`queue/compaction.rs`). `Unwalked`
+carries two meanings: a root of a refused U (`verdict_for`, a completed
+trace), and a root no trace reached (`post_the_rest_unwalked`, a recall, a
+stop or a refused allocation). The second spends a chance no Δ-test gave,
+so the root's next refusal reads it live and sends it to a lane, though no
+attempt cleared its set's stale tags. On `web-heap` second refusals
+outnumber first ones (4.3–5.1k against 3.5–3.8k), and batches offered 1–10
+ms after the last post a third of their roots unwalked.
+
+**The repair.** P's entry has no free bit: two carry the verdict, the third
+is the mutator's deferral mark, and a header stands on any eight-byte
+boundary. So the fact goes on the batch, not on the entry:
+- The collector counts the roots it posts `Unwalked` because U refused
+  them, and stores the count in the mutator's record, relaxed, before its
+  release of the token (`POSTED` or `NOTHING_PROPOSED`), which the
+  mutator's reading acquires.
+- The disposition writes an `Unwalked` entry back with the mark only when
+  that count is the batch's whole number of `Unwalked` entries: a batch
+  whose unwalked roots are all refusals marks them, as today; a batch with
+  any root a cut left unwalked marks none. A batch mixing the two (a stop
+  during the posts after a completed split) gives its refused roots one
+  chance more, which costs liveness only.
+- The count is zeroed by the disposition that read it, on every path that
+  disposes of P (the poll's, an in-line collection's close, the pressure
+  path, the exit). A path that takes P's unwalked entries as roots of its
+  own batch (`BatchForm::AllRoots`) traces them and writes no mark.
+
+**Why it is sound.** The mark only chooses between another refusal and a
+lane: a root read live is never freed, and a root without the mark is
+refused again at worst, which §4.8 bounds by the next window's clear. The
+change can only remove marks the build writes today.
+
+**Gate.** `cargo test` green in both builds, with a case per path: a cut
+batch's unwalked roots come back unmarked, a refused U's come back marked,
+a mixed batch's come back unmarked. On `web-heap`, three repeats: second
+refusals below first refusals, unwalked roots no worse, garbage within §9.
