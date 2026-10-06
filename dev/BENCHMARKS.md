@@ -8,6 +8,34 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-06 — the second chance kept for refusals alone: right in the code, no change on `web-heap`, whose batches are never cut
+
+**Builds.** B with the repair of `dev/design/the-general-algorithm.md`,
+"Wave 3: the second chance spent on a cut trace" (this entry's commit),
+against B of the entry below; `web-heap` by the protocol's cell on this box
+as below, three repeats, and one repeat more with a count of the unwalked
+entries written back.
+
+| | B before | B repaired |
+|---|---|---|
+| mutator CPU, s | 48.7–49.2 | 48.1–49.7 |
+| collector CPU, s | 62.5–64.2 | 63.2–65.5 |
+| garbage mean, MB | 30.4–32.5 | 30.6–33.8 |
+| U refused first / second time | 3,530–3,832 / 4,321–5,091 | 3,589–3,787 / 4,448–4,772 |
+| unwalked entries written back, unmarked / marked (one repeat) | — | 0 / 1,860,178 |
+
+**Reading.** Every unwalked root written back carried a refusal or an
+incoming mark: no batch on this load was cut, so the defect never fires
+here, and the readings sit within the spread. The repair stands for the
+loads that do cut batches (a recall, a stop, a refused allocation), shown
+by its three unit cases, each failing without it. Corrections to the entry
+below: its "unwalked" roots are U's refusals, so a third of the roots of a
+batch offered 1–10 ms after the last were refused as touched; and the
+first and second refusals count sets, which differ from batch to batch, so
+more second refusals than first says nothing of the mark. The count of
+roots refused three times or more, by address, is not usable: 82 M members
+freed a run reuse the addresses.
+
 ## 2026-10-06 — S68.14's measurements before code: a batch whose roots waited 10 ms or more is three-quarters dead, a younger one a third; the prune at F would skip 5 % of the expansions
 
 **Builds.** A and B at `3f08af4` with the rig's wave 3 counters of this entry's commit
@@ -65,9 +93,10 @@ own frees):
   measured; changing when the mutator offers is a change of the accepted
   rule and goes to Edmond.
 - **The second chance.** More sets are refused a second time than a first
-  (4.3–5.1k against 3.5–3.8k): a root posted unwalked comes back with its
-  second chance spent (`queue/compaction.rs`), the defect the Sage found,
-  and the 1–10 ms batches post a third of their roots unwalked.
+  (4.3–5.1k against 3.5–3.8k). Read at first as the defect the Sage found
+  (a root a cut left unwalked comes back with its second chance spent);
+  the next entry corrects it: the unwalked roots here are U's refusals,
+  and the counts are of sets, not roots.
 - **The prune at F (P5).** 4.7–4.8 % of the trace's expansions meet an
   entity tagged F, none at a count of 0: the prune would skip at most that
   directly, plus what only those entities reach, unmeasured.

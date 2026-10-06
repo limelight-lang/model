@@ -2733,6 +2733,23 @@ pub(crate) mod wave_three {
         }
     }
 
+    /// The unwalked entries P's dispositions wrote back into R: marked, and
+    /// not.
+    static WRITTEN_BACK_UNWALKED: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
+
+    /// A disposition wrote an unwalked entry back, `marked` or not.
+    pub(crate) fn note_an_unwalked_write_back(marked: bool) {
+        WRITTEN_BACK_UNWALKED[usize::from(marked)].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The unwalked entries written back since the last call, unmarked and
+    /// marked; zeroed.
+    pub(crate) fn take_unwalked_write_backs() -> [u64; 2] {
+        WRITTEN_BACK_UNWALKED
+            .each_ref()
+            .map(|count| count.swap(0, Ordering::Relaxed))
+    }
+
     /// Every reading since the last call, as `(polls, ceilings, expansions,
     /// by_span)`, all zeroed.
     pub(crate) fn take() -> ([u64; 2], [u64; 4], [u64; 3], [[u64; 5]; SPANS.len() + 1]) {

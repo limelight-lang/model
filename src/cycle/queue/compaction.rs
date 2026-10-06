@@ -260,7 +260,33 @@ fn dispose_verdicts(
     };
     let mutator_state = unsafe { mutator_state_ref(state) };
     let count = prefix.unwrap_or_else(|| ring.count());
+    // The last batch's posts are the prefix's last entries: no collector
+    // posts between its release and this disposition, and entries an
+    // unwound disposition left come before them and carry no mark
+    // (`dev/design/the-general-algorithm.md`, "Wave 3: the second chance
+    // spent on a cut trace"). Taken and cleared before the first write-back.
+    #[cfg(feature = "recycler-over-counts")]
+    let (second_chances, first_post) = if prefix.is_some() {
+        let record = mutator_record::this_thread_record();
+        let (posts, bits) = unsafe { (*record).take_second_chances() };
+        (bits, count.saturating_sub(usize::from(posts)))
+    } else {
+        (Default::default(), count)
+    };
+    #[cfg(feature = "recycler-over-counts")]
+    let mut position = 0usize;
     ring.map_prefix_in_place(count, |slot| {
+        // Every slot, disposed or not, keeps its place in the order posted.
+        #[cfg(feature = "recycler-over-counts")]
+        let marked = {
+            let at = position.checked_sub(first_post);
+            position += 1;
+            at.is_some_and(|at| {
+                second_chances
+                    .get(at / 64)
+                    .is_some_and(|word| word & (1 << (at % 64)) != 0)
+            })
+        };
         let entry = *slot;
         if verdicts::is_disposed(entry) {
             return;
@@ -299,15 +325,20 @@ fn dispose_verdicts(
         // Written back into R as a registration is, its candidate bit
         // still set (`rfc/model/gc/rc-cycle.md`, "The mutator's
         // disposition"); an unwalked root with its second chance spent
-        // (`crate::cycle::queue::SECOND_CHANCE_MARK`).
+        // (`crate::cycle::queue::SECOND_CHANCE_MARK`), where the batch's
+        // U refused it or it came in marked.
         #[cfg(feature = "recycler-over-counts")]
-        let mark = if verdicts::entry_verdict(entry) == verdicts::Verdict::Unwalked {
+        let mark = if marked && verdicts::entry_verdict(entry) == verdicts::Verdict::Unwalked {
             SECOND_CHANCE_MARK
         } else {
             0
         };
         #[cfg(not(feature = "recycler-over-counts"))]
         let mark = 0;
+        #[cfg(all(test, feature = "recycler-over-counts"))]
+        if verdicts::entry_verdict(entry) == verdicts::Verdict::Unwalked {
+            crate::cycle::worker::testing::wave_three::note_an_unwalked_write_back(mark != 0);
+        }
         unsafe { append_marked_entry(state, entity, mark) };
         journal_event!(
             journal::KIND_ROOT_WRITTEN_BACK,

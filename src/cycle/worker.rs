@@ -1901,6 +1901,10 @@ unsafe fn serve_the_grant(
         /// batch's peek: every merge it counts has its entries in the ring
         /// the batch reads.
         merges: u32,
+        /// Which of the batch's posts go back into R marked, stored for the
+        /// disposition before the release.
+        #[cfg(feature = "recycler-over-counts")]
+        second_chances: SecondChances,
     }
     impl Drop for ReleaseOnDrop<'_> {
         fn drop(&mut self) {
@@ -1924,6 +1928,10 @@ unsafe fn serve_the_grant(
             testing::note_release();
             #[cfg(all(test, feature = "recycler-over-counts"))]
             testing::wave_three::note_a_release();
+            // Every grant stores, a batch that posted nothing as none: the
+            // disposition reads this batch's, never a stale one.
+            #[cfg(feature = "recycler-over-counts")]
+            self.second_chances.store(self.mutator);
             let released = match (self.posted.get(), self.proposed.get()) {
                 (false, _) => crate::cycle::token::FREE,
                 (true, true) => crate::cycle::token::POSTED,
@@ -1938,6 +1946,8 @@ unsafe fn serve_the_grant(
         posted: std::cell::Cell::new(false),
         proposed: std::cell::Cell::new(false),
         merges: mutator.merges(),
+        #[cfg(feature = "recycler-over-counts")]
+        second_chances: SecondChances::default(),
     };
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
     #[cfg(test)]
@@ -1981,7 +1991,17 @@ unsafe fn serve_the_grant(
     });
     #[cfg(test)]
     testing::note_serving_slot(slot);
-    let served = unsafe { batch(mutator, &mut arena, threshold, &held.posted, &held.proposed) };
+    let served = unsafe {
+        batch(
+            mutator,
+            &mut arena,
+            threshold,
+            &held.posted,
+            &held.proposed,
+            #[cfg(feature = "recycler-over-counts")]
+            &held.second_chances,
+        )
+    };
     // The batch swept the rows, so the release goes first and the arena's
     // blocks back after it, their page discards off the mutator's wait; the
     // grants behind the trace are read between the two, for a recall that
@@ -2435,6 +2455,7 @@ unsafe fn batch(
     threshold: usize,
     posted: &std::cell::Cell<bool>,
     proposed: &std::cell::Cell<bool>,
+    #[cfg(feature = "recycler-over-counts")] second_chances: &SecondChances,
 ) -> Served {
     // Declared first so that it drops last: the posts `FinishThePosts` makes
     // on its drop count in the trace's segment.
@@ -2488,6 +2509,8 @@ unsafe fn batch(
         reader: &reader,
         peeked,
         proposed,
+        #[cfg(feature = "recycler-over-counts")]
+        second_chances,
     };
     #[cfg(test)]
     let (traced_from, positions_from) = testing::at_the_start_of_the_batchs_trace(arena);
@@ -2621,6 +2644,39 @@ fn the_copy_in_the_workspace(
 /// is clear in every entry R holds (`crate::cycle::queue`, "The shape").
 const HAS_A_VERDICT: usize = 2;
 
+/// Which posts of a batch go back into R with the second chance's mark
+/// (`crate::cycle::queue::SECOND_CHANCE_MARK`): one bit a post, in the order
+/// posted, set for a root U refused or one that came in marked, so that a
+/// root a cut left unwalked comes back as it came
+/// (`dev/design/the-general-algorithm.md`, "Wave 3: the second chance spent
+/// on a cut trace"). The collector's, on its frame, until the release
+/// stores it in the record.
+#[cfg(feature = "recycler-over-counts")]
+#[derive(Default)]
+struct SecondChances {
+    posts: std::cell::Cell<u16>,
+    bits: [std::cell::Cell<u64>; crate::cycle::mutator_record::SECOND_CHANCE_WORDS],
+}
+
+#[cfg(feature = "recycler-over-counts")]
+impl SecondChances {
+    /// The next post, `marked` or not.
+    fn note(&self, marked: bool) {
+        let at = usize::from(self.posts.get());
+        // A batch is at most `BATCH_BOUND` roots; one a test fixed wider
+        // gives the roots past the bound no mark.
+        if let Some(word) = self.bits.get(at / 64) {
+            word.set(word.get() | (u64::from(marked) << (at % 64)));
+        }
+        self.posts.set(self.posts.get().saturating_add(1));
+    }
+
+    /// Store the posts in `mutator`'s record, for its disposition of P.
+    fn store(&self, mutator: &MutatorRecord) {
+        mutator.store_second_chances(self.posts.get(), &self.bits.each_ref().map(|bit| bit.get()));
+    }
+}
+
 /// The batch's posts, one per root of its copy, and the advance they owe R.
 /// Every root left without a verdict — all of them, when the trace was
 /// abandoned or unwound — is posted [`Verdict::Unwalked`] at the drop, on
@@ -2638,6 +2694,9 @@ struct FinishThePosts<'a> {
     /// Set at the first [`Verdict::Proposed`] posted, before the release
     /// reads it.
     proposed: &'a std::cell::Cell<bool>,
+    /// One bit a post, in order: whether the root goes back into R marked.
+    #[cfg(feature = "recycler-over-counts")]
+    second_chances: &'a SecondChances,
 }
 
 impl FinishThePosts<'_> {
@@ -2684,7 +2743,18 @@ impl FinishThePosts<'_> {
 
     /// Post `verdict` for the root at `index`, which has none yet.
     fn post(&mut self, index: usize, verdict: Verdict) {
+        self.post_refused(index, verdict, false);
+    }
+
+    /// [`post`](Self::post), `refused` saying that the split's U refused the
+    /// root: it goes back into R marked, as one that came in marked does.
+    fn post_refused(&mut self, index: usize, verdict: Verdict, refused: bool) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
+        #[cfg(feature = "recycler-over-counts")]
+        self.second_chances
+            .note(refused || self.second_chance_spent(index));
+        #[cfg(not(feature = "recycler-over-counts"))]
+        let _ = refused;
         journal_verdict(self.root(index), verdict);
         #[cfg(all(test, feature = "recycler-over-counts"))]
         testing::wave_three::note_a_verdict(verdict);
@@ -2873,7 +2943,8 @@ unsafe fn trace_the_batch(
         if !posts.has_a_verdict(index) {
             let verdict =
                 unsafe { verdict_for(posts.root(index), posts.second_chance_spent(index)) };
-            posts.post(index, verdict);
+            // After a completed scan an unwalked verdict is U's refusal.
+            posts.post_refused(index, verdict, verdict == Verdict::Unwalked);
         }
     }
 

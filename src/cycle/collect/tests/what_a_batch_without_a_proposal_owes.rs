@@ -256,3 +256,110 @@ fn the_disposal_outranks_the_retirement_pass_and_is_outranked_by_the_collections
     assert_eq!(crate::gc::arming(), Arming::AllRoots);
     reset();
 }
+
+/// One stand-in batch of `k` unwalked roots whose second chances are `bits`,
+/// one bit a post in order (`None`: a batch that stores none, as a stand-in
+/// that is not the collector's batch), released as the collector's batch is.
+#[cfg(feature = "recycler-over-counts")]
+fn unwalked_posts(k: usize, bits: Option<u64>) -> Posted {
+    let record = Sent(crate::cycle::mutator_record::this_thread_record());
+    std::thread::spawn(move || unsafe {
+        let record = record.into_inner();
+        if let Some(bits) = bits {
+            let mut words = [0; crate::cycle::mutator_record::SECOND_CHANCE_WORDS];
+            words[0] = bits;
+            (*record).store_second_chances(k as u16, &words);
+        }
+        post_batch_released_as_the_collector_does(record, k, |_| Verdict::Unwalked)
+    })
+    .join()
+    .expect("the stand-in finished")
+}
+
+/// Whether each entry R holds, front first, carries the second chance's mark.
+#[cfg(feature = "recycler-over-counts")]
+fn marks_in_r() -> Vec<bool> {
+    let record = crate::cycle::mutator_record::this_thread_record();
+    let reader = unsafe { crate::ring::Reader::new((*record).candidate_ring()) };
+    let mut entries = [0; 8];
+    let peeked = reader.peek(&mut entries);
+    entries[..peeked.len()]
+        .iter()
+        .map(|entry| entry & crate::cycle::queue::SECOND_CHANCE_MARK != 0)
+        .collect()
+}
+
+/// A root a cut left unwalked had no Δ-test refuse it: it comes back into R
+/// without the second chance's mark, so its next refusal is its first
+/// (`dev/design/the-general-algorithm.md`, "Wave 3: the second chance spent
+/// on a cut trace").
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn a_root_a_cut_left_unwalked_comes_back_unmarked() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("SecondChanceCutNode");
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "SecondChanceCutKeeper") };
+    assert_eq!(unwalked_posts(1, Some(0)), Posted::Batch(1));
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(marks_in_r(), [false], "back in R as it came, unmarked");
+
+    unsafe { let_go(&[keeper]) };
+    reset();
+}
+
+/// Of two unwalked roots, the one the batch's U refused (its bit set) comes
+/// back marked and the other, a cut's, does not.
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn only_the_root_u_refused_comes_back_marked() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("SecondChanceRefusedNode");
+    let mut arena = Arena::new();
+    let keepers = [
+        unsafe { kept_root(&mut arena, node, "SecondChanceRefusedKeeperA") },
+        unsafe { kept_root(&mut arena, node, "SecondChanceRefusedKeeperB") },
+    ];
+    assert_eq!(unwalked_posts(2, Some(0b10)), Posted::Batch(2));
+
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(marks_in_r(), [false, true], "the second post was refused");
+
+    unsafe { let_go(&keepers) };
+    reset();
+}
+
+/// A disposition takes the batch's second chances and clears them: the next
+/// batch, which stores none, writes its unwalked root back unmarked.
+#[cfg(feature = "recycler-over-counts")]
+#[test]
+fn a_batchs_second_chances_mark_no_later_batch() {
+    let _g = test_guard();
+    reset();
+    assert!(crate::cycle::queue::refill_spares());
+    let node = node_class("SecondChanceStaleNode");
+    let mut arena = Arena::new();
+    let keeper = unsafe { kept_root(&mut arena, node, "SecondChanceStaleKeeper") };
+    assert_eq!(unwalked_posts(1, Some(0b1)), Posted::Batch(1));
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(marks_in_r(), [true], "refused, so marked");
+
+    assert_eq!(unwalked_posts(1, None), Posted::Batch(1));
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 0);
+    assert_eq!(state(byte()), FREE);
+    assert_eq!(
+        marks_in_r(),
+        [false],
+        "the first batch's bit was taken by its own disposition"
+    );
+
+    unsafe { let_go(&[keeper]) };
+    reset();
+}

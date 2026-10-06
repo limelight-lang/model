@@ -3674,6 +3674,11 @@ impl CellReading {
         let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
         let offers = offer_counts();
         let (wave, by_span) = wave_three();
+        #[cfg(feature = "recycler-over-counts")]
+        let written_back =
+            joined(&testing::wave_three::take_unwalked_write_backs().map(|n| n as usize));
+        #[cfg(not(feature = "recycler-over-counts"))]
+        let written_back = String::new();
         let run_for = seconds_from_env("LL_RIG_SECONDS");
         let window = run_for.saturating_sub(seconds_from_env("LL_RIG_WARM_UP_SECONDS"));
         let busy: Duration = figures.iter().map(|one| one.busy).sum();
@@ -3925,6 +3930,8 @@ impl CellReading {
             ("expansions_at_the_frame", wave[7].to_string()),
             ("expansions_at_the_frame_at_zero", wave[8].to_string()),
             ("batches_by_span", by_span),
+            // The unwalked entries written back into R, unmarked and marked.
+            ("unwalked_written_back", written_back),
         ]
     }
 

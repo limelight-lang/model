@@ -740,3 +740,35 @@ draft above is revised to its findings.
 5. Checked and holding: P never holds two batches but after an unwind; the
    take's acquire covers every disposition; `Unwalked` arises only the two
    ways named.
+
+### Wave 3: the Sage on the repair (2026-10-06)
+
+The Sage (Fable), reading the code, running nothing: sound and complete;
+build it, no fork for Edmond, since it restores §4.8's premise and changes
+no accepted rule. Three corrections, taken into the build:
+1. **No base index.** Every disposition's prefix is P's whole count, and no
+   collector posts between the release and the disposition, so the batch's
+   posts are the prefix's last `posts` entries; entries nulled in place keep
+   their slots. Leftovers of an unwound disposition stand before the batch
+   and get no mark, a loss only after a panic, bounded by §4.8.
+2. **One take-and-clear site**: every disposition ends in
+   `compaction.rs::dispose_verdicts` with a prefix; the write-back has one
+   site, where the bit replaces the build's unconditional mark.
+3. **The bit is set in `FinishThePosts::post`**, by post order: refused
+   where the posting loop after a completed scan posts `Unwalked`, or
+   carrying the incoming mark; the bitset lives beside `proposed` on
+   `ReleaseOnDrop`, whose drop stores it before the release.
+
+Storage: two lines after `hold` in the record (384 bytes under the
+feature, 170 records a block), the post count in `HoldLine`'s padding;
+never on the token line or the mutator's writer line. The optional
+simplification (mark any written-back entry whose bit is set, not only an
+unwalked one) is not taken: the build keeps the mark on unwalked entries
+alone, as before.
+
+**Built** (2026-10-06): as the Sage corrected it; three unit cases
+(`collect/tests/what_a_batch_without_a_proposal_owes.rs`) fail without the
+repair and pass with it; both builds green. On `web-heap` nothing moves,
+since no batch is cut there (`dev/BENCHMARKS.md`, "the second chance kept
+for refusals alone"); the gate's count of roots refused three times or
+more by address is dropped, addresses being reused.

@@ -104,6 +104,8 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
+#[cfg(feature = "recycler-over-counts")]
+use std::sync::atomic::AtomicU16;
 use std::sync::atomic::{
     AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
 };
@@ -159,6 +161,28 @@ pub(crate) struct MutatorRecord {
     /// The collector's hold over the rings' blocks for its pre-claim reading,
     /// and the exit's note of what it left to that hold.
     hold: HoldLine,
+    /// Which of the last batch's posts are written back into R with the
+    /// second chance's mark (`crate::cycle::queue::SECOND_CHANCE_MARK`).
+    #[cfg(feature = "recycler-over-counts")]
+    second_chances: SecondChanceLines,
+}
+
+/// Words of the bitset of [`SecondChanceLines`]: one bit a root of a batch.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const SECOND_CHANCE_WORDS: usize = crate::cycle::worker::BATCH_BOUND / 64;
+
+/// The last batch's posts that carry the second chance's mark back into R,
+/// one bit a post in the order the collector posted them: a root U refused,
+/// or one that came in marked (`dev/design/the-general-algorithm.md`, "Wave
+/// 3: the second chance spent on a cut trace"). Written by the collector at
+/// its release of the token, with how many posts the batch made
+/// ([`HoldLine::second_chance_posts`]), and taken and cleared by the
+/// disposition of P under the mutator's own token; the release and the
+/// take's acquire order both, so relaxed.
+#[cfg(feature = "recycler-over-counts")]
+#[repr(C, align(64))]
+struct SecondChanceLines {
+    bits: [AtomicU64; SECOND_CHANCE_WORDS],
 }
 
 /// The line the collector writes: where it reads R from, where it posts
@@ -358,6 +382,11 @@ struct HoldLine {
     /// Set by the registry, cleared by the collector; relaxed, since a flag
     /// read late costs recall until the next advance and nothing else.
     new_life: AtomicU8,
+    /// How many posts the last batch made, of which
+    /// [`MutatorRecord::second_chances`] holds one bit each; zero when
+    /// taken. In the line's padding before `spent`.
+    #[cfg(feature = "recycler-over-counts")]
+    second_chance_posts: AtomicU16,
     /// The positions the collector's batches for this mutator read since the
     /// last advance, and what the stamps they wrote cost to prove: the
     /// advance comes once the first is `crate::cycle::epoch::SPENT_PER_PROOF`
@@ -493,7 +522,12 @@ impl WriterLine {
 unsafe impl Sync for MutatorRecord {}
 
 const _: () = assert!(size_of::<HoldLine>() == 64);
+#[cfg(not(feature = "recycler-over-counts"))]
 const _: () = assert!(size_of::<MutatorRecord>() == 256);
+#[cfg(feature = "recycler-over-counts")]
+const _: () = assert!(size_of::<MutatorRecord>() == 384);
+#[cfg(feature = "recycler-over-counts")]
+const _: () = assert!(SECOND_CHANCE_WORDS * 64 == crate::cycle::worker::BATCH_BOUND);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, reader) == 64);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, writer) == 128);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, hold) == 192);
@@ -552,6 +586,8 @@ impl MutatorRecord {
                 standing_slot: AtomicU8::new(0),
                 collector: AtomicU8::new(0),
                 new_life: AtomicU8::new(0),
+                #[cfg(feature = "recycler-over-counts")]
+                second_chance_posts: AtomicU16::new(0),
                 spent: AtomicU64::new(0),
                 proving: AtomicU64::new(0),
                 proving_wall: AtomicU64::new(0),
@@ -559,7 +595,39 @@ impl MutatorRecord {
                 advanced_at: AtomicU64::new(0),
                 merges_seen: AtomicU32::new(0),
             },
+            #[cfg(feature = "recycler-over-counts")]
+            second_chances: SecondChanceLines {
+                bits: [const { AtomicU64::new(0) }; SECOND_CHANCE_WORDS],
+            },
         }
+    }
+
+    /// Store the last batch's second chances: `posts` posts, the first
+    /// `posts` bits of `bits`. The collector's, under its grant, before its
+    /// release of the token.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn store_second_chances(&self, posts: u16, bits: &[u64; SECOND_CHANCE_WORDS]) {
+        let words = usize::from(posts).div_ceil(64);
+        for (word, bits) in self.second_chances.bits[..words].iter().zip(bits) {
+            word.store(*bits, Ordering::Relaxed);
+        }
+        self.hold
+            .second_chance_posts
+            .store(posts, Ordering::Relaxed);
+    }
+
+    /// Take the last batch's second chances and clear them: how many posts
+    /// it made, and their bits. The mutator's, under its token, at the
+    /// disposition of P.
+    #[cfg(feature = "recycler-over-counts")]
+    pub(crate) fn take_second_chances(&self) -> (u16, [u64; SECOND_CHANCE_WORDS]) {
+        let posts = self.hold.second_chance_posts.swap(0, Ordering::Relaxed);
+        let mut bits = [0; SECOND_CHANCE_WORDS];
+        let words = usize::from(posts).div_ceil(64);
+        for (into, word) in bits[..words].iter_mut().zip(&self.second_chances.bits) {
+            *into = word.swap(0, Ordering::Relaxed);
+        }
+        (posts, bits)
     }
 
     /// The collector this mutator is named to (`crate::cycle::worker`).
@@ -1327,6 +1395,8 @@ unsafe fn reset_for_a_new_life(released: *mut MutatorRecord) {
         (*released).hold.proving_wall.store(0, Ordering::Relaxed);
         (*released).hold.advanced_at.store(0, Ordering::Relaxed);
         (*released).hold.merges_seen.store(0, Ordering::Relaxed);
+        #[cfg(feature = "recycler-over-counts")]
+        let _ = (*released).take_second_chances();
         debug_assert!(
             (*released)
                 .writer
