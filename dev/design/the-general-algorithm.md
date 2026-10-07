@@ -988,3 +988,37 @@ The Critic (opus) read the draft against the code, running nothing.
    second block drawn by the mutator at the offer.
 8. **Tests the gate missed**: `DEFERRED_LARGE` and
    `what_a_grown_k_costs`. Taken.
+
+### Wave 3: the Sage on P2 (2026-10-07)
+
+The Sage (Fable), reading the revision and the code: not sound as written
+in three places, and not worth the full build before a one-constant probe.
+- **Reading R in place** is sound: the writer never touches the peeked
+  span, and every mutator path that packs R first takes the token back,
+  after the collector's posts. The copy carries contiguity and
+  `HAS_A_VERDICT` (bit 1); a side bitmap replaces the bit, a segment table
+  the contiguity. Missed: the peek spans at most two blocks of R
+  (`ring.rs`), so a 10k or 16k take needs a peek over more. False: "the
+  bump keeps its three row arrays": at 1k the copy already pushes the
+  third past the bump.
+- **P's second block** is drawn once and stays in the circle; a pool
+  refusal clamps the offer's ceiling, never fails it. **The bits cannot go
+  in P's block**: a verdict entry uses bits 0–2 and entities are 8-byte
+  aligned, so no bit is free. They stay in the record, sized by the bound
+  (`std::array::from_fn` in place of `Default`); the record is not dropped.
+- **The marks' order is backwards for `web-heap`**: no offer is withdrawn
+  at a mark there, so sweeping M at the default bound measures nothing.
+  Bounds first at M = 512 KiB; M swept only where marks are reached. The
+  item cap needs a value and a rule per stack.
+- **The grid**: R at an offer peaks at 9,154, so 10k and 16k are one arm on
+  `web-heap`; keep 1k, 2k, 4k, 10k with the offer at 64, the offer at the
+  bound for 1k and 4k only.
+- **Order**: roots a batch average 466–800 with 38–41 % of offers at the
+  bound, so K rarely sits at 1,024. First a probe, `BATCH_BOUND = 2048`
+  (the copy's assert at half the bump, the record at 512 bytes), three
+  `web-heap` cells against B, reading roots a batch and the share at the
+  bound. If they do not move, P2 waits; else the byte marks, then the
+  in-place reading and the wider peek.
+
+Taken whole (settled by Claude on the Sage's advice, open to Edmond's
+overturning): the probe runs first, as a diagnostic arm not pushed.
