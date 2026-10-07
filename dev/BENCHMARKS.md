@@ -8,6 +8,56 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the backup trace's second arm on `web-heap`: the trace halved by a census in one walk and the direct sweep, 22–25 % less CPU than B in total, all of it on the mutator
+
+**Build.** `trace-backup-rig` at `07a32fe` (`src/cycle/trace_backup/sweep.rs`):
+the fill folded into the subtract, the clear folded into the harvest, and
+the garbage no destructor and no weak cell reaches severed and freed
+without the finalization chain. Ratio 2, built for an executable; against
+the first arm (`068cf1c`) and **M**, `main` with `recycler-over-counts`.
+Three repeats each in one rotation, no cell void.
+
+| `web-heap`, ratio 2, CPU s | mutator | of which the trace | collector | total | garbage mean | longest trace |
+|---|---|---|---|---|---|---|
+| M | 45.4–46.6 | — | 56.9–59.1 | 102–106 | 22–26 MB | — |
+| first arm | 106.4–109.7 | 64.8–66.9 | 0 | 106–110 | 342–345 MB | 1.57–1.74 s |
+| second arm | 77.7–79.9 | 35.1–36.5 | 0 | 78–80 | 305–307 MB | 0.79–0.84 s |
+
+The second arm's trace: census 12.8–13.0 s, mark 8.3–8.6 s, harvest with
+partition and split 5.5–5.8 s, sweep with its drops 8.5–9.0 s,
+finalization 0. Every one of the 81–82M members freed was swept:
+`web-heap`'s garbage owes no destructor and no weak cell names it, so the
+load is the sweep's best case. The mutator outside the trace is 42.6–43.4 s
+against M's 45.4–46.6 s, no candidate registered.
+
+**Reading.** The total is below B's, but B's collector runs beside the
+mutator and the trace stops it: 78–80 s of the mutator's own CPU against
+46, garbage held 12–14 times longer, pauses up to 0.84 s. Stack maps from
+the compiler would remove the census, 13 of the 35 s.
+
+## 2026-10-07 — the backup trace's first arm on the six deciding loads: p99 no worse on four, p99 or p999 10–40 times worse where a trace lands on a short request
+
+**Build.** The first arm (`068cf1c`) at ratio 2, against **M**; two
+mutators, spare and shared placements, three repeats each, one rotation.
+
+| load | p99 M | p99 trace | p999 M | p999 trace | CPU an op, trace/M | longest trace |
+|---|---|---|---|---|---|---|
+| deferred-live-large | 45–82 µs | 41–49 µs | 131–393 µs | 131–393 µs | 0.9–1.1 | 21–39 ms |
+| deferred-then-dead | 25–33 µs | 14–25 µs | 147–295 µs | 147–295 µs | 0.85–1.05 | 12–16 ms |
+| garbage-25 | 45–98 µs | 115–197 µs | 0.3–1.0 ms | 7.3–10.5 ms | 1.02–1.07 | 7.6–11 ms |
+| live-churn | 164–295 µs | 106–164 µs | 0.8–1.6 ms | 2.6–6.8 ms | 1.5–2.0 | 74–107 ms |
+| live-churn-dies-by-count | 164–197 µs | 82–123 µs | 0.7–1.7 ms | 0.7–1.4 ms | 0.75–1.0 | 6.4–9.5 ms |
+| registered-ring-live | 0.3–1.0 ms | 11.5–13.6 ms | 1.0–10.5 ms | 14.7–23.1 ms | 1.8–2.2 | 14–26 ms |
+
+Standing garbage at the end: M under 0.15 MB everywhere but `live-churn`
+(40–43 MB); the trace 6–21 MB, `live-churn` 11–13 MB.
+
+**Reading.** Without registration the mutator's p99 improves where traces
+are rare; where a trace falls inside a request it is the tail
+(`garbage-25`, `registered-ring-live`, and `live-churn`'s p999), and
+`live-churn` and `registered-ring-live` pay 1.5–2.2 times the CPU an
+operation. Not rerun on the second arm yet.
+
 ## 2026-10-07 — the backup trace's measuring arm on `web-heap`: no cheaper than B's collector at any ratio, garbage held 7–40 times longer, the owner stopped 1–5 s
 
 **Build.** `trace-backup-rig` (`src/cycle/trace_backup/`, design page "The
