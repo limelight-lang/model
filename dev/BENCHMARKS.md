@@ -8,6 +8,65 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the offer at the bound: the collector a sixth to a half cheaper everywhere, `web-heap`'s garbage a third lower, but a slow trickle of garbage waits up to 46 times longer
+
+**Builds.** Diagnostic arms of B at `35bd45a`, not kept (worktrees), all
+built for an executable as `dev/tools/arms.sh` says:
+- **B2k**: `BATCH_BOUND` 2,048 (the copy's assert at half the bump, the
+  record 512 bytes), the offer at 64;
+- **T1k**: the offer at R = 1,024 (`threshold_for_offers` read from
+  `LL_OFFER_THRESHOLD`), bound 1,024;
+- **T2k**: the offer at R = 2,048, bound 2,048.
+The accepted rule offers at 64. `web-heap` by the protocol's cell on this
+box (mutators on CPUs 1–2, the collector on 3, cap 1), and the six
+deciding loads at both placements; three repeats each, every set run
+against B in the same rotation, no cell void.
+
+`web-heap`:
+
+| | B | B2k | T1k | T2k |
+|---|---|---|---|---|
+| collector CPU, s | 61.5–66.9 | 66.6–68.0 | 53.7–57.0 | 51.5–53.5 |
+| mutator CPU, s | 44.3–46.6 | 45.8–46.8 | 44.3–46.1 | 44.5–45.7 |
+| garbage mean, MB | 31.0–36.2 | 32.5–34.9 | 23.1–23.4 | 21.1–22.8 |
+| garbage peak, MB | 165–239 | 182–209 | 169–189 | 163–219 |
+| roots a batch | 532–572 | 755–782 | 1,024 | 2,046–2,047 |
+| Δ-tests touched / proved | 7,422–8,587 / 4,085–4,184 | 7,594–7,746 / 2,677–2,752 | 3,401–3,609 / 3,247–3,367 | 2,252–2,314 / 1,697–1,812 |
+
+(B's spread joins its two sets: the one beside B2k and the one beside the
+T arms.)
+
+The deciding loads, collector CPU in s, spare / shared, and the time to
+free in ms:
+
+| load | B | T1k | T2k |
+|---|---|---|---|
+| `live-churn` | 0.76–0.79 / 0.65–0.78; 2,976–2,993 | 0.57–0.60 / 0.58–0.64; 3,012–3,031 | 0.55–0.61 / 0.58–0.69; 3,057–3,123 |
+| `live-churn-dies-by-count` | 0.52–0.56 / 0.42–0.46 | 0.35–0.36 / 0.30–0.33 | 0.34–0.35 / 0.34–0.36 |
+| `deferred-live-large` | 0.13–0.14 / 0.11–0.12; 32.4 | 0.09–0.10 / 0.08; 464–466 | 0.08 / 0.07–0.09; 882–883 |
+| `deferred-then-dead` | 0.10 / 0.08; 1,376–1,378 | 0.04–0.05 / 0.05–0.06; 1,689–1,694 | 0.04–0.05 / 0.05–0.06; 1,957–1,991 |
+| `garbage-25` | 0.07 / 0.05; 22.5–22.7 | 0.02–0.03 / 0.02; 500 | 0.02–0.03 / 0.02–0.03; 1,044 |
+| `registered-ring-live` | 0.42–0.44 / 0.37–0.40 | 0.41–0.46 / 0.35–0.38 | 0.45 / 0.38–0.40 |
+
+B2k on the deciding loads stays within B's spread but on
+`deferred-live-large` (collector −8 %) and `registered-ring-live` (roots
+batched twice, collector +5–7 %). Mutator CPU stays within B's spread for
+every arm on every load.
+
+**Reading.** A larger bound with the offer at 64 moves the roots a batch
+(+35 %) and nothing else: the offers still come at 64 and the collector
+judges as often. Offering when R reaches the bound is what pays, as PHP
+does with its buffer: the collector judges a quarter to a half as often,
+touches a third to a half as many sets, and spends 12–17 % less on
+`web-heap` and 20–65 % less on five of the six loads (none on
+`registered-ring-live`); `web-heap`'s mean garbage falls
+by a third, since fewer refusals hold it. The cost is the time to free
+where garbage trickles: on `garbage-25` and `deferred-live-large` R takes
+seconds to reach the bound and garbage waits 14–46 times longer, bounded
+only by the 4 s standing interval. The offer threshold is an accepted rule
+(§5f); it goes to Edmond, with a repair measured next: the offer at the
+bound or when R has stood a short interval.
+
 ## 2026-10-07 — A against B built as for an executable: B's mutator 7 % cheaper than in the rlib build, A's 2.5 %; the collectors unchanged
 
 **Builds.** A and B at `87175f7`, each built for an executable
