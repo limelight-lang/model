@@ -1399,3 +1399,66 @@ over every entity as a candidate on the same heap.
 400k-ring probe, a large live heap with rare cycles, a long live list;
 trigger ratios 1.5, 2 and 4; mutator CPU, trace CPU, the longest owner pause,
 mean and peak garbage.
+
+### The Critic on the build (2026-10-07)
+
+The Critic (opus), reading the draft and the code, running nothing; checked
+by Claude: the gate reads only the collecting word, a reset and the teardown
+depth (`src/cycle/collect.rs:93`); `stamp_component` writes byte 6
+(`src/cycle/finalization.rs:916`).
+1. **Traces nest.** A destructor in step 4 reaches a poll with the gate open
+   and the trigger still true; the nested trace's step 5 clears the outer
+   marks, and an `ll_thread_exit()` from the destructor abandons the heap
+   under the outer trace.
+2. **Bit 15 as the mark overlaps the count**: a side count of 0x8000 or more
+   reads as marked, so a root is not walked and a child it alone holds is
+   freed live.
+3. **Saturation leaks for good**: a document held by 100,000 nodes saturates
+   and is a root at every trace after the tree died.
+4. **"The unmarked" is unspecified**: a sweep by header frees objects a
+   destructor allocates (bytes 6–7 are 0 at birth); a list snapshot is a
+   12 MB membership; a header membership needs a "walked" bit; step 5 over a
+   snapshot of blocks can zero headers of a block reissued to another thread.
+5. **Finalization judges one component**: one resurrection keeps all; T must
+   split the garbage into components first. Its walks (confirm, revalidate,
+   the sever) cost about the trace again on the owner, unmeasured.
+6. **The trigger ratchets or thrashes**: blocks return to the pool only when
+   empty, so held block bytes track the peak; by live bytes, held stays above
+   twice live. Under a memory limit below twice live, only the pressure path
+   collects, a full trace at every refusal.
+7. **The index goes stale**: retained blocks and large entities are freed
+   from any thread; adopted blocks join the adopter's `owned` lists, so an
+   exited thread's leftovers are traced by the adopter; A runs up to 8 exit
+   rounds, T one.
+8. **Edges into another thread's entities** would write their headers if the
+   target test is the block kind alone.
+Held: bytes 6–7 have no mutator writer in the default build; a panic leaves
+only stale side counts, overwritten by the next fill; destructors cannot
+unwind.
+
+### The build, revised (Claude, 2026-10-07)
+
+- **The field** (2, 3, 8): bits 0–13 the side count, saturating at 0x3FFF
+  into a small exact overflow map keyed by entity; bit 14 walked (set by the
+  fill, only on this thread's indexed entities); bit 15 marked. Subtract and
+  mark touch only walked entities, so no other thread's header is written.
+  Roots are seeded by a pass of their own.
+- **The gate** (1): the record's collecting word is raised from the fill to
+  the clear, and the trigger's baseline reset before the destructors run.
+- **Membership by the header** (4): a member is walked and unmarked; an
+  object born in step 4 is not walked, so it is no member. Step 5 re-walks the
+  live index, not a snapshot.
+- **Components** (5): the unmarked are split into components (union over
+  their edges) before finalization, each judged alone; `stamp_component` out
+  under T. The finalization's cost is measured with the first build, and
+  counted in the owner's pause.
+- **The trigger** (6): live bytes from the census; held bytes counted as
+  slots in use plus large and buffer-arena bytes; a trace at the smaller of
+  twice live and the memory limit's headroom; the pressure path at most one
+  trace per freed-nothing interval.
+- **The index** (7): `owned` lists and the process-wide large-entity
+  snapshot filtered by owner; retained former-arena blocks are not indexed,
+  their objects pinning what they hold (a known leak for rings through a
+  promoted arena object, to be measured on `web-arena`); at exit, traces until
+  one frees nothing, up to A's 8 rounds, then the leftovers abandoned and
+  adopted as today, traced by the adopter like its own.
