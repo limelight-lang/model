@@ -897,3 +897,56 @@ the build line by `--config` rather than an environment variable (no
 `.cargo/config.toml`, which would change Miri's build and the README's
 bitcode path). Re-measure the A-against-B `web-heap` row with the new
 build.
+
+## Wave 3: P2, batches past 1,024 (Claude's draft, 2026-10-07)
+
+**What holds a batch at 1,024 today** (read from the code at `743e509`).
+- `BATCH_BOUND` (`cycle/worker.rs:345`) is asserted under a block of R
+  (`BLOCK_ENTRIES`, 8,135), so that the peek spans two blocks, and its copy
+  in the workspace at a quarter of the bump (1,780 roots at most), so that
+  the trace's rows do not start by growing.
+- P is one ring block that never grows: 8,135 verdicts
+  (`queue/verdicts.rs`); every take is clamped to P's room.
+- The copy of the take is one arena allocation, refused past a block's
+  payload (65,280 bytes, 8,160 roots).
+- The second-chance bits are a fixed array of `BATCH_BOUND / 64` words in
+  every mutator record and on both stacks (`mutator_record.rs:172`,
+  `worker.rs:2656`); its `Default` exists only up to 32 words (2,048 roots).
+- The withholding marks count in three units with no common scale: 8,192
+  deaths, 16 blocks, 256 chunks (`deferred_slot_reuse.rs:1672–1681`), each
+  with a stop at twice the mark. A longer trace reaches them sooner; the
+  first mark winds the trace down, the second cuts it.
+- K doubles from 64 to the bound by the batch's outcome (`worker.rs:2813`).
+
+**The change, in three steps, each measured before the next.**
+1. **P2a, the marks in bytes** (Q5, settled on the Sage's advice): one
+   count of the bytes withheld under a foreign holder, a death by its size
+   class, a block and a run by the blocks they span, a chunk by its bytes;
+   one mark M with the stop at 2M. M starts at 1 MiB, what `BLOCKS_MARK`
+   is today, and is measured with the batch sizes below (1, 4, 16 MiB).
+   The three marks' recall and stop semantics are unchanged.
+2. **P2b, 4,096 roots.** P holds it (8,135). The copy, 32 KiB, is under a
+   block and fits the bump; the quarter-of-the-bump assert becomes "the
+   copy fits one block", and the rows grow into the arena's next block
+   when they need to (`grow`, the path every large trace takes). The
+   second-chance bits stay in the record, sized by the bound: 512 bytes,
+   the record 768 bytes, 85 records a block; their `Default` written out.
+   Measure 1k against 4k on `web-heap` and the six loads: collector CPU,
+   refusals, held garbage, offer-to-take, the marks reached.
+3. **P2c, 16,384 roots**, built only if 4k beats 1k on the collector's
+   work per root without the held garbage leaving §9. P becomes two blocks
+   (16,270 verdicts), the peek spans up to three blocks of R, the copy
+   spans arena blocks (or the trace reads the roots from R in place, the
+   cheaper of the two, chosen when built), and the bits move out of the
+   record into the collector's workspace beside P (2 KiB a record otherwise,
+   28 records a block). Then 16k is measured as 4k was.
+
+**What does not change.** The offer at 64, the window, the split, every
+accepted rule. K's adaptation keeps its rule; only its ceiling moves.
+
+**Gate of each step.** Both builds green; the tests pinning the sizes
+(`mutator_record/tests.rs`, `worker/tests/the_batch.rs`,
+`verdicts/tests.rs`) changed by the step that changes the size, with a
+case that a take of the new bound is posted whole. For P2a, a case per
+unit that its bytes reach the mark; `web-heap` and the six loads not worse
+than B at M = 1 MiB. Arms built as for an executable.
