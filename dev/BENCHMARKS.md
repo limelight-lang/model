@@ -8,6 +8,29 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — A against B built as for an executable: B's mutator 7 % cheaper than in the rlib build, A's 2.5 %; the collectors unchanged
+
+**Builds.** A and B at `87175f7`, each built for an executable
+(`-C relocation-model=pie` by `--config`, `dev/tools/arms.sh`), so no
+thread-local read on a hot path is a `__tls_get_addr` call with its frame
+(`dev/design/the-general-algorithm.md`, "the Critic on P6"). `web-heap` by
+the protocol's cell on this box as in "S68.14's measurements before
+code" (mutators on CPUs 1–2, the collector on 3, cap 1), three repeats
+alternated, no cell void. The rlib-built figures are that entry's.
+
+| | A, rlib | A, executable | B, rlib | B, executable |
+|---|---|---|---|---|
+| mutator CPU, s | 71.1–72.3 | 69.8–70.1 | 48.7–49.2 | 45.3–46.1 |
+| collector CPU, s | 52.1–53.4 | 50.4–51.2 | 62.5–64.2 | 63.1–64.2 |
+| garbage mean, MB | | 30.3–33.8 | | 31.4–35.5 |
+| garbage peak, MB | | 196–223 | | 164–198 |
+
+**Reading.** The rlib build charged both arms, B more: its window read on
+every +1 and −1 paid the frame. Built as the merged code ships, B's
+mutator spends 35 % less than A's (32 % in the rlib build), and B's whole
+CPU is 108–110 s against A's 120–121 s. Arms compared from here are built
+this way.
+
 ## 2026-10-07 — the offer floor on the six deciding loads: no gain, and on `deferred-live-large` garbage lives up to 2.5 times longer
 
 **Builds.** The arms of the entry below, unchanged: B at `724aaca` and the
