@@ -8,6 +8,41 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — batches past 1,024 under the offer at the bound: `web-heap`'s collector 6–10 % cheaper at 2,048–8,128, the six loads no better and `live-churn`'s collector up to a fifth dearer
+
+**Builds.** Diagnostic arms of `main` (`afc7cef`, the offer at the bound),
+not kept, built for an executable: **P2k**, **P4096** and **P8128** raise
+`BATCH_BOUND` (the offer's bound and K's ceiling) to 2,048, 4,096 and 8,128
+(a multiple of 64 under a ring block's 8,167 entries), with the workspace's
+assert relaxed to the copy fitting twice the bump and the record's size
+assert dropped (the second-chance words grow with the bound); against **M**,
+`main` itself. Both larger arms pass the feature's suite but the record-size
+test. Two rotations: M and P2k (`web-heap` two clean repeats each, the six
+loads void: CPU 0 was building), then M, P4096 and P8128 (three repeats;
+the six loads with two mutators, voids dropped). CPU 0 carried builds and a
+measuring agent during both, so cells across the two rotations are not
+compared.
+
+| `web-heap`, CPU s | mutator | collector | total | garbage mean, MB |
+|---|---|---|---|---|
+| M (first rotation) | 44.3–45.7 | 54.1–55.8 | 98–101 | 23.0–24.0 |
+| P2k | 44.4–45.5 | 50.9–52.2 | 95–98 | 20.7–20.9 |
+| M (second rotation) | 46.4–47.3 | 59.2–59.9 | 106–107 | 20.7–27.1 |
+| P4096 | 45.6–47.7 | 55.7–58.0 | 101–106 | 20.8–22.2 |
+| P8128 | 45.6–47.2 | 53.4–56.1 | 99–103 | 22.0–22.4 |
+
+Six loads, second rotation, collector CPU in s (M / P4096 / P8128):
+`live-churn` 0.58–0.75 / 0.70–0.75 / 0.72–0.78; `live-churn-dies-by-count`
+0.35–0.39 / 0.34–0.39 / 0.37–0.40; `registered-ring-live` 0.40–0.44 /
+0.44–0.48 / 0.42–0.48, its time to free 0 / 8 / 23 ms; `garbage-25`,
+`deferred-live-large`, `deferred-then-dead` within each other's spread.
+Mutator CPU within the spread everywhere.
+
+**Reading.** The bound past 1,024 pays on `web-heap` alone, 6–10 % of the
+collector, less than the offer at the bound paid (15–42 %); on the small loads
+it pays nothing and costs `live-churn` up to a fifth of its collector. Not
+taken without Edmond.
+
 ## 2026-10-07 — the backup trace's inputs on `web-heap`'s state: a census 0.21–0.33 s and a mark 0.09–0.13 s a trace, so about 19–29 s of CPU a run at a 2× trigger
 
 **Build.** A diagnostic worktree at `5fda18b`, not kept: two ignored tests in
