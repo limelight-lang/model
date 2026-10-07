@@ -731,7 +731,7 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
             return; // immortal COW entities are no-ops too
         }
 
-        let refcount = unsafe { refcount_load(header) };
+        let refcount = unsafe { refcount_load_to_write(header) };
         // With `checked-refcount`, saturate rather than wrap. Wrapping to
         // zero would make the next release think the entity died and free
         // it while it is still referenced. Saturating leaks it instead,
@@ -752,19 +752,18 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// (`dev/BENCHMARKS.md`, 2026-07-27). Must stay an aligned atomic store:
 /// the collector reads the containing word concurrently.
 ///
-/// Under `recycler-over-counts` it tags byte 7 with the thread's window
-/// first, a whole-byte store that leaves byte 6 and the mutator's flags
-/// untouched, and stores the count with a release, the decrement as the
-/// increment (`dev/design/recycler-over-counts.md`, §5f, "The write
-/// order"): a collector whose relaxed read returns this count and whose
-/// acquire fence follows its trace reads this tag, and every tag and flag
-/// this thread stored before it. Relaxed without the feature, where no
+/// Under `recycler-over-counts` the count is stored with a release, the
+/// decrement as the increment, after the window's tag in byte 7, which
+/// every caller writes first ([`refcount_load_to_write`],
+/// [`set_header_refcount`]; `dev/design/recycler-over-counts.md`, §5f, "The
+/// write order"): a collector whose relaxed read returns this count and
+/// whose acquire fence follows its trace reads this tag, and every tag and
+/// flag this thread stored before it. Relaxed without the feature, where no
 /// collector reads the tags.
 #[inline]
 unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
     #[cfg(feature = "recycler-over-counts")]
     unsafe {
-        tag_with_the_window(header);
         (*(header as *const core::sync::atomic::AtomicU32))
             .store(value, core::sync::atomic::Ordering::Release)
     };
@@ -880,6 +879,23 @@ unsafe fn refcount_load(header: *const RcHeader) -> u32 {
     }
 }
 
+/// [`refcount_load`] of a count about to be written with
+/// [`refcount_store`]: under `recycler-over-counts` the window's tag is
+/// stored first, a whole-byte store that leaves byte 6 and the mutator's
+/// flags untouched, so the tag precedes the count's release store as §5f
+/// orders. Before the load rather than between the load and the store, so
+/// that the compiler folds the load, the change and the store into one
+/// `incl`/`decl` on x86 (`dev/design/the-general-algorithm.md`, "the tag
+/// before the load").
+#[inline]
+unsafe fn refcount_load_to_write(header: *mut RcHeader) -> u32 {
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        tag_with_the_window(header)
+    };
+    unsafe { refcount_load(header) }
+}
+
 /// The mutator's half of the flags word — **bits 0-15, bytes 4-5** —
 /// zero-extended, as a relaxed 16-bit atomic load.
 ///
@@ -975,7 +991,7 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
         return false;
     }
 
-    let refcount = unsafe { refcount_load(entity) };
+    let refcount = unsafe { refcount_load_to_write(entity) };
     debug_assert!(refcount > 0, "release of dead entity");
     let refcount = refcount - 1;
     // Narrow-mutator store: counter half only, flags never touched.
@@ -1234,6 +1250,10 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 /// spells out inline.
 #[inline]
 pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
+    #[cfg(feature = "recycler-over-counts")]
+    unsafe {
+        tag_with_the_window(header)
+    };
     unsafe { refcount_store(header, value) };
 }
 
@@ -1476,7 +1496,7 @@ pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
 /// buried by it.
 #[inline]
 pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
-    let refcount = unsafe { refcount_load(header) };
+    let refcount = unsafe { refcount_load_to_write(header) };
     unsafe { refcount_store(header, refcount + 1) };
 }
 
@@ -1502,7 +1522,7 @@ pub(crate) unsafe fn severed_edge_release(header: *mut RcHeader) -> u32 {
 /// reclamation", step 1).
 #[inline]
 pub(crate) unsafe fn mutator_unguard_release(header: *mut RcHeader) -> u32 {
-    let refcount = unsafe { refcount_load(header) } - 1;
+    let refcount = unsafe { refcount_load_to_write(header) } - 1;
     unsafe { refcount_store(header, refcount) };
     refcount
 }

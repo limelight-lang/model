@@ -1123,3 +1123,25 @@ Advice:
 - The offer point is tied to the bound, whose value P2 measures.
 - One arm more, 20 ms, may halve the trickle's cost at no loss; it changes
   the constant, not the rule (running).
+
+## Wave 3: the tag before the load (2026-10-07)
+
+**Asked.** Edmond, on the window's price ("это платится постоянно"):
+tag only while a batch is in flight. The Critic (opus) on that idea:
+sound only with the window's number kept apart from the byte that turns
+the tag off (else every offer is F = 1 and §4.8's clear never runs), and
+with tagging held until P's disposition (the owner's confirm by tags
+needs the window not to turn while P stands); the in-flight share is
+unknown and may be half the time, since POSTED lasts 7.5–7.9 ms a batch;
+the idle path saves about one instruction on x86. Not built. Its cheaper
+alternative is: store the tag before the count's load, not between the
+load and the release store, so that the compiler can fold the increment.
+
+**Built.** `refcount_load_to_write` stores the tag, then loads; every
+count write goes through it (`ll_retain`, the release, the teardown
+guards), `set_header_refcount` tags before its store, and
+`refcount_store` stores the count alone. §5f's order holds: the tag is
+still stored before the count's release store. `ll_retain` folds into
+`incl (%rdi)`; callgrind, instructions a call (1M against 2M pairs, built
+for an executable): `ll_retain` 18 → 16 (A 13), `ll_release` 25 → 25 (A
+22; the release needs the new count, so it cannot fold).
