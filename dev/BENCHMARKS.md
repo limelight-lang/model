@@ -8,6 +8,39 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the offer floor on the six deciding loads: no gain, and on `deferred-live-large` garbage lives up to 2.5 times longer
+
+**Builds.** The arms of the entry below, unchanged: B at `724aaca` and the
+diagnostic floor arm at 5 and 10 ms (`LL_AGE_FLOOR_MS` through a wrapper),
+built as an rlib (position-independent), which charges every arm alike.
+The six deciding loads, paced as the S65.24 protocol paces them, 10 s a
+cell, both placements (mutators on CPUs 1–2, the collector on 3 or shared
+on 2), three repeats rotated; 108 cells, none void. Edmond asked for this
+on 2026-10-07 ("мерить дальше" on the floor's question).
+
+| load | arm | collector CPU, s (spare / shared) | time to free, ms | offers |
+|---|---|---|---|---|
+| `live-churn` | B | 0.77–0.82 / 0.66–0.89 | 2,974–3,015 | 5,117–5,236 |
+| | 5 ms | 0.75–0.85 / 0.69–0.75 | 3,077–3,082 | 3,655–3,669 |
+| | 10 ms | 0.71–0.73 / 0.65–0.70 | 3,284–3,314 | 1,926–1,943 |
+| `live-churn-dies-by-count` | B | 0.52–0.56 / 0.43 | — | 5,014–5,055 |
+| | 5 ms | 0.53–0.58 / 0.42–0.44 | — | 3,613–3,632 |
+| | 10 ms | 0.47–0.50 / 0.38–0.40 | — | 1,925–1,928 |
+| `deferred-live-large` | B | 0.125–0.146 / 0.110–0.113 | 32.4–32.7 | 729 |
+| | 5 ms | 0.154–0.196 / 0.117–0.134 | 43.7–44.4 | 709 |
+| | 10 ms | 0.160–0.165 / 0.131–0.144 | 79.3–79.8 | 692 |
+
+On `deferred-then-dead`, `garbage-25` and `registered-ring-live` every
+column stays within B's spread (time to free within 1 %). Mutator CPU
+stays within B's spread on every load and both placements.
+
+**Reading.** Away from `web-heap` the floor buys no collector time but on
+`live-churn-dies-by-count` at 10 ms (−10 %), and on `deferred-live-large`
+it costs both: garbage lives 35 % longer at 5 ms and 2.5 times longer at
+10 ms, and the collector spends 5–35 % more. Its gain is `web-heap`'s
+alone (the entry below), against held garbage on every load that has
+any. Not built; the floor stays Edmond's question.
+
 ## 2026-10-07 — an offer no sooner than a floor after the last: at 5 ms the collector spends a fifth less and refuses 40 % fewer sets, the mean garbage within the spread, the peak half again
 
 **Builds.** A diagnostic arm of B at `724aaca`, not kept (a worktree): the
