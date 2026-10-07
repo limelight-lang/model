@@ -9,6 +9,22 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-07 — less garbage comes from more deaths by count, not from fewer +1/−1
+
+**Decided (Edmond, 2026-10-07, «согласен», on the Critic's reading of his
+claim that an optimizing compiler which removes +1/−1 leaves little
+garbage).** Removing +1/−1 does not shrink cyclic garbage: reachability
+decides it, the −1 that strands a ring cannot be removed, and the candidate
+bit already folds repeated registrations (1.60M into 18,304 batch roots).
+What shrinks it is making more objects die by count, which the compiler
+owns: ownership inferred into `OWNERSHIP_MARK` (the holder's teardown
+destroys the child, which never becomes a candidate), escape analysis that
+places request-scoped objects in the request arena (no candidates there),
+and weak back-links to a parent. Removing +1/−1 stays a mutator-side
+optimization, legal only as a move at a last use or a pair a longer-lived
+holder covers; copy-on-write and prompt `__destruct` keep exact counts
+elsewhere.
+
 ## 2026-10-07 — both counting collectors stay, the tracing collector with stack-map roots goes to the far list
 
 **Decided (Edmond, 2026-10-07: «давай оставим алгоритм который не платит
