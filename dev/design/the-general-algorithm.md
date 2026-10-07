@@ -1296,3 +1296,34 @@ registration alone (A with registration off and the collector off, mutator
 CPU on `web-heap`), and the cost of one mark visit over the existing rows
 against a header byte, on `web-heap-150k`. If registration is cheap and the
 visit is not several times cheaper, T has nothing to win.
+
+### The Sage on the backup trace (2026-10-07)
+
+The Sage (Fable), reading the three sections and the code: the Critic is
+right in kind. The census runs trial deletion's phases with every tracked
+object as a candidate, so the 1.69 times and the 25–70 ms, both premised on
+a header-bit visit from real roots, are not T's figures; 200–400 ms a trace
+is sound as an order, nearer a floor (R1: 1.53M rows in 202 ms,
+`dev/BENCHMARKS.md:1536`). Byte 7 is free without `recycler-over-counts`
+(`flags_store` writes bits 0–15 only, `src/refcount.rs:925`), and under T
+byte 6 too. A conservative scan has every ingredient of the address lookup
+(test-only `describe_slot`) but no enumeration of Rust-side holders; a
+request-boundary trace alone leaves pressure and long requests uncovered;
+a per-thread index of retained blocks reintroduces a registry the project
+removed on purpose (`src/memory/retained.rs:18`). Registration is already
+bounded: 1.60M registrations a `web-heap` run (`dev/BENCHMARKS.md:1516`), under
+1 % of the mutators' CPU at 200 ns each, so T's gain, if any, lies in the
+collector.
+
+Advice: measure first, no new collector: (a) registration's price with the
+collector off; (b) a mark visit on rows against a header byte, with the pass
+count (3 against 1); (c) entity bytes allocated a run over live bytes on
+`web-heap` and `web-arena`, which fixes the trace count at each ratio. Build
+the census variant as the selectable arm only if traces × passes × visit ×
+rows comes out under the collector CPU it replaces, the pause recorded as a
+known loss; the real-roots variant is a second stage, only if the census
+wins CPU.
+
+Claude's note: the CPU to beat is B's, not A's. T keeps A's mutator (about
+70 s on `web-heap` against B's 46 s), so T's trace must cost under about
+33 s for T to beat B's 102–105 s in total, against B's collector at 56–59 s.
