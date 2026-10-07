@@ -8,6 +8,30 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the backup trace's second arm on the six deciding loads: the first arm's tails halved, still 4–35 times B's where a trace lands on a short request
+
+**Build.** The second arm (`07a32fe`) at ratio 2, against **M**; two
+mutators, spare and shared placements, three repeats each, one rotation, no
+cell void. Every member freed on every load was swept.
+
+| load | p99 M | p99 trace | p999 M | p999 trace | CPU an op, trace/M | longest trace |
+|---|---|---|---|---|---|---|
+| deferred-live-large | 49–74 µs | 33–49 µs | 123–393 µs | 123–295 µs | 0.84–1.24 | 15–25 ms |
+| deferred-then-dead | 25–37 µs | 15–31 µs | 123–295 µs | 164–295 µs | 0.87–1.16 | 8.6–12 ms |
+| garbage-25 | 49–98 µs | 123–180 µs | 0.15–0.72 ms | 3.7–5.2 ms | 0.97–1.11 | 3.7–6.1 ms |
+| live-churn | 197–295 µs | 90–164 µs | 1.05–1.7 ms | 2.4–3.7 ms | 1.10–1.78 | 42–165 ms |
+| live-churn-dies-by-count | 164–197 µs | 82–90 µs | 0.9–1.6 ms | 0.66–1.6 ms | 0.72–0.98 | 4.9–7.4 ms |
+| registered-ring-live | 0.26–1.05 ms | 4.2–5.2 ms | 0.8–3.7 ms | 5.8–8.4 ms | 1.22–1.46 | 5.4–12 ms |
+
+Standing garbage at the end: the trace 6–21 MB as in the first arm, M under
+0.15 MB but on `live-churn` (42–43 MB, the trace 11 MB).
+
+**Reading.** Against the first arm, `registered-ring-live`'s p99 falls from
+11.5–13.6 ms to 4.2–5.2 ms and its CPU an operation from 1.8–2.2 to
+1.2–1.5 times M's; `garbage-25`'s p999 from 7.3–10.5 ms to 3.7–5.2 ms. The
+loads whose traces are rare keep a p99 at or below M's. The pause is still
+the trace's whole length on the owner.
+
 ## 2026-10-07 — the backup trace's second arm on `web-heap`: the trace halved by a census in one walk and the direct sweep, 22–25 % less CPU than B in total, all of it on the mutator
 
 **Build.** `trace-backup-rig` at `07a32fe` (`src/cycle/trace_backup/sweep.rs`):
