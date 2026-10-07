@@ -8,7 +8,7 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
-## 2026-10-07 — the offer at the bound over today's rule (R50): the collector's saving and `web-heap`'s lower garbage kept, a trickle freed twice as slowly, eight blocking mutators no worse
+## 2026-10-07 — the offer at the bound over today's rule (R50): the collector's saving and `web-heap`'s lower garbage kept, a trickle freed twice as slowly, with two mutators or eight blocking ones
 
 **Builds.** A diagnostic arm of B at `35bd45a`, not kept (a worktree),
 built for an executable: **R50** offers at R = 1,024; or at R ≥ 64 once R
@@ -52,14 +52,20 @@ Eight blocking mutators:
 spread in both sets (one R50 cell of `registered-ring-live` freed in 35 ms
 against 15); mutator CPU stays within B's spread everywhere.
 
+Every load registers 63 roots an iteration (`ROOTS = SOFT_THRESHOLD - 1`,
+`the_rig.rs`), so R reaches 64 at the second iteration: the trickle loads
+measure the 50 ms branch, never the bound. K still starts at 64 and
+doubles; an offer of 1,024 is taken in batches of 64, 128, 256 and 512
+until K reaches the bound.
+
 **Reading.** Keeping today's rule under the bound keeps what the bound
 bought: on `web-heap` the collector spends 13 % less and holds 30 % less
-garbage on average, and the churn loads 15–40 % less collector with two
+garbage on average, and the churn loads 15–42 % less collector with two
 mutators. The price
 is the trickle's time to free, about doubled (`garbage-25` 45 ms against
 23; `deferred-live-large` 57 against 32), the 50 ms interval's. Eight
-mutators that sleep between iterations show no blow-up, but their sleeps
-are the pace's milliseconds: a thread blocked for seconds with up to
+mutators that sleep between iterations pay the same doubling and nothing
+more, but their sleeps are the pace's milliseconds: a thread blocked for seconds with up to
 1,023 roots in R is not measured here. The choice is Edmond's.
 
 ## 2026-10-07 — the offer at 1,024 or after R has stood 50 ms: the collector's saving kept, a slow trickle freed in 83 ms rather than half a second

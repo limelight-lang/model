@@ -1094,10 +1094,32 @@ mutator offers when:
 - R holds anything and has stood the accepted 4 s; or a lane merged.
 
 Today's rule stays as the floor of the behaviour: nothing it offers waits
-more than 50 ms longer, an R under 64 keeps 4 s, so the Critic's findings
-1, 2 and 4 do not arise. Finding 3 (a thread blocked for seconds with up to
+more than 50 ms and one poll longer, an R under 64 keeps 4 s, so the
+Critic's findings 1, 2 and 4 do not arise beyond what today's rule has (an
+R under 64 with no elder born still waits until one is, as today). K is
+unchanged: it starts at 64 and doubles to the bound. Finding 3 (a thread blocked for seconds with up to
 1,023 roots) is bounded only by an offer at the embedder's "about to
 block" point, which the runtime does not have yet; not measured. Finding 7
 stands: 1,024 is the workspace's limit, and the bound's value is P2's to
 measure. The cost measured: a trickle's time to free about doubles (45 ms
 against 23 on `garbage-25`).
+
+### The Sage on the repaired offer (2026-10-07)
+
+The Sage (Fable), reading the proposal, the code and the figures: sound,
+and worth putting to Edmond as the recommendation; three independent arms
+agree on the saving. Corrections taken above: "50 ms and one poll"; the
+hole for an R under 64 with no elder is today's; K unchanged; every rig
+load reaches 64 at its second iteration, so the trickle loads measure the
+interval, not the bound; eight blocking mutators pay the same doubling.
+Advice:
+- The clock read stays on `Instant`, after the token, ring and R ≥ 64
+  tests: no syscall, and mutator CPU within B's spread everywhere; the
+  round clock is too coarse and a poll count has no time.
+- A thread blocked for seconds holds up to 1,023 roots: the repair, an
+  offer at the embedder's "about to block" point, is embedder API and so
+  Edmond's; the rule can land with the bound stated, measured first with a
+  pace of seconds and the wait without a poll.
+- The offer point is tied to the bound, whose value P2 measures.
+- One arm more, 20 ms, may halve the trickle's cost at no loss; it changes
+  the constant, not the rule (running).
