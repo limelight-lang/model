@@ -493,11 +493,11 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // The set the collector's batch proved unreachable is the collection
     // over P's to validate, and no other collection reads it
     // (`crate::cycle::posted_set`).
-    #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
+    #[cfg_attr(feature = "gc-checkpoint", allow(unused_mut))]
     let mut set = match form {
         BatchForm::Verdicts => {
             let set = crate::cycle::posted_set::take_this_threads();
-            #[cfg(all(test, feature = "recycler-over-counts"))]
+            #[cfg(all(test, feature = "gc-window"))]
             crate::cycle::worker::testing::note_the_set_kind(
                 set.as_ref()
                     .map_or(crate::cycle::worker::testing::SET_KINDS, |set| {
@@ -512,7 +512,7 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
             // back; applied here, ahead of the trace over R, so that the set
             // they name reads its own counts and not a freed part's, as the
             // pressure path applies them after its take.
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             let _ = unsafe { crate::cycle::collector_frees::apply_this_threads() };
             None
         }
@@ -554,7 +554,7 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // A set proved by its tags and freed: the drops the collector held into it
     // go with it. Read and not freed, the set takes them to the record at its
     // drop, for the next application (`crate::cycle::posted_set`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     if outcome.initial == ValidationResult::Unreachable
         && outcome.freed > 0
         && let Some(set) = set.as_mut()
@@ -795,7 +795,7 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
     // final claim, which no grant follows, so nothing is published after it:
     // its drops and chains are no set a round finds again
     // (`crate::cycle::collector_frees`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let _ = unsafe { crate::cycle::collector_frees::apply_this_threads() };
     let mut freed = 0;
     // By lane and not as one sum: a round that defers a verdict's root moves
@@ -831,7 +831,7 @@ pub(crate) unsafe fn collect_before_exit() -> ExitResidue {
     unsafe { crate::cycle::deferred_slot_reuse::make_returns_withheld_under_a_foreign_trace() };
     // The claim keeps every collector out, so nothing one freed stands past
     // it, where the record goes to a reset.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     debug_assert!(
         unsafe { crate::cycle::mutator_record::this_thread_record().as_ref() }
             .is_none_or(|record| !record.collectors_frees_stand()),
@@ -904,7 +904,7 @@ unsafe fn refused_under_pressure(closed: GateClosed) -> usize {
         crate::cycle::posted_set::drop_this_threads();
         // What a collector freed for this thread gives its slots back here
         // too; the drops wait for an open poll, since they run destructors.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         unsafe {
             crate::cycle::collector_frees::splice_this_threads()
         };
@@ -994,7 +994,7 @@ pub(crate) unsafe fn collect_under_pressure() -> usize {
     // this thread's behalf stands on a word of its own and is applied here,
     // its slots being what a thread under pressure wants first
     // (`crate::cycle::collector_frees`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let _ = unsafe { crate::cycle::collector_frees::apply_this_threads() };
 
     #[cfg(test)]

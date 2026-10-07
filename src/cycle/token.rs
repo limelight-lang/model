@@ -15,7 +15,7 @@
 //! | [`FREE`] | either | nobody traces this thread; the mutator returns memory at once |
 //! | [`MUTATOR`] | the mutator | the mutator's own claim: a collection through its close, the exit's final claim, an initialisation not yet complete |
 //! | [`REQUESTED`]`\|s` | collector s | collector s asks to trace; the mutator has not consented (the default build) |
-//! | `OFFERED` | the mutator | the mutator offers a batch of R at the frame its window turned to; the mutator withholds every return (`recycler-over-counts`) |
+//! | `OFFERED` | the mutator | the mutator offers a batch of R at the frame its window turned to; the mutator withholds every return (`gc-window`) |
 //! | [`COLLECTOR`]`\|s` | collector s, or the consenting mutator | collector s traces; the mutator withholds every return |
 //! | [`POSTED`] | collector s | no collector holds anything; the last batch's verdicts stand in P undisposed of, with the set it proved beside them (`crate::cycle::posted_set`), and the mutator owes a collection over P |
 //! | [`ASKED`], `POSTED` with slot one | the elder | under a collector cap of zero: P is empty, and the mutator owes a collection over R whole (`TraceToken::ask_to_collect_in_line`) |
@@ -26,7 +26,7 @@
 //! reads the state, and the mutator's reading alone tells it and
 //! [`NOTHING_PROPOSED`] from a batch's `POSTED`.
 //!
-//! **Under `recycler-over-counts` the mutator offers and the collector
+//! **Under `gc-window` the mutator offers and the collector
 //! takes** (`dev/design/recycler-over-counts.md`, §5f): no request and no
 //! consent. At a poll with the gate open, where every reference the mutator
 //! holds is counted, it turns its window, records how much of R the batch may
@@ -86,7 +86,7 @@
 //! (`rfc/dev/DECISIONS.md`, "a trace stays inside the blocks of the thread it
 //! claimed").
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Condvar, Mutex, MutexGuard};
@@ -124,7 +124,7 @@ pub(crate) const NOTHING_PROPOSED: u8 = word(POSTED, 2);
 /// collector takes it by one swap `OFFERED → COLLECTOR|s`. The mutator
 /// withholds every return under it as under `COLLECTOR`, and every taker of
 /// its own withdraws it by one swap before it touches R. Carries no slot.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const OFFERED: u8 = 5;
 
 /// No recall: the collector traces on (`TraceToken::recall_level`).
@@ -201,7 +201,7 @@ pub(crate) enum Reading {
     Collector,
     /// `OFFERED`: this thread's offer stands untaken; withhold every return,
     /// since the take lands at any instant.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     Offered,
     /// `MUTATOR`: this thread's own claim; its window decides.
     Mutator,
@@ -228,7 +228,7 @@ impl Reading {
     pub(crate) fn withholds(self) -> bool {
         match self {
             Reading::Collector => true,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             Reading::Offered => true,
             _ => false,
         }
@@ -236,12 +236,12 @@ impl Reading {
 }
 
 /// Whether the byte `seen` asks every return to be withheld: `COLLECTOR`, or
-/// `OFFERED` under `recycler-over-counts`.
+/// `OFFERED` under `gc-window`.
 #[inline]
 pub(crate) const fn withholds(seen: u8) -> bool {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     return matches!(state(seen), COLLECTOR | OFFERED);
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     return state(seen) == COLLECTOR;
 }
 
@@ -277,7 +277,7 @@ pub(crate) struct TraceToken {
     /// take to know which tag means "touched since the frame". Stored by the
     /// mutator ahead of the offer's release swap, which publishes it; relaxed
     /// on both sides.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     window: AtomicU8,
     /// How many of R's entries, from its front, the offer covers: R's count
     /// at the frame, at most the batch's bound, which sixteen bits hold. An
@@ -285,7 +285,7 @@ pub(crate) struct TraceToken {
     /// frame's tag refuses, so the batch takes none past it. Stored and read
     /// as [`Self::window`] is. Sixteen bits keep the token inside the
     /// record's first line (`crate::cycle::mutator_record`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     ceiling: AtomicU16,
     wait: Mutex<()>,
     released: Condvar,
@@ -301,9 +301,9 @@ pub(crate) struct TraceToken {
     /// take of its own: the mutator's side of the ledger the stress probe
     /// balances against the collector's grants served and refusals read
     /// (`crate::cycle::worker::tests::under_stress`).
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     consents: std::sync::atomic::AtomicUsize,
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     refusals: std::sync::atomic::AtomicUsize,
 }
 
@@ -320,17 +320,17 @@ impl TraceToken {
         Self {
             word: AtomicU8::new(MUTATOR),
             waiting: AtomicU8::new(RECALL_NONE),
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             window: AtomicU8::new(0),
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             ceiling: AtomicU16::new(0),
             wait: Mutex::new(()),
             released: Condvar::new(),
             #[cfg(test)]
             waits: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(feature = "recycler-over-counts")))]
+            #[cfg(all(test, feature = "gc-checkpoint"))]
             consents: std::sync::atomic::AtomicUsize::new(0),
-            #[cfg(all(test, not(feature = "recycler-over-counts")))]
+            #[cfg(all(test, feature = "gc-checkpoint"))]
             refusals: std::sync::atomic::AtomicUsize::new(0),
         }
     }
@@ -369,12 +369,12 @@ impl TraceToken {
     /// word, which releases the grant where the collector holds it behind
     /// another mutator's batch.
     fn recall_without_waiting(&self, level: u8) {
-        #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
+        #[cfg_attr(feature = "gc-checkpoint", allow(unused_mut))]
         let mut seen = self.read();
         // An offer no collector took yet has no trace to wind down: the mark
         // withdraws it, and the returns go back at this thread's next free or
         // poll. A take that won the race is recalled as any grant is.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         if state(seen) == OFFERED {
             match self.withdraw_the_offer(FREE) {
                 Ok(()) => {
@@ -436,7 +436,7 @@ impl TraceToken {
     /// is acquire too: a standing request answered on the free path is read
     /// through this failure as `COLLECTOR`, and the grant it reads must carry
     /// the stores the mutator's consent released.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn request(&self, slot: usize) -> Result<(), u8> {
         // Stamped before the swap, so that a consent made at once finds it.
         #[cfg(test)]
@@ -466,7 +466,7 @@ impl TraceToken {
     /// cap left. Relaxed: the collector published nothing of the mutator's
     /// and reads nothing after the swap, and the mutator's take from the ask
     /// finds the posted set's word null, no grant having written it.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn ask_to_collect_in_line(&self) -> Result<(), u8> {
         // Stamped before the swap, so that a take made at once finds it.
         #[cfg(test)]
@@ -519,7 +519,7 @@ impl TraceToken {
     /// `level` first — the level the stacks of withheld returns hold — so
     /// that a grant starts recalled exactly as hard as the marks stand, and
     /// not by a recall a mark raised under an earlier grant.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn consent(&self, seen: u8, level: u8) -> Result<(), u8> {
         debug_assert_eq!(state(seen), REQUESTED);
         // Ahead of the release swap, which publishes it: the collector reads
@@ -568,7 +568,7 @@ impl TraceToken {
     ///
     /// The caller opens `window` on its thread once the swap succeeds and
     /// before any count write after it ([`crate::refcount::set_window`]).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn offer(&self, window: u8, ceiling: usize, level: u8) -> Result<(), u8> {
         let seen = self.word.load(Ordering::Relaxed);
         if seen != FREE {
@@ -601,7 +601,7 @@ impl TraceToken {
     /// [`Self::ceiling`]) — never before it, since an offer withdrawn and
     /// made again carries the next frame. `Err` is the byte read back: no
     /// offer stands, or another collector took it.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn take_the_offer(&self, slot: usize) -> Result<(), u8> {
         let taken = self.word.compare_exchange(
             OFFERED,
@@ -621,7 +621,7 @@ impl TraceToken {
     /// returns go back, `MUTATOR` where a take of the mutator's own claims the
     /// byte. `Err` is the byte read back, with an acquire: `COLLECTOR` is a
     /// take that won, whose grant the caller then recalls or waits out.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn withdraw_the_offer(&self, to: u8) -> Result<(), u8> {
         debug_assert!(to == FREE || to == MUTATOR, "a withdrawal to {to:#x}");
         let withdrawn =
@@ -641,7 +641,7 @@ impl TraceToken {
     /// will not come ("Cap zero", `crate::cycle::worker`). The mutator's next
     /// reading arms R whole on the ask, as on one written over `FREE`.
     /// Relaxed, as `Self::ask_to_collect_in_line` is.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn ask_over_the_offer(&self) -> Result<(), u8> {
         #[cfg(test)]
         let entry = crate::cycle::worker::testing::note_entering(
@@ -661,14 +661,14 @@ impl TraceToken {
 
     /// The frame of the offer the caller took ([`Self::offer`]): read by the
     /// collector after its acquire of the take.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn window(&self) -> u8 {
         self.window.load(Ordering::Relaxed)
     }
 
     /// The entries of R the offer the caller took covers ([`Self::offer`]):
     /// read by the collector after its acquire of the take.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn ceiling(&self) -> usize {
         usize::from(self.ceiling.load(Ordering::Relaxed))
     }
@@ -805,7 +805,7 @@ impl TraceToken {
                 FREE | REQUESTED => TookFrom::Free,
                 // This thread's own offer, withdrawn by the take's swap below:
                 // R stays whole for the claim.
-                #[cfg(feature = "recycler-over-counts")]
+                #[cfg(feature = "gc-window")]
                 OFFERED => TookFrom::Free,
                 POSTED if hold_at_posted => return None,
                 POSTED => TookFrom::Posted,
@@ -876,7 +876,7 @@ impl TraceToken {
     fn note_the_take(&self, seen: u8) {
         use crate::cycle::worker::testing;
         match state(seen) {
-            #[cfg(not(feature = "recycler-over-counts"))]
+            #[cfg(feature = "gc-checkpoint")]
             REQUESTED => {
                 self.refusals.fetch_add(1, Ordering::Relaxed);
                 testing::note_request_ended(
@@ -897,13 +897,13 @@ impl TraceToken {
     }
 
     /// Requests the mutator consented to so far.
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     pub(crate) fn consents(&self) -> usize {
         self.consents.load(Ordering::Relaxed)
     }
 
     /// Requests the mutator refused by a take of its own so far.
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     pub(crate) fn refusals(&self) -> usize {
         self.refusals.load(Ordering::Relaxed)
     }
@@ -931,7 +931,7 @@ impl TraceToken {
     /// Write `requested`, a `REQUESTED|s` byte, over `FREE`: a case standing
     /// in for a collector's request, which the collector thread makes with
     /// its own swap.
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     pub(crate) fn request_for_test(&self, requested: u8) {
         assert_eq!(state(requested), REQUESTED);
         self.word
@@ -1027,7 +1027,7 @@ pub(crate) fn recall_this_threads_token(level: u8) {
 /// stored the level ahead of its swap, where the collector reads it, and the
 /// word is what releases the grant where the collector holds it behind
 /// another mutator's batch. Nothing unless a collector holds the token.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn tell_this_threads_holder() {
     let record = crate::cycle::mutator_record::this_thread_record();
     if record.is_null() {
@@ -1099,7 +1099,7 @@ pub(crate) fn read_and_act_on_this_thread() -> Reading {
 #[cold]
 #[inline(never)]
 #[cfg_attr(
-    feature = "recycler-over-counts",
+    feature = "gc-window",
     allow(unused_mut, unused_variables, clippy::never_loop)
 )]
 fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
@@ -1116,9 +1116,9 @@ fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
             }
             COLLECTOR => return Reading::Collector,
             MUTATOR => return Reading::Mutator,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             OFFERED => return Reading::Offered,
-            #[cfg(not(feature = "recycler-over-counts"))]
+            #[cfg(feature = "gc-checkpoint")]
             _ => match token.consent(seen, crate::cycle::deferred_slot_reuse::withheld_recall()) {
                 Ok(()) => {
                     #[cfg(test)]
@@ -1130,8 +1130,8 @@ fn act_on_the_byte(token: &TraceToken, mut seen: u8) -> Reading {
             },
             // No collector requests under the offer, so `REQUESTED` never
             // stands.
-            #[cfg(feature = "recycler-over-counts")]
-            _ => unreachable!("a request under recycler-over-counts: {seen:#x}"),
+            #[cfg(feature = "gc-window")]
+            _ => unreachable!("a request under gc-window: {seen:#x}"),
         }
     }
 }
@@ -1343,5 +1343,5 @@ mod free_path_model;
 
 // The loom model of the offer, the same way: under `--cfg loom` and the
 // feature alone, run by hand as its file says.
-#[cfg(all(loom, feature = "recycler-over-counts"))]
+#[cfg(all(loom, feature = "gc-window"))]
 mod offer_model;

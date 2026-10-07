@@ -43,10 +43,10 @@
 //! zero marking what it reaches. The tests hold the two together on one heap
 //! (`tests::the_verdict_against_trial_deletion`).
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 compile_error!(
-    "`trace-backup-rig` and `recycler-over-counts` are two cycle collectors \
-     over the same header bytes 6-7; build one of them"
+    "`trace-backup-rig` and `gc-window` are two cycle collectors \
+     over the same header bytes 6-7; build the rig over `gc-checkpoint`"
 );
 
 use std::sync::atomic::{AtomicU64, Ordering};

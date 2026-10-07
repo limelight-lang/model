@@ -85,7 +85,7 @@ pub(crate) const COUNT_MAX: u32 = (1 << COUNT_BITS) - 1;
 /// the member stands in a part of the proved set the collector does not free
 /// itself (`crate::cycle::split`). The run indices stay below it
 /// (`crate::cycle::recorded_edges::MAX_ENTRIES`).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const SPLIT_MARK: u32 = 1 << (COUNT_BITS - 1);
 
 /// What the trace has decided about one entity, and the reserved zero
@@ -229,7 +229,7 @@ pub(crate) unsafe fn recolor(row: *mut u32, color: Color) {
 /// trace is over, the count has answered the only question the scan asks of
 /// it, and no production reader takes it again before the arena's reset. A row
 /// of any other colour is still the count the trace left — or, after a
-/// collector's scan under `recycler-over-counts`, the index of its recorded
+/// collector's scan under `gc-window`, the index of its recorded
 /// run (`crate::cycle::scan::scan_the_recorded_edges`) — and this call
 /// refuses one in a test build.
 ///

@@ -1,5 +1,5 @@
 //! The collector's Δ-test of the set its scan over the record proved, under
-//! `recycler-over-counts` (`crate::cycle::delta_test`;
+//! `gc-window` (`crate::cycle::delta_test`;
 //! `dev/design/recycler-over-counts.md`, §4, §5f): a garbage ring nobody
 //! touched since the offer is proved by its tags, and the owner's exact validation
 //! agrees; a member tagged with the open window refuses the set; a stale tag

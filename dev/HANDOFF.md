@@ -62,8 +62,8 @@ session and replaced whole by the next handoff; what outlives it is in
   `TAS_REVIEWED=da39a3ee git push origin main:refs/heads/claude/exciting-tesla-y0c10j`.
   The hook rejects "moved/now/was/previously/used to" in added comment-marked
   lines (markdown lines with `*` or `#` count).
-- Release test binaries: `cargo test --release --lib [--features
-  recycler-over-counts] --no-run --target-dir target/s611_a|s611_b`; arms in
+- Release test binaries: `cargo test --release --lib [--no-default-features
+  --features gc-window] --no-run --target-dir target/s611_a|s611_b`; arms in
   target/arms68 (Asw/Bsw = gated sweep, A13/B13 = cb0faf1).
 - perf was installed this session from Ubuntu's linux-tools
   (/usr/lib/linux-tools/6.8.0-146-generic/perf); a new container lacks it.

@@ -58,7 +58,7 @@
 //! # Running it
 //!
 //! ```text
-//! RUSTFLAGS="--cfg loom" cargo test --lib --features recycler-over-counts offer_model
+//! RUSTFLAGS="--cfg loom" cargo test --lib --features gc-window offer_model
 //! ```
 //!
 //! Not part of the commit gate (`dev/WORKFLOW.md`), as `free_path_model`.

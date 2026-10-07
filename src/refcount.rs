@@ -22,7 +22,7 @@
 //! under its grant through [`stamp_as_read_live`] — and
 //! `refcount::tests::the_header_the_compiler_shares` is what keeps a
 //! mutator constant from drifting into any of them. Bits 24-31, byte 7, are
-//! the window tag under `recycler-over-counts` (`tag_with_the_window`) and
+//! the window tag under `gc-window` (`tag_with_the_window`) and
 //! unwritten after the publication otherwise.
 
 use crate::journal::kinds::journal_event;
@@ -711,7 +711,7 @@ pub(crate) unsafe fn publish_header(slot: *mut RcHeader, header: RcHeader) {
 /// The header is read in two narrow relaxed loads — the flags half for
 /// the category tests, then the counter — and only the 4-byte counter
 /// half is stored back. That is the narrow-mutator rule: no flags store,
-/// nothing beyond the counter itself — under `recycler-over-counts` the
+/// nothing beyond the counter itself — under `gc-window` the
 /// window tag's whole-byte store at byte 7 aside ([`refcount_store`]). Why narrow beats wide on both
 /// sides is [`refcount_load`]'s argument, measured in
 /// `dev/BENCHMARKS.md`, 2026-07-27.
@@ -752,7 +752,7 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// (`dev/BENCHMARKS.md`, 2026-07-27). Must stay an aligned atomic store:
 /// the collector reads the containing word concurrently.
 ///
-/// Under `recycler-over-counts` the count is stored with a release, the
+/// Under `gc-window` the count is stored with a release, the
 /// decrement as the increment, after the window's tag in byte 7, which
 /// every caller writes first ([`refcount_load_to_write`],
 /// [`set_header_refcount`]; `dev/design/recycler-over-counts.md`, §5f, "The
@@ -762,19 +762,19 @@ pub unsafe extern "C" fn ll_retain(header: *mut RcHeader) {
 /// collector reads the tags.
 #[inline]
 unsafe fn refcount_store(header: *mut RcHeader, value: u32) {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         (*(header as *const core::sync::atomic::AtomicU32))
             .store(value, core::sync::atomic::Ordering::Release)
     };
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     unsafe {
         (*(header as *const core::sync::atomic::AtomicU32))
             .store(value, core::sync::atomic::Ordering::Relaxed)
     };
 }
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 thread_local! {
     /// The frame this thread's last offer turned its window to, 1..=255, or
     /// 0 before its first (`dev/design/recycler-over-counts.md`, §5f). It
@@ -792,13 +792,13 @@ thread_local! {
 /// [`the_next_window`] once its swap succeeds; a measurement of the tag's
 /// price and a case set one directly. Crate-private: a window out of step
 /// with the token's would make the tags lie.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn set_window(window: u8) {
     COLLECTOR_WINDOW.with(|open| open.set(window));
 }
 
 /// This thread's window, as a case reads it to put it back.
-#[cfg(all(test, feature = "recycler-over-counts"))]
+#[cfg(all(test, feature = "gc-window"))]
 pub(crate) fn this_threads_window() -> u8 {
     COLLECTOR_WINDOW.with(|open| open.get())
 }
@@ -807,7 +807,7 @@ pub(crate) fn this_threads_window() -> u8 {
 /// wrapping to 1 — 0 is no window's. Answered without opening it, so that an
 /// offer whose swap fails spends no number. A tag of a frame 255 offers old
 /// reads as touched again, which refuses a set and frees nothing.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn the_next_window() -> u8 {
     COLLECTOR_WINDOW.with(|open| open.get() % 255 + 1)
 }
@@ -819,7 +819,7 @@ pub(crate) fn the_next_window() -> u8 {
 /// # Safety
 /// `header` points at a published entity whose first eight bytes are
 /// readable.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[inline]
 pub(crate) unsafe fn window_tag(header: *const RcHeader) -> u8 {
     unsafe { header_byte_load(header, WINDOW_TAG_BYTE) }
@@ -835,7 +835,7 @@ pub(crate) unsafe fn window_tag(header: *const RcHeader) -> u8 {
 /// # Safety
 /// `header` points at an entity whose first eight bytes are mapped: a member
 /// of a set the collector proved, its slot withheld under the grant.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[inline]
 pub(crate) unsafe fn clear_a_stale_window_tag(header: *mut RcHeader, stale: u8) {
     let byte = unsafe {
@@ -857,7 +857,7 @@ pub(crate) unsafe fn clear_a_stale_window_tag(header: *mut RcHeader, stale: u8) 
 /// # Safety
 /// `header` points at a published entity whose first eight bytes are
 /// writable by this thread.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[inline]
 pub unsafe fn tag_with_the_window(header: *mut RcHeader) {
     let window = COLLECTOR_WINDOW.with(|open| open.get());
@@ -880,7 +880,7 @@ unsafe fn refcount_load(header: *const RcHeader) -> u32 {
 }
 
 /// [`refcount_load`] of a count about to be written with
-/// [`refcount_store`]: under `recycler-over-counts` the window's tag is
+/// [`refcount_store`]: under `gc-window` the window's tag is
 /// stored first, a whole-byte store that leaves byte 6 and the mutator's
 /// flags untouched, so the tag precedes the count's release store as §5f
 /// orders. Before the load rather than between the load and the store, so
@@ -889,7 +889,7 @@ unsafe fn refcount_load(header: *const RcHeader) -> u32 {
 /// before the load").
 #[inline]
 unsafe fn refcount_load_to_write(header: *mut RcHeader) -> u32 {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         tag_with_the_window(header)
     };
@@ -919,7 +919,7 @@ unsafe fn flags_load(header: *const RcHeader) -> u32 {
 
 /// The store twin of [`flags_load`]: the mutator's only store of a
 /// published header's flags. Byte 6 and byte 7 have writers of their own,
-/// [`write_maturation_stamp`] and, with `recycler-over-counts`, the window
+/// [`write_maturation_stamp`] and, with `gc-window`, the window
 /// tag, each one byte wide.
 #[inline]
 unsafe fn flags_store(header: *mut RcHeader, flags: u32) {
@@ -1206,11 +1206,11 @@ pub(crate) unsafe fn stamp_as_read_live(header: *mut RcHeader, epoch: u32) -> bo
 }
 
 /// Byte 7 of the header, the flags word's bits 24-31. Without
-/// `recycler-over-counts` nothing writes it after the publication; with it,
+/// `gc-window` nothing writes it after the publication; with it,
 /// it carries the number of the collector's window in which this entity's
 /// count or one of its slots last changed (`rfc/model/classes.md`, "Flags
 /// layout"; `dev/design/recycler-over-counts.md`, §2).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 const WINDOW_TAG_BYTE: usize = 7;
 
 /// The relaxed load of one byte of a header, at `at` bytes from its start:
@@ -1291,7 +1291,7 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 /// Write the refcount of a **published** header — the store twin of
 /// [`header_refcount`], and narrow for the same reason: byte 6 and the
 /// mutator's flags are neither read nor written (byte 7's window tag is,
-/// whole, under `recycler-over-counts`), so a byte the collector puts in
+/// whole, under `gc-window`), so a byte the collector puts in
 /// byte 6 cannot be buried by this store.
 ///
 /// A count changed by a delta reads with [`header_refcount`] and writes
@@ -1300,7 +1300,7 @@ pub(crate) unsafe fn header_refcount(header: *const RcHeader) -> u32 {
 /// spells out inline.
 #[inline]
 pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         tag_with_the_window(header)
     };
@@ -1316,7 +1316,7 @@ pub(crate) unsafe fn set_header_refcount(header: *mut RcHeader, value: u32) {
 ///
 /// # Safety
 /// As [`set_header_refcount`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[inline]
 pub(crate) unsafe fn set_header_refcount_untagged(header: *mut RcHeader, value: u32) {
     unsafe {

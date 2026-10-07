@@ -164,10 +164,10 @@ fn a_trace_running_when_the_cap_goes_to_zero_finishes_and_p_is_collected() {
         0,
         "the round after the batch asked for nothing: R was left empty"
     );
-    // Under `recycler-over-counts` the collector frees the rings itself, and
+    // Under `gc-window` the collector frees the rings itself, and
     // the poll that frees them applies its frees rather than collecting over
     // P (`crate::cycle::collector_frees`).
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     assert!(
         mutator.run(|_| crate::gc::verdict_collections_on_this_thread()) >= 1,
         "what freed the rings was the collection over P"

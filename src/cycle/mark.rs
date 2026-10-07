@@ -649,7 +649,7 @@ unsafe fn expand_the_worklist<R: CellReader>(
     while let Some(entry) = arena.pop_work() {
         // The row the entry carries is the scan's to read; the mark's
         // expansion needs the entity alone — and a collector's, under
-        // `recycler-over-counts`, the row to head its run — and the two
+        // `gc-window`, the row to head its run — and the two
         // phases keep one entry shape (`crate::cycle::stack::WorklistEntry`).
         let entity = entry.entity;
         #[cfg(test)]
@@ -661,11 +661,11 @@ unsafe fn expand_the_worklist<R: CellReader>(
         let kind = unsafe { cells::entity_kind(entity) };
         // A collector's expansion opens a run in the record its scan reads
         // instead of the heap (`crate::cycle::recorded_edges`).
-        #[cfg(all(test, feature = "recycler-over-counts"))]
+        #[cfg(all(test, feature = "gc-window"))]
         if R::CONCURRENT {
             unsafe { crate::cycle::worker::testing::wave_three::note_an_expansion(entity) };
         }
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         if R::CONCURRENT && !arena.open_run(entry.row) {
             // A block the record drew reads the recall, as every draw does.
             return Some(if arena.was_recalled() {
@@ -855,7 +855,7 @@ unsafe fn visit_child<R: CellReader>(
             unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
             // Every subtraction a collector makes, and nothing else, is what
             // its scan may credit back (`crate::cycle::recorded_edges`).
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             if R::CONCURRENT && !arena.record_edge(row) {
                 return false;
             }

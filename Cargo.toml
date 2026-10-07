@@ -14,9 +14,16 @@ description = "Limelight runtime data model: classes, memory manager, GC"
 crate-type = ["rlib", "staticlib"]
 
 [features]
-# No default features. The GC axis is gone: `rc-cycle` is the only
-# strategy, so there is nothing to select at build time (S30, 2026-08-26).
-default = []
+# The cycle collector kind, chosen at build time: exactly one `gc-*` feature
+# (`dev/design/gc-kinds.md`). `gc-checkpoint` is the default; `gc-window`
+# builds with `--no-default-features --features gc-window`. A build with
+# none or two of them stops at `crate::gc::GC_KIND`'s `compile_error!`.
+default = ["gc-checkpoint"]
+
+# The checkpoint collector (A): the collector thread finds garbage rings
+# without any mark on the mutator's writes, and the owning thread checks and
+# frees them at its poll. No tag on any count write.
+gc-checkpoint = []
 
 # Counters read by the bench-external probes (`walk_probe.cpp`,
 # `churn_probe.cpp`) via `ll_probe_counters`. Off by default: each one is a
@@ -74,12 +81,12 @@ debug-journal = []
 # with them lives in the runtime, and a mismatch is silent otherwise.
 hash-folding = []
 
-# Recycler over counts (`dev/design/recycler-over-counts.md`, PLAN.md S68):
-# every count write and every tagging slot store stores the window of the
-# mutator's last consent into the entity's header byte 7, so the collector can
-# judge a garbage set alone. Off by default: the default build is the arm it
-# is measured against, and the tag is a store on every count write.
-recycler-over-counts = []
+# The window collector (B; `dev/design/recycler-over-counts.md`, PLAN.md
+# S68): every count write and every tagging slot store stores the window of
+# the mutator's last consent into the entity's header byte 7, so the
+# collector can judge a garbage set alone. The tag is a store on every count
+# write, which is why it is a kind of its own rather than the default.
+gc-window = []
 
 # The backup trace's measuring arm (`dev/design/the-general-algorithm.md`, "The
 # Sage on the revised build"): no candidate is registered and no collector
@@ -87,7 +94,7 @@ recycler-over-counts = []
 # ratio of what the last trace left (`LL_TB_RATIO`, 2.0, never under 4 MB), the
 # owner traces its whole entity heap and frees the garbage cycles it finds
 # (`src/cycle/trace_backup/`). A diagnostic arm for the rig, kept out of
-# `main`; exclusive with `recycler-over-counts`.
+# `main`; built over `gc-checkpoint`, exclusive with `gc-window`.
 trace-backup-rig = []
 
 [lints.rust]

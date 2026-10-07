@@ -236,7 +236,7 @@ fn a_take_that_holds_at_posted_holds_after_a_wait_too() {
 /// it: the byte reads `MUTATOR` after either, and the request's collector is
 /// woken to read it (a wake to a slot with no thread is lost, and that is
 /// what this case sends).
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_take_consumes_posted_and_refuses_a_request() {
     use crate::cycle::token::{MUTATOR, REQUESTED, TookFrom, state, word};
@@ -261,11 +261,11 @@ fn a_take_consumes_posted_and_refuses_a_request() {
     token.release();
 }
 
-/// Under `recycler-over-counts` the take consumes `POSTED` as without it,
+/// Under `gc-window` the take consumes `POSTED` as without it,
 /// and withdraws an offer standing on the byte: the thread's own collection
 /// outranks what it offered, and no collector claims the byte over the offer
 /// by any swap but the take of it.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn a_take_consumes_posted_and_withdraws_an_offer() {
     use crate::cycle::token::{MUTATOR, OFFERED, RECALL_NONE, TookFrom, state};
@@ -293,7 +293,7 @@ fn a_take_consumes_posted_and_withdraws_an_offer() {
 /// slot's byte-event number by one, and a wake of any other kind moves it
 /// not at all: the number is what admits the standing list's pass
 /// (`dev/design/the-standing-request-lives-on-the-record.md`).
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_consent_and_a_refusal_move_the_slots_byte_number_and_a_plain_wake_does_not() {
     use crate::cycle::token::{REQUESTED, TookFrom, word};

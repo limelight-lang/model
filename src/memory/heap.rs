@@ -1451,7 +1451,7 @@ impl Heap {
     ///
     /// # Safety
     /// `block` is the header of a commissioned entity block.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) unsafe fn owner_of_the_block(block: *mut u8) -> *mut u8 {
         unsafe {
             (*(block as *mut HeapBlockHeader))
@@ -1474,7 +1474,7 @@ impl Heap {
     /// # Safety
     /// On the thread whose heap this is; `head..tail` are `n` dead slots of
     /// `block`, each on no list, linked in order.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) unsafe fn splice_a_collectors_chain(
         &mut self,
         block: *mut u8,

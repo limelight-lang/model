@@ -78,20 +78,20 @@ struct SetBlock {
     /// the set garbage by its tags (`crate::cycle::delta_test`), and the edges
     /// its mark recorded between two members, which the proof makes the sum
     /// of the members' counts.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     proved_by_its_tags: bool,
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     internal_edges: usize,
     /// In the first block of the members' chain of a set proved by its tags:
     /// the drops of the part the collector freed into this set, held until
     /// the owner's commit reads the set's sum, and how many
     /// (`crate::cycle::collector_frees::Frees::take_the_held`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     held: *mut BlockHeader,
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     held_count: usize,
     /// Why the set reaches the owner as it does ([`kind`]), for the runs.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     kind: u8,
 }
 
@@ -99,7 +99,7 @@ const _: () = assert!(size_of::<SetBlock>() <= LINE_SIZE);
 
 /// Why a set reaches the owner as it does: what the runs attribute the
 /// owner's collections over P to (the Sage, 2026-10-04, on S68.9).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) mod kind {
     /// No root of the batch read potentially unreachable: no Δ-test.
     pub(crate) const NOT_TESTED: u8 = 0;
@@ -217,15 +217,15 @@ impl Chain {
             (&raw mut (*block).header.next).write(std::ptr::null_mut());
             (&raw mut (*block).entries).write(0);
             (&raw mut (*block).blocks).write(std::ptr::null_mut());
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             (&raw mut (*block).proved_by_its_tags).write(false);
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             (&raw mut (*block).internal_edges).write(0);
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             (&raw mut (*block).held).write(std::ptr::null_mut());
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             (&raw mut (*block).held_count).write(0);
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             (&raw mut (*block).kind).write(kind::NOT_TESTED);
         }
         if self.tail.is_null() {
@@ -252,19 +252,19 @@ pub(crate) struct Writer {
     closed: bool,
     /// Whether the walk left a potentially unreachable row out: an address
     /// it could not recover, or a member torn down during the grant.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     left_one_out: bool,
     /// Whether the collector proved the set garbage by its tags
     /// (`crate::cycle::delta_test`), and its internal edges.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     proved_by_its_tags: bool,
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     internal_edges: usize,
     /// What the collector freed itself under this grant, published beside the
     /// set (`crate::cycle::collector_frees`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     frees: Option<crate::cycle::collector_frees::Frees>,
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     kind: u8,
 }
 
@@ -275,23 +275,23 @@ impl Writer {
             members: Chain::empty(),
             blocks: Chain::empty(),
             closed: false,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             left_one_out: false,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             proved_by_its_tags: false,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             internal_edges: 0,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             frees: None,
             // A batch whose trace or scan was cut posts at the stop and notes
             // no kind of its own.
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             kind: kind::CUT,
         }
     }
 
     /// Note why the set reaches the owner as it does ([`kind`]).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn note_the_kind(&mut self, why: u8) {
         self.kind = why;
     }
@@ -316,7 +316,7 @@ impl Writer {
     ///
     /// # Safety
     /// As [`Self::append`].
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) unsafe fn append_the_marked(&mut self, arena: &TraceScratchArena) {
         unsafe { self.append_where(arena, crate::cycle::split::is_marked) };
     }
@@ -338,7 +338,7 @@ impl Writer {
                     // A row whose address cannot be recovered is left out, as
                     // the harvest's walk leaves it.
                     let Some(entity) = row::entity_at(block, population, index) else {
-                        #[cfg(feature = "recycler-over-counts")]
+                        #[cfg(feature = "gc-window")]
                         {
                             self.left_one_out = true;
                         }
@@ -350,7 +350,7 @@ impl Writer {
                     // empty the block after the release and drop the set; the
                     // slot is withheld, so its state reads the death.
                     if crate::refcount::slot_state(entity) != crate::refcount::SlotState::Live {
-                        #[cfg(feature = "recycler-over-counts")]
+                        #[cfg(feature = "gc-window")]
                         {
                             self.left_one_out = true;
                         }
@@ -376,7 +376,7 @@ impl Writer {
     /// early, or whose walk left a row out, is left unmarked — a part of a
     /// garbage set is garbage, but not one that may be freed alone, the rest
     /// still naming it (the Critic of S68.5, finding 1).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn mark_proved_by_its_tags(&mut self, internal_edges: usize) {
         self.proved_by_its_tags = !self.closed && !self.left_one_out;
         self.internal_edges = internal_edges;
@@ -387,7 +387,7 @@ impl Writer {
 
     /// Carry what the collector freed itself to the release, which publishes
     /// it beside the set.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn carry_the_frees(&mut self, frees: crate::cycle::collector_frees::Frees) {
         debug_assert!(self.frees.is_none(), "one free a grant");
         self.frees = Some(frees);
@@ -416,14 +416,14 @@ impl Writer {
     /// Leave the set on `mutator`'s record for its collection over P, and
     /// with it this thread's hold on its blocks. Under the grant, before its
     /// release; a set with no member leaves nothing.
-    #[cfg_attr(not(feature = "recycler-over-counts"), allow(unused_mut))]
+    #[cfg_attr(feature = "gc-checkpoint", allow(unused_mut))]
     pub(crate) fn publish(mut self, mutator: &MutatorRecord) {
         // C's drops into S ride with a set proved by its tags, for the owner's
         // sum over it; with any other set, or none, they are drops like the
         // rest.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         let mut held = None;
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         if let Some(mut frees) = self.frees.take() {
             if self.proved_by_its_tags && !self.members.head.is_null() {
                 let count = frees.held_count();
@@ -446,11 +446,11 @@ impl Writer {
         }
         let head = this.members.head;
         unsafe { (*head).blocks = this.blocks.head };
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         let held_blocks = held.map_or(0, |(_, blocks, _)| blocks);
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         let held_blocks = 0;
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         unsafe {
             (*head).proved_by_its_tags = this.proved_by_its_tags;
             (*head).internal_edges = this.internal_edges;
@@ -474,7 +474,7 @@ impl Drop for Writer {
     fn drop(&mut self) {
         // A free the collector made is in the heap already: its record may
         // only leave by publication. A batch that freed always posts.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         debug_assert!(
             self.frees.is_none() || std::thread::panicking(),
             "the collector's frees were dropped unpublished"
@@ -495,14 +495,14 @@ pub(crate) struct PostedSet {
 impl PostedSet {
     /// Whether the collector proved the set garbage by its tags
     /// (`crate::cycle::delta_test`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn proved_by_its_tags(&self) -> bool {
         unsafe { (*self.head).proved_by_its_tags }
     }
 
     /// The edges the collector's mark recorded between two members: the sum
     /// of the members' counts, where the set is proved by its tags.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn internal_edges(&self) -> usize {
         unsafe { (*self.head).internal_edges }
     }
@@ -510,13 +510,13 @@ impl PostedSet {
     /// The references into the set the collector's free left counted, its
     /// drops into the set held: what the members' counts carry besides the
     /// edges between them, at the owner's reading.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn held_from_outside(&self) -> usize {
         unsafe { (*self.head).held_count }
     }
 
     /// Why the set reaches the owner as it does ([`kind`]).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn kind(&self) -> u8 {
         unsafe { (*self.head).kind }
@@ -524,7 +524,7 @@ impl PostedSet {
 
     /// Give the held drops back once the owner freed the set whole: what they
     /// name is gone with it.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn discard_the_held(&mut self) {
         let held = std::mem::replace(unsafe { &mut (*self.head).held }, std::ptr::null_mut());
         unsafe { (*self.head).held_count = 0 };
@@ -547,7 +547,7 @@ impl Drop for PostedSet {
     fn drop(&mut self) {
         // Drops held for a sum nobody confirmed go onto the record for the
         // next application, which runs them as it runs the rest.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         {
             let held = unsafe { (*self.head).held };
             if !held.is_null() {
@@ -591,7 +591,7 @@ unsafe fn take_from(record: &MutatorRecord) -> Option<PostedSet> {
     }
 
     let blocks = blocks_from(head).count() + blocks_from(unsafe { (*head).blocks }).count();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let blocks = blocks + crate::cycle::collector_frees::held_blocks(unsafe { (*head).held });
     gc_metadata::take_over(blocks, blocks * BLOCK_PAYLOAD);
     Some(PostedSet { head })
@@ -683,7 +683,7 @@ pub(crate) mod testing {
 
     /// Refuse the second block a set lists from here: the set keeps the
     /// members of its first block and closes short of the rest.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn refuse_the_second_block() {
         REFUSE_AT_THE_BLOCK.store(2, Ordering::Relaxed);
     }

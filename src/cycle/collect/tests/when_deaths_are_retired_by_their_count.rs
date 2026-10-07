@@ -286,7 +286,7 @@ fn the_count_does_not_lower_a_higher_arming() {
 /// byte after the poll's reading is refused by that take and its collector
 /// woken, rather than consented to by a return inside the pass while the
 /// pass rewrites R.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_request_after_the_reading_is_refused_by_the_pass() {
     let _g = test_guard();
@@ -315,10 +315,10 @@ fn a_request_after_the_reading_is_refused_by_the_pass() {
     reset();
 }
 
-/// Under `recycler-over-counts` an offer standing on the byte is a trace
+/// Under `gc-window` an offer standing on the byte is a trace
 /// the pass may not run under: the collector may take it at any moment and
 /// read R. The pass stands for the next poll, and the offer stands with it.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn a_standing_offer_defers_the_pass() {
     let _g = test_guard();

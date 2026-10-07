@@ -186,7 +186,7 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
     // commit confirms it by the counts' sum against the edges the collector
     // recorded between them, and falls back to the walk where they differ
     // (`crate::cycle::finalization`; `dev/design/recycler-over-counts.md`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     if let Some(set) = set
         && set.proved_by_its_tags()
         && !refused
@@ -252,7 +252,7 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
     (TraceOutcome::Complete, traced)
 }
 
-#[cfg(all(test, feature = "recycler-over-counts"))]
+#[cfg(all(test, feature = "gc-window"))]
 thread_local! {
     /// Sets the collector proved garbage by their tags whose members this
     /// thread met with no trace of their cells, since this last answered,
@@ -262,7 +262,7 @@ thread_local! {
 
 /// The sets proved by their tags [`trace_within_the_set`] took on this thread
 /// since this last answered.
-#[cfg(all(test, feature = "recycler-over-counts"))]
+#[cfg(all(test, feature = "gc-window"))]
 pub(crate) fn take_sets_proved_by_tags_validated() -> usize {
     SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.replace(0))
 }

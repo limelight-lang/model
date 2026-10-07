@@ -18,7 +18,7 @@ mod the_header_the_compiler_shares;
 mod the_maturation_stamp_the_commit_writes;
 mod the_three_states_of_a_slot;
 mod the_widths_the_mutator_uses;
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 mod the_window_tag;
 mod what_the_category_decides;
 mod who_may_read_a_header;

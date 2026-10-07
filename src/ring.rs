@@ -349,7 +349,7 @@ impl<'a> Writer<'a> {
     /// it holds the exclusion its writes need — the collector's idle test
     /// ahead of its claim — where a store into the block's writer line would
     /// race the owner's own reading of it.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn room_in_tail_block_by_loads(&self) -> usize {
         let tail_block = self.0.tail_block.load(Ordering::Acquire);
         if tail_block.is_null() {

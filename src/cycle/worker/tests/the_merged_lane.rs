@@ -15,7 +15,7 @@ use crate::cycle::queue::{
     candidate_count, deferred_count, fill_tail_block, reoffer_deferred_if_epoch_moved,
     segment_count,
 };
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 use crate::cycle::token::{COLLECTOR, word};
 use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
@@ -30,7 +30,7 @@ const SLOT: usize = 6;
 
 /// One serve of this thread's record at [`SOFT_THRESHOLD`] by a collector
 /// thread of the case's, this thread consenting meanwhile as its poll would.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 fn served_at_the_soft_threshold() -> Served {
     let sent = Sent(record());
     testing::consent_while(std::thread::spawn(move || {
@@ -54,7 +54,7 @@ fn served_at_the_soft_threshold() -> Served {
 /// This thread's poll offering R where it is due at [`SOFT_THRESHOLD`], and
 /// one visit of a collector thread of the case's that takes what was
 /// offered, joined.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn served_at_the_soft_threshold() -> Served {
     served_after_an_offer_at(SOFT_THRESHOLD)
 }
@@ -62,7 +62,7 @@ fn served_at_the_soft_threshold() -> Served {
 /// This thread's poll offering R where it is due at `threshold`, and one
 /// visit of a collector thread of the case's that takes what was offered and
 /// reads the batch's form against `threshold`, joined.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn served_after_an_offer_at(threshold: usize) -> Served {
     let _ = unsafe { crate::cycle::offer::offer_at(threshold) };
     let sent = Sent(record());
@@ -110,7 +110,7 @@ fn clear_up(keepers: Vec<*mut Object>) {
 
 /// Roots of the lane the K case merges: fewer than the starting K and more
 /// than a take's clamp could explain.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 const LANE: usize = 8;
 
 /// A poll that merges the lane and consents to a request in the same pass
@@ -119,7 +119,7 @@ const LANE: usize = 8;
 /// the batch is clamped to K. Taking the eight roots it holds says nothing
 /// about what the thread offers per batch, and K stays where it stood; red
 /// on the rule that doubled K after every completed batch of that form.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_batch_short_of_its_clamp_leaves_k_after_a_consenting_merge() {
     let _g = test_guard();
@@ -304,7 +304,7 @@ fn a_batch_over_three_blocks_reads_no_backlog_below_the_threshold() {
 /// other way round, where the ring reads empty before the merge and the
 /// count after it, and the empty ring records as seen a merge whose roots
 /// then stand the whole interval.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_merge_between_the_count_and_the_reading_is_taken_a_round_later() {
     let _g = test_guard();
@@ -380,7 +380,7 @@ fn a_merge_under_a_grant_is_taken_at_the_next_round() {
     // advance; this thread consents, and merges while it waits.
     let (release, waiting_until) = std::sync::mpsc::channel::<()>();
     testing::make_the_next_batch_wait_before_its_advance(waiting_until);
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     assert!(
         unsafe { crate::cycle::offer::offer_at(1) },
         "the poll offered"
@@ -389,9 +389,9 @@ fn a_merge_under_a_grant_is_taken_at_the_next_round() {
     let collector = std::thread::spawn(move || {
         assert!(crate::memory::heap::ll_thread_init());
         let mut standing = Standing::new(SLOT);
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         let served = unsafe { serve(sent.into_inner(), SLOT, 1, &mut standing, serve_clock_now()) };
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         let served = unsafe { take_an_offer(sent.into_inner(), SLOT, 1, &mut standing) };
         served
     });

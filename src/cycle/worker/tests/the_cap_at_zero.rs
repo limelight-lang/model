@@ -57,7 +57,7 @@ fn the_dial_reaches_zero_and_clamps_at_the_maximum() {
 
 /// The elder's ask for `record`, made from a thread of the case's as the
 /// round makes it from the elder's, against the clock now.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 fn asked_by_the_elder(record: *mut MutatorRecord, threshold: usize) -> Served {
     let sent = Sent(record);
     std::thread::spawn(move || unsafe {
@@ -71,7 +71,7 @@ fn asked_by_the_elder(record: *mut MutatorRecord, threshold: usize) -> Served {
 /// `threshold`: the round's clock stamped as the elder's round stamps it, the
 /// offer made where it is due, and the ask over it made from a thread of the
 /// case's as the round makes it from the elder's.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn asked_by_the_elder(record: *mut MutatorRecord, threshold: usize) -> Served {
     testing::stamp_the_round_clock();
     let _ = unsafe { crate::cycle::offer::offer_at(threshold) };

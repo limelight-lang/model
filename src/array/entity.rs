@@ -157,7 +157,7 @@ pub(crate) unsafe fn as_table_mut<'a>(a: *mut LLArray) -> (&'a mut Table, &'a St
     // is what lets a vector's growth free the old chunk before the write.
     // Every caller keeps it; a debug check of it is not built (`PLAN.md`,
     // S68.7).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         crate::refcount::tag_with_the_window(a as *mut RcHeader)
     };
@@ -185,7 +185,7 @@ pub(crate) unsafe fn as_vector<'a>(a: *mut LLArray) -> (&'a Vector, &'a StorageH
 pub(crate) unsafe fn as_vector_mut<'a>(a: *mut LLArray) -> (&'a mut Vector, &'a StorageHead) {
     debug_assert_eq!(unsafe { (*a).head.tag() }, StorageTag::Vector);
     // Tagged as the holder, as [`as_table_mut`] says.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         crate::refcount::tag_with_the_window(a as *mut RcHeader)
     };
@@ -299,7 +299,7 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
 ///
 /// # Safety
 /// `a` is a live array no thread writes.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) unsafe fn body_of(a: *mut LLArray) -> Option<(*mut u8, usize)> {
     let (body, capacity) = match unsafe { (*a).head.tag() } {
         StorageTag::Hash => {

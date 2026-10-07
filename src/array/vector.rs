@@ -258,7 +258,7 @@ impl Vector {
     /// zero throughout, and it is bracketed anyway — the exemption is an
     /// accident of the layout rather than a property either body states.
     /// The capacity the storage body was granted at, which its free takes.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn storage_capacity(&self) -> usize {
         self.storage_capacity
     }

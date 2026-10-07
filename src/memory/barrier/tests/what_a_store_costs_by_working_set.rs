@@ -86,7 +86,7 @@
 //!
 //! ```
 //! cargo test --release --lib -- --ignored measure_store_cost --nocapture
-//! cargo test --release --lib --no-default-features -- --ignored measure_store_cost --nocapture
+//! cargo test --release --lib --no-default-features --features gc-window -- --ignored measure_store_cost --nocapture
 //! ```
 //!
 //! The figures obey `dev/BENCHMARKS.md`'s Method and are **not** comparable
@@ -307,9 +307,9 @@ unsafe fn heap_into_heap(
 }
 
 /// [`heap_into_heap`] with the holder's tag the slot-store primitives add
-/// under `recycler-over-counts` (`ll_store_*_in`): the two arms differ by that
+/// under `gc-window` (`ll_store_*_in`): the two arms differ by that
 /// one byte store alone (`PLAN.md` S68.3).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 unsafe fn heap_into_heap_holder_tagged(
     ctx: *mut LLContext,
     arena: *mut Arena,
@@ -336,11 +336,11 @@ unsafe fn heap_into_heap_tagging(
 
         let start = Instant::now();
         for i in 0..trip(STORES) {
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             if tag_the_holder {
                 crate::refcount::tag_with_the_window(owner as *mut RcHeader);
             }
-            #[cfg(not(feature = "recycler-over-counts"))]
+            #[cfg(feature = "gc-checkpoint")]
             let _ = tag_the_holder;
             assert!(store_box(
                 arena,
@@ -661,7 +661,7 @@ fn arms_for(
         },
     ];
 
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     arms.push(Arm {
         label: "heap_into_heap_holder_tagged".to_string(),
         round: Box::new(move || unsafe {
@@ -726,7 +726,7 @@ fn measure_store_cost() {
     // An open window, so that the tag every count write stores is the
     // window's number and not a constant the optimizer may fold
     // (`PLAN.md` S68.1).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     crate::refcount::set_window(7);
     let holder = holder_class("StoreCostOwner");
     let leaf = leaf_class("StoreCostChild");

@@ -325,7 +325,7 @@ pub(crate) fn at_the_next_grant(act: Box<dyn FnOnce() + Send>) {
     AT_THE_NEXT_GRANT.install(act);
 }
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn note_refusal() {
     REFUSALS.fetch_add(1, Ordering::Relaxed);
 }
@@ -481,7 +481,7 @@ fn batches() -> std::sync::MutexGuard<'static, Vec<TracedBatch>> {
 
 /// The grants served idle and the batches traced so far, read without taking
 /// them: what a case's hook waits on while its test loop takes the counts.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn idle_and_traced_so_far() -> (usize, usize) {
     (IDLE.load(Ordering::Relaxed), batches().len())
 }
@@ -489,15 +489,15 @@ pub(crate) fn idle_and_traced_so_far() -> (usize, usize) {
 /// On the mutator's thread, between its consent's swap and the reading of its
 /// withheld stacks' marks, for the case that holds the mutator there until
 /// the collector has made its choice over the grant.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 static AFTER_THE_CONSENT: OneShot = OneShot::new();
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn after_the_next_consents_swap(act: Box<dyn FnOnce() + Send>) {
     AFTER_THE_CONSENT.install(act);
 }
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn after_the_consents_swap() {
     AFTER_THE_CONSENT.run();
 }
@@ -839,15 +839,15 @@ pub(crate) fn take_released_at() -> Option<Instant> {
 /// Between a visit's load of an offer on the byte and its take of the
 /// mutator's blocks for the reading, for the case whose mutator begins its
 /// exit in that window.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 static BEFORE_THE_READING_TAKE: OneShot = OneShot::new();
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn before_the_next_reading_take(act: Box<dyn FnOnce() + Send>) {
     BEFORE_THE_READING_TAKE.install(act);
 }
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn before_the_reading_take() {
     BEFORE_THE_READING_TAKE.run();
 }
@@ -866,30 +866,30 @@ pub(crate) fn between_the_take_and_the_reading() {
 
 /// Between the reading's loads and the request, for the case whose mutator
 /// takes its token in that window.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 static BEFORE_THE_NEXT_REQUEST: OneShot = OneShot::new();
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn before_the_next_request(act: Box<dyn FnOnce() + Send>) {
     BEFORE_THE_NEXT_REQUEST.install(act);
 }
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn between_the_reading_and_the_request() {
     BEFORE_THE_NEXT_REQUEST.run();
 }
 
 /// At the next refused request, before the serve acts on the refusal, for
 /// the case that reads the record's hold at that instant.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 static AT_THE_NEXT_REFUSAL: OneShot = OneShot::new();
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn at_the_next_refusal(act: Box<dyn FnOnce() + Send>) {
     AT_THE_NEXT_REFUSAL.install(act);
 }
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn at_a_refused_request() {
     REFUSED_REQUESTS.fetch_add(1, Ordering::Relaxed);
     AT_THE_NEXT_REFUSAL.run();
@@ -915,7 +915,7 @@ pub(crate) fn cap_expired_waits_at(waits: Option<usize>) {
     EXPIRED_WAITS_CAP.store(waits.unwrap_or(0), Ordering::Relaxed);
 }
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn expired_waits_cap() -> Option<usize> {
     match EXPIRED_WAITS_CAP.load(Ordering::Relaxed) {
         0 => None,
@@ -925,7 +925,7 @@ pub(crate) fn expired_waits_cap() -> Option<usize> {
 
 /// The serve clock a round reads once per record, for a case outside this
 /// module that serves a record itself ([`super::serve`]'s `now`).
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn serve_clock_now() -> u64 {
     super::serve_clock_now()
 }
@@ -1395,14 +1395,14 @@ pub(crate) struct VerdictCollections {
     pub(crate) phases_of_the_longest: [std::time::Duration; COLLECTION_PHASES],
     /// The longest collection by the kind of set it read
     /// (`crate::cycle::posted_set::kind`), the last slot a collection that read
-    /// none; all in the last slot without `recycler-over-counts`.
+    /// none; all in the last slot without `gc-window`.
     pub(crate) longest_by_kind: [std::time::Duration; SET_KINDS + 1],
 }
 
 /// The kinds a posted set carries.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const SET_KINDS: usize = crate::cycle::posted_set::kind::KINDS;
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) const SET_KINDS: usize = 0;
 
 /// The phases of a collection over P the rig splits its pause into.
@@ -1437,7 +1437,7 @@ thread_local! {
 }
 
 /// Note the kind of set the collection over P that is running read.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn note_the_set_kind(kind: usize) {
     PENDING_KIND.with(|pending| pending.set(kind.min(SET_KINDS)));
 }
@@ -1754,7 +1754,7 @@ pub(crate) enum ByteState {
     /// `ASKED`, entered by the elder's ask under a cap of zero.
     Asked,
     /// `OFFERED`, entered by the mutator's offer.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     Offered,
 }
 
@@ -1766,14 +1766,14 @@ impl ByteState {
             Self::Requested(slot) => slot,
             Self::Posted => usize::MAX,
             Self::Asked => usize::MAX - 1,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             Self::Offered => usize::MAX - 2,
         }
     }
 }
 
 /// How a request stopped standing.
-#[cfg_attr(feature = "recycler-over-counts", allow(dead_code))]
+#[cfg_attr(feature = "gc-window", allow(dead_code))]
 pub(crate) enum RequestEnd {
     /// The mutator's reading consented, on its own thread.
     Consented,
@@ -1894,16 +1894,16 @@ pub(crate) fn note_posted_taken(token: usize, asked: bool) {
 /// How long each offer stood before a collector took it, in nanoseconds,
 /// over every token since the last [`take_offer_standings`]: the
 /// offer-to-take latency whose tail the rig reads (`PLAN.md`, S68.13).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 static OFFERS_TAKEN: Mutex<Vec<u64>> = Mutex::new(Vec::new());
 /// The offers withdrawn — by the mutator's own take, a mark, or the elder's
 /// ask under a cap of zero — over every token since the last
 /// [`take_offer_standings`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 static OFFERS_WITHDRAWN: Mutex<StandingTimes> = Mutex::new(StandingTimes::EMPTY);
 
 /// Collector `slot` took the offer standing on the token at address `token`.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn note_offer_taken(token: usize, slot: usize) {
     let _ = slot;
     if let Some(stood) = end_of(token, ByteState::Offered) {
@@ -1912,7 +1912,7 @@ pub(crate) fn note_offer_taken(token: usize, slot: usize) {
 }
 
 /// The offer standing on the token at address `token` ended without a take.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn note_offer_withdrawn(token: usize) {
     if let Some(stood) = end_of(token, ByteState::Offered) {
         lock(&OFFERS_WITHDRAWN).note(stood);
@@ -1921,7 +1921,7 @@ pub(crate) fn note_offer_withdrawn(token: usize) {
 
 /// The offers taken, each one's standing in nanoseconds, and the offers
 /// withdrawn, since the last call; both emptied.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn take_offer_standings() -> (Vec<u64>, StandingTimes) {
     (
         std::mem::take(&mut *lock(&OFFERS_TAKEN)),
@@ -1931,7 +1931,7 @@ pub(crate) fn take_offer_standings() -> (Vec<u64>, StandingTimes) {
 
 /// How many states stand on the token at address `token`, entries of failed
 /// attempts not yet noted included.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn states_standing_on(token: usize) -> usize {
     lock(&STATES_STANDING)
         .iter()
@@ -2117,7 +2117,7 @@ fn thread_usage() -> [i64; 18] {
 }
 
 /// Slot `index`'s byte-event sequence number as it stands.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn byte_wakes_of(index: usize) -> usize {
     super::COLLECTORS[index].byte_wakes.load(Ordering::Acquire)
 }
@@ -2253,21 +2253,21 @@ pub(crate) fn stand_in_as_the_elder() {
 
 /// Sleep on the elder slot's wake word until a wake or `timeout`, taking
 /// the word, as the thread's own waits do.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) fn wait_for_the_elders_wake(timeout: std::time::Duration) {
     super::wait_for_a_wake(ELDER, timeout);
 }
 
 /// What a mutator's poll does at its byte, for a harness thread standing in
 /// for one between its jobs: read the byte and act on it — consent to a
-/// request, arm on `POSTED` — and under `recycler-over-counts` offer R where
+/// request, arm on `POSTED` — and under `gc-window` offer R where
 /// it is due ([`crate::cycle::offer::offer_if_due`]). Answers whether an
 /// offer stands.
 pub(crate) fn poll_the_byte() -> bool {
     crate::cycle::token::read_and_act_on_this_thread();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     return unsafe { crate::cycle::offer::offer_if_due() };
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     false
 }
 
@@ -2276,35 +2276,35 @@ pub(crate) fn poll_the_byte() -> bool {
 /// whoever stands to take it, as [`serve_alone`] takes it.
 pub(crate) fn poll_the_byte_for_a_stand_in() {
     crate::cycle::token::read_and_act_on_this_thread();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let _ = unsafe { crate::cycle::offer::offer_at(HARNESS_OFFER_THRESHOLD) };
 }
 
 /// Offer R where the poll would, at the threshold the rounds serve at, and
 /// wake no collector: for a case that wakes the round itself once every
 /// mutator has offered, so that one round reads every offer.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn offer_and_wake_no_one() -> bool {
     unsafe { crate::cycle::offer::offer_at(super::threshold_for_offers()) }
 }
 
 /// Count a collector round begun, as a round does at its start, for a case
 /// with no collector thread whose offer waits for one.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn begin_a_round() {
     super::ROUNDS_BEGUN.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Stamp the round's clock now, as a collector's round does at its start,
 /// for a case with no collector thread whose offers read a standing ring.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn stamp_the_round_clock() {
     super::ROUND_CLOCK.store(super::serve_clock_now(), Ordering::Relaxed);
 }
 
 /// The count of R at which the harness's mutator offers
 /// ([`consent_while`]): what [`serve_alone`] serves at.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const HARNESS_OFFER_THRESHOLD: usize = 1;
 
 /// One take of the batch `record`'s mutator offers, on the calling thread
@@ -2316,7 +2316,7 @@ pub(crate) const HARNESS_OFFER_THRESHOLD: usize = 1;
 ///
 /// # Safety
 /// As [`super::take_an_offer`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
     let mutator = unsafe { &*record };
     if !unsafe { crate::cycle::mutator_record::take_for_reading(record) } {
@@ -2353,7 +2353,7 @@ pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
 ///
 /// # Safety
 /// As [`super::serve`].
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) unsafe fn serve_alone(record: *mut MutatorRecord) -> super::Served {
     let mut standing = super::Standing::new(super::ELDER);
     let served = unsafe {
@@ -2395,7 +2395,7 @@ pub(crate) fn take_the_serving_threads_counts() -> crate::journal::Counts {
         .expect("a serve kept its thread's counts")
 }
 
-/// Wait for `collector` as the mutator does: under `recycler-over-counts`
+/// Wait for `collector` as the mutator does: under `gc-window`
 /// offering R once where it holds [`HARNESS_OFFER_THRESHOLD`], then reading
 /// its byte — consenting to a request, arming on `POSTED` — between yields,
 /// the way its poll and its slot frees would, until the thread finishes;
@@ -2405,7 +2405,7 @@ pub(crate) fn consent_while<T>(collector: JoinHandle<T>) -> T {
     // the collected heap is counted, or names an entity the case has made
     // garbage on purpose. One offer, so that what the collector releases is
     // not offered again behind the case's back.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let _ = unsafe { crate::cycle::offer::offer_at(HARNESS_OFFER_THRESHOLD) };
     while !collector.is_finished() {
         crate::cycle::token::read_and_act_on_this_thread();
@@ -2436,14 +2436,14 @@ fn request_wait_for_tests(wait: std::time::Duration) {
 pub(crate) struct HeldRequestWait;
 
 impl HeldRequestWait {
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn crate_own() -> Self {
         Self::of(super::REQUEST_WAIT)
     }
 
-    /// Under `recycler-over-counts` the crate waits for no answer: the hold
+    /// Under `gc-window` the crate waits for no answer: the hold
     /// keeps the harness's wait for an offer ([`serve_alone`]).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn crate_own() -> Self {
         Self::of(HARNESS_REQUEST_WAIT)
     }
@@ -2582,7 +2582,7 @@ pub(crate) fn this_threads_rig_section() -> usize {
 
 /// Count an offer this thread's mutator withdrew against the section it
 /// stands in.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn note_a_withdrawal_in_the_rig_section() {
     WITHDRAWN_BY_SECTION[this_threads_rig_section()].fetch_add(1, Ordering::Relaxed);
 }
@@ -2597,7 +2597,7 @@ pub(crate) fn withdrawals_by_section() -> [usize; RIG_SECTIONS] {
 /// code are"; `PLAN.md`, S68.14), recorded always: relaxed counters, and a
 /// lock at an offer and a take alone, not on the handshake the standings'
 /// table puts its lock on.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) mod wave_three {
     use std::cell::Cell;
     use std::collections::HashMap;

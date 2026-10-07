@@ -138,9 +138,9 @@ fn measure_one_thread_against_the_split() {
     const ROUNDS: usize = 3;
     let _g = test_guard();
     reset_lanes();
-    // Under `recycler-over-counts`, `LL_PROBE_MEMBER_CAP` sets the largest set
+    // Under `gc-window`, `LL_PROBE_MEMBER_CAP` sets the largest set
     // the collector frees itself (`crate::cycle::collector_frees`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     if let Ok(cap) = std::env::var("LL_PROBE_MEMBER_CAP") {
         let cap = cap.parse().expect("a member cap");
         let _ = crate::cycle::collector_frees::set_member_cap_for_test(cap);
@@ -189,15 +189,15 @@ fn measure_one_thread_against_the_split() {
                 "the owner freed the ring: {freed} of {members}"
             );
             // The fast path of a set the drain found garbage whole, or under
-            // `recycler-over-counts` that of a set proved by its tags, which
+            // `gc-window` that of a set proved by its tags, which
             // reads no member's cells.
-            #[cfg(not(feature = "recycler-over-counts"))]
+            #[cfg(feature = "gc-checkpoint")]
             assert_eq!(
                 crate::cycle::trace::take_sets_garbage_whole(),
                 1,
                 "the set took the fast path"
             );
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             assert!(
                 crate::cycle::trace::take_sets_proved_by_tags_validated() == 1
                     || crate::cycle::collector_frees::frees_counts().sets > 0,

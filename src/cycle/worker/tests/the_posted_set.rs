@@ -332,7 +332,7 @@ fn a_stopped_trace_posts_a_closure_cut_at_the_recall() {
 /// position a member, under a stride; the scan's opening reading is the first,
 /// and the record, two entries a member, crosses the second. Red with either
 /// reading the index as a count: the root is read live and nothing is posted.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn a_stop_inside_the_scan_over_the_record_posts_the_whole_ring() {
     let _g = test_guard();

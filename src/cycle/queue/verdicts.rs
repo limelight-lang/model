@@ -207,7 +207,7 @@ impl<'a> VerdictWriter<'a> {
 
     /// The same room by loads alone, for the idle test the collector makes
     /// ahead of its claim: no store into P's block under no claim.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn room_by_loads(&self) -> usize {
         self.0.room_in_tail_block_by_loads()
     }

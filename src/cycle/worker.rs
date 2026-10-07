@@ -13,10 +13,10 @@
 //! collector's batch"). What the mutator does with the verdicts is
 //! `crate::cycle::queue::verdicts`.
 //!
-//! # Under `recycler-over-counts`: the offer
+//! # Under `gc-window`: the offer
 //!
 //! The request, the consent and the standing list are the default build's.
-//! Under `recycler-over-counts` the mutator offers and the collector takes
+//! Under `gc-window` the mutator offers and the collector takes
 //! (`dev/design/recycler-over-counts.md`, §5f; `crate::cycle::offer`): the
 //! mutator's poll reads the three branches over R that the round reads below
 //! — the threshold, a ring standing past the interval on the round's clock
@@ -312,7 +312,7 @@ pub(crate) enum Served {
     /// expired waits (`EXPIRED_WAITS_PER_ROUND`) and the request was
     /// landed without one. Neither a batch nor work; the
     /// request is served at a checkpoint when the mutator answers.
-    #[cfg_attr(feature = "recycler-over-counts", allow(dead_code))]
+    #[cfg_attr(feature = "gc-window", allow(dead_code))]
     Unanswered,
     /// Nothing was taken: before any claim — R below the threshold, P
     /// without room, the record under another collector's reading — under
@@ -365,7 +365,7 @@ const _: () = assert!(SOFT_THRESHOLD <= BATCH_BOUND);
 /// (`rfc/dev/design/trace-token-handshake.md`, "Cost"); a mutator blocked
 /// past it is asleep, its request stands until it answers, and the next
 /// round's request fails on the standing one and waits nothing.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 const REQUEST_WAIT: Duration = Duration::from_millis(2);
 
 /// The fallback timer's minimum: the wait after a round that made a batch or
@@ -419,7 +419,7 @@ static EMBEDDERS_EPOCH_INTERVAL_NANOS: AtomicU64 = AtomicU64::new(0);
 /// wait and once per mutator per round, which is the wait's price and not
 /// the cap's. What the bound is paid with is the batches a walk gives up by
 /// not waiting for a mutator that would have answered late.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 const EXPIRED_WAITS_PER_ROUND: usize = 2;
 
 /// How long a mutator's candidate ring may stand non-empty below the
@@ -634,7 +634,7 @@ pub(crate) fn set_standing_interval(interval: Duration) {
 /// The standing interval in force, in nanoseconds of the serve clock: what
 /// a mutator's offer measures its standing ring against
 /// (`crate::cycle::offer`).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn standing_interval_nanos() -> u64 {
     standing_interval().as_nanos() as u64
 }
@@ -657,20 +657,20 @@ fn standing_interval() -> Duration {
 /// the pacing a mutator's offer reads without a clock of its own
 /// (`crate::cycle::offer`). Relaxed: a reading one round stale delays an
 /// offer by one round.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 static ROUNDS_BEGUN: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 static ROUND_CLOCK: AtomicU64 = AtomicU64::new(0);
 
 /// Rounds begun by every collector since the process started.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn rounds_begun() -> u64 {
     ROUNDS_BEGUN.load(Ordering::Relaxed)
 }
 
 /// The serve clock as the latest round read it at its start, or zero before
 /// the first round.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn round_clock() -> u64 {
     ROUND_CLOCK.load(Ordering::Relaxed)
 }
@@ -839,7 +839,7 @@ pub(crate) fn wake(index: usize) -> bool {
 /// Whether a collector stands to take an offer of a record named to slot
 /// `named`: that slot's thread, or the elder, alive or starting, the elder
 /// born here where none stands.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn a_taker_stands(named: usize) -> bool {
     if is_alive(named) {
         return true;
@@ -852,7 +852,7 @@ pub(crate) fn a_taker_stands(named: usize) -> bool {
 /// Wake a collector to take an offer: the one of slot `named`, or the elder
 /// where that slot holds no thread — its next round names the record back to
 /// itself.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn wake_a_taker(named: usize) {
     if !wake(named) && named != ELDER {
         wake(ELDER);
@@ -1127,7 +1127,7 @@ fn reclaims(index: usize, record: &MutatorRecord) -> bool {
 /// bound, or a case's threshold for the rounds
 /// (`dev/design/the-general-algorithm.md`, "The offer at the bound,
 /// repaired"; Edmond, 2026-10-07).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn threshold_for_offers() -> usize {
     #[cfg(test)]
     if let Some(threshold) = testing::threshold_for_rounds() {
@@ -1139,7 +1139,7 @@ pub(crate) fn threshold_for_offers() -> usize {
 
 /// The count a mutator offers R at once R has held it
 /// [`SHORT_STANDING_INTERVAL`]: the rounds' own threshold.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) fn threshold_for_short_offers() -> usize {
     threshold_for_rounds()
 }
@@ -1147,7 +1147,7 @@ pub(crate) fn threshold_for_short_offers() -> usize {
 /// How long R holds the rounds' threshold, on the mutator's own clock,
 /// before it is offered under the bound: 50 ms, measured as R50
 /// (`dev/BENCHMARKS.md`, 2026-10-07).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const SHORT_STANDING_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The threshold the rounds serve at: the module's own, or a case's.
@@ -1262,7 +1262,7 @@ struct Round {
 fn round(index: usize, threshold: usize, standing: &mut Standing) -> Round {
     let own = mutator_record::this_thread_record();
     let mut outcome = Round::default();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     {
         ROUND_CLOCK.store(serve_clock_now(), Ordering::Relaxed);
         ROUNDS_BEGUN.fetch_add(1, Ordering::Relaxed);
@@ -1324,7 +1324,7 @@ unsafe fn read_one_record(
     let now = serve_clock_now();
     advance_the_epoch_if_due(unsafe { &*record }, now);
     // Under a cap of zero the visit keeps the clock and requests nothing.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     let served = if collectors_capped_at_zero() {
         unsafe { ask_for_an_in_line_collection(record, threshold, now) }
     } else {
@@ -1332,7 +1332,7 @@ unsafe fn read_one_record(
     };
     // The mutator offers, and the visit takes what it offered, or answers it
     // with an ask under a cap of zero.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let served = if collectors_capped_at_zero() {
         unsafe { ask_over_an_offer(record) }
     } else {
@@ -1400,7 +1400,7 @@ unsafe fn read_one_record(
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) unsafe fn serve(
     record: *mut MutatorRecord,
     slot: usize,
@@ -1505,7 +1505,7 @@ pub(crate) unsafe fn serve(
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) unsafe fn take_an_offer(
     record: *mut MutatorRecord,
     slot: usize,
@@ -1541,7 +1541,7 @@ pub(crate) unsafe fn take_an_offer(
 
 /// What a visit that took no offer answers, by the byte `seen` it read
 /// instead.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn served_without_a_take(seen: u8) -> Served {
     match state(seen) {
         crate::cycle::token::FREE => Served::Idle,
@@ -1561,7 +1561,7 @@ fn served_without_a_take(seen: u8) -> Served {
 ///
 /// # Safety
 /// As [`take_an_offer`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 unsafe fn ask_over_an_offer(record: *mut MutatorRecord) -> Served {
     let mutator = unsafe { &*record };
     let seen = mutator.token.read();
@@ -1607,7 +1607,7 @@ unsafe fn ask_over_an_offer(record: *mut MutatorRecord) -> Served {
 /// # Safety
 /// `record` is a record of the registry's, and the calling thread is not its
 /// mutator.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 unsafe fn ask_for_an_in_line_collection(
     record: *mut MutatorRecord,
     threshold: usize,
@@ -1642,7 +1642,7 @@ unsafe fn ask_for_an_in_line_collection(
 /// What a round does with the mutator's R, and the three branches are one
 /// reading apart.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 enum RingRound {
     /// R holds the round's threshold: the serve of today.
     Serves,
@@ -1676,7 +1676,7 @@ enum RingRound {
 /// The instant and the merges seen are the collector's words on the
 /// record's hold line, read and written here under the reading hold
 /// ([`MutatorRecord::standing_since`], [`MutatorRecord::merges_seen`]).
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 fn decide_the_branch_and_stamp_the_instant(
     mutator: &MutatorRecord,
     reading: Option<crate::ring::FrontBlockReading>,
@@ -1725,7 +1725,7 @@ fn decide_the_branch_and_stamp_the_instant(
 ///
 /// # Safety
 /// As [`serve`], and `seen` is the value that refusal read back.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 unsafe fn answer_a_refused_request(
     mutator: &MutatorRecord,
     seen: u8,
@@ -1796,7 +1796,7 @@ impl Drop for HandBackOnDrop {
 ///
 /// # Safety
 /// As [`serve`], and this collector's request stands on `mutator`.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 unsafe fn wait_for_consent(
     mutator: &MutatorRecord,
     slot: usize,
@@ -1866,7 +1866,7 @@ unsafe fn wait_for_consent(
 ///
 /// # Safety
 /// The calling collector made the request `REQUESTED|slot` on `mutator`.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 unsafe fn answer_the_withdrawal(
     mutator: &MutatorRecord,
     slot: usize,
@@ -1933,7 +1933,7 @@ unsafe fn serve_the_grant(
         merges: u32,
         /// Which of the batch's posts go back into R marked, stored for the
         /// disposition before the release.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         second_chances: SecondChances,
     }
     impl Drop for ReleaseOnDrop<'_> {
@@ -1956,11 +1956,11 @@ unsafe fn serve_the_grant(
             // instant as soon as the store lands.
             #[cfg(test)]
             testing::note_release();
-            #[cfg(all(test, feature = "recycler-over-counts"))]
+            #[cfg(all(test, feature = "gc-window"))]
             testing::wave_three::note_a_release();
             // Every grant stores, a batch that posted nothing as none: the
             // disposition reads this batch's, never a stale one.
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             self.second_chances.store(self.mutator);
             let released = match (self.posted.get(), self.proposed.get()) {
                 (false, _) => crate::cycle::token::FREE,
@@ -1976,7 +1976,7 @@ unsafe fn serve_the_grant(
         posted: std::cell::Cell::new(false),
         proposed: std::cell::Cell::new(false),
         merges: mutator.merges(),
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         second_chances: SecondChances::default(),
     };
     crate::cycle::token::note_traced_mutator(std::ptr::from_ref(mutator).cast_mut());
@@ -2028,7 +2028,7 @@ unsafe fn serve_the_grant(
             threshold,
             &held.posted,
             &held.proposed,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             &held.second_chances,
         )
     };
@@ -2044,14 +2044,14 @@ unsafe fn serve_the_grant(
 }
 
 /// A request between its swap and its grant, withdrawn on the unwind.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 struct WithdrawOnDrop<'a> {
     token: &'a crate::cycle::token::TraceToken,
     slot: usize,
     standing: bool,
 }
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 impl Drop for WithdrawOnDrop<'_> {
     fn drop(&mut self) {
         if !self.standing {
@@ -2137,7 +2137,7 @@ impl Standing {
     /// between a pass's read and the walk's request. The stamp goes down
     /// before the link, and of the link words `next` is first, the word the
     /// registry reads.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     fn push(&mut self, record: *mut MutatorRecord) {
         let mutator = unsafe { &*record };
         if !mutator.standing_next().load(Ordering::Relaxed).is_null() {
@@ -2339,14 +2339,14 @@ impl Standing {
     }
 
     /// A consent wait that ran out with the request left standing.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     fn note_an_expired_wait(&mut self) {
         self.expired_waits += 1;
     }
 
     /// Whether this walk has spent its bound of expired waits, so that a
     /// request landing now is left standing without one.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     fn spent_its_waits(&self) -> bool {
         #[cfg(test)]
         if let Some(cap) = testing::expired_waits_cap() {
@@ -2382,13 +2382,13 @@ impl Standing {
 
     /// Batches the checkpoints made since the round last asked, left as
     /// they are.
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     pub(crate) fn batches_served_for_test(&self) -> usize {
         self.batches_served
     }
 
     /// The records standing in the list, first to last.
-    #[cfg(all(test, not(feature = "recycler-over-counts")))]
+    #[cfg(all(test, feature = "gc-checkpoint"))]
     pub(crate) fn standing_for_test(&self) -> Vec<*mut MutatorRecord> {
         let mut records = Vec::new();
         let mut cursor = self.first;
@@ -2485,7 +2485,7 @@ unsafe fn batch(
     threshold: usize,
     posted: &std::cell::Cell<bool>,
     proposed: &std::cell::Cell<bool>,
-    #[cfg(feature = "recycler-over-counts")] second_chances: &SecondChances,
+    #[cfg(feature = "gc-window")] second_chances: &SecondChances,
 ) -> Served {
     // Declared first so that it drops last: the posts `FinishThePosts` makes
     // on its drop count in the trace's segment.
@@ -2498,7 +2498,7 @@ unsafe fn batch(
     // No entry past what the offer covered: one registered after the frame
     // names a decrement the frame's tag refuses
     // (`dev/design/recycler-over-counts.md`, §5f, "The take").
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let take = take.min(mutator.token.ceiling());
     if take == 0 {
         return served_without_roots(mutator, posted);
@@ -2539,7 +2539,7 @@ unsafe fn batch(
         reader: &reader,
         peeked,
         proposed,
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         second_chances,
     };
     #[cfg(test)]
@@ -2681,14 +2681,14 @@ const HAS_A_VERDICT: usize = 2;
 /// (`dev/design/the-general-algorithm.md`, "Wave 3: the second chance spent
 /// on a cut trace"). The collector's, on its frame, until the release
 /// stores it in the record.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[derive(Default)]
 struct SecondChances {
     posts: std::cell::Cell<u16>,
     bits: [std::cell::Cell<u64>; crate::cycle::mutator_record::SECOND_CHANCE_WORDS],
 }
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 impl SecondChances {
     /// The next post, `marked` or not.
     fn note(&self, marked: bool) {
@@ -2725,7 +2725,7 @@ struct FinishThePosts<'a> {
     /// reads it.
     proposed: &'a std::cell::Cell<bool>,
     /// One bit a post, in order: whether the root goes back into R marked.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     second_chances: &'a SecondChances,
 }
 
@@ -2742,9 +2742,9 @@ impl FinishThePosts<'_> {
     /// (`crate::cycle::queue::SECOND_CHANCE_MARK`); false in a build without
     /// the split.
     fn second_chance_spent(&self, index: usize) -> bool {
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         return self.roots[index] & crate::cycle::queue::SECOND_CHANCE_MARK != 0;
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         {
             let _ = index;
             false
@@ -2757,7 +2757,7 @@ impl FinishThePosts<'_> {
     ///
     /// # Safety
     /// The batch's rows stand, after a completed scan.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe fn a_marked_root_spent_its_second_chance(&self) -> bool {
         (0..self.roots.len()).any(|index| {
             !self.has_a_verdict(index)
@@ -2780,13 +2780,13 @@ impl FinishThePosts<'_> {
     /// root: it goes back into R marked, as one that came in marked does.
     fn post_refused(&mut self, index: usize, verdict: Verdict, refused: bool) {
         debug_assert!(!self.has_a_verdict(index), "one verdict per root");
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         self.second_chances
             .note(refused || self.second_chance_spent(index));
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         let _ = refused;
         journal_verdict(self.root(index), verdict);
-        #[cfg(all(test, feature = "recycler-over-counts"))]
+        #[cfg(all(test, feature = "gc-window"))]
         testing::wave_three::note_a_verdict(verdict);
         // Every `ReadLive` posted here is deferred.
         let posted = self.verdicts.post(self.root(index), verdict);
@@ -2920,16 +2920,16 @@ unsafe fn trace_the_batch(
     arena.stop_only_at(crate::cycle::token::RECALL_STOP);
     #[cfg(test)]
     let hooked_at = testing::between_the_phases().then(|| arena.positions_inspected());
-    // Under `recycler-over-counts` the scan reads the edges the mark
+    // Under `gc-window` the scan reads the edges the mark
     // recorded and not the heap, which the mutator has been writing since
     // (`crate::cycle::recorded_edges`); it colours every met row, the roots'
     // closures among them.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let scanned =
         unsafe { crate::cycle::scan::scan_the_recorded_edges(arena) } == ScanResult::Complete;
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     let mut scanned = true;
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     for index in 0..posts.roots.len() {
         if !posts.has_a_verdict(index)
             && unsafe { scan::<AtomicCells>(arena, posts.root(index)) } != ScanResult::Complete
@@ -2957,7 +2957,7 @@ unsafe fn trace_the_batch(
     // the collector can free freed (`crate::cycle::collector_frees`), whose
     // roots the posts below then read as completed deaths; what reaches the
     // owner is marked proved where the proof covers it.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let (posting, kind) = if unsafe { a_root_reads_unreachable(posts) } {
         unsafe { split_and_free(mutator, arena, posts, set) }
     } else {
@@ -2966,7 +2966,7 @@ unsafe fn trace_the_batch(
             crate::cycle::posted_set::kind::NOT_TESTED,
         )
     };
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     set.note_the_kind(kind);
 
     for index in 0..posts.roots.len() {
@@ -2979,11 +2979,11 @@ unsafe fn trace_the_batch(
     }
 
     if posts.proposed.get() {
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         unsafe {
             set.append(arena)
         };
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         match posting {
             Posting::Unmarked => unsafe { set.append(arena) },
             Posting::WholeProved(edges) => {
@@ -3195,7 +3195,7 @@ unsafe fn post_at_a_stop(
             Color::Live if shadow::count(word) == 0 => {}
             Color::Live if above_zero_reads_live => posts.post(index, Verdict::ReadLive),
             Color::Live => {}
-            // Coloured at zero, and read so: under `recycler-over-counts` the
+            // Coloured at zero, and read so: under `gc-window` the
             // row may hold its run index (`crate::cycle::scan`).
             Color::PotentiallyUnreachable => posts.post(index, Verdict::Proposed),
             _ if shadow::count(word) == 0 => posts.post(index, Verdict::Proposed),
@@ -3348,7 +3348,7 @@ unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
 }
 
 /// What reaches the owner of a batch's proved set.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 enum Posting {
     /// W, U taken out, the exact way: unproved, touched, or weakly held.
     Unmarked,
@@ -3367,7 +3367,7 @@ enum Posting {
 /// # Safety
 /// As `trace_the_batch` after a completed scan over the record: the calling
 /// thread holds `mutator`'s grant, and `arena`'s rows stand.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 unsafe fn split_and_free(
     mutator: &MutatorRecord,
     arena: &mut TraceScratchArena,
@@ -3500,7 +3500,7 @@ unsafe fn split_and_free(
 ///
 /// # Safety
 /// As [`verdict_for`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 unsafe fn a_root_reads_unreachable(posts: &FinishThePosts<'_>) -> bool {
     (0..posts.roots.len()).any(|index| {
         !posts.has_a_verdict(index)
@@ -3526,7 +3526,7 @@ unsafe fn a_root_reads_unreachable(posts: &FinishThePosts<'_>) -> bool {
 /// The trace over `root`'s closure completed on this thread and its rows still
 /// stand.
 unsafe fn verdict_for(root: *mut RcHeader, second_chance_spent: bool) -> Verdict {
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     let _ = second_chance_spent;
     let key = match unsafe { read_the_root(root) } {
         RootReading::Verdict(verdict) => return verdict,
@@ -3538,9 +3538,9 @@ unsafe fn verdict_for(root: *mut RcHeader, second_chance_spent: bool) -> Verdict
             Color::PotentiallyUnreachable => Verdict::Proposed,
             // U, refused by a touch: back to R for the next batch, or read
             // live at a second refusal (`crate::cycle::split`).
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             Color::Unclassified if !second_chance_spent => Verdict::Unwalked,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             Color::Unclassified => {
                 crate::cycle::split::note(crate::cycle::split::Counted::RootReadLiveAgain);
                 Verdict::ReadLive

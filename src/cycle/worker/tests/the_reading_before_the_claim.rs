@@ -4,7 +4,7 @@
 //! hands the record out only after that.
 //!
 //! The collector is this thread, calling [`serve`] on the record of a
-//! mutator thread the case spawns, or under `recycler-over-counts` taking
+//! mutator thread the case spawns, or under `gc-window` taking
 //! what that mutator offered ([`take_an_offer`]); the case's act runs on
 //! this thread inside the reading, between the take and the loads, or the
 //! take of the offer.
@@ -50,9 +50,9 @@ fn mutator_waiting_to_exit() -> ExitingOwner {
             ll_retain(root);
             assert!(!ll_release(root), "registered at the non-final decrement");
         }
-        // Under `recycler-over-counts` a reading is taken only over an offer:
+        // Under `gc-window` a reading is taken only over an offer:
         // the mutator offers R, and exits over the offer standing.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         assert!(
             unsafe { crate::cycle::offer::offer_at(1) },
             "the mutator offered R"
@@ -240,16 +240,16 @@ fn a_take_between_the_exits_load_and_its_store_is_still_left_the_blocks() {
         loaded_tx.send(()).expect("the case listens");
         taken.recv().expect("the reading took");
     }));
-    // Under `recycler-over-counts` the reading is taken only over an offer,
+    // Under `gc-window` the reading is taken only over an offer,
     // so the exit begins after the visit's load of the offer and before its
     // take: the exit's claim of the token withdraws the offer the visit read.
     let begin_the_exit = move || {
         go.send(()).expect("the mutator waits");
         loaded.recv().expect("the exit reached its check");
     };
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     begin_the_exit();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     testing::before_the_next_reading_take(Box::new(begin_the_exit));
 
     let (tell, left) = mpsc::channel::<(usize, usize)>();

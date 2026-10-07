@@ -1,5 +1,5 @@
 //! The scan a collector runs over the edges its mark recorded, under
-//! `recycler-over-counts`, against the default build's scan over the heap
+//! `gc-window`, against the default build's scan over the heap
 //! (`crate::cycle::recorded_edges`; `dev/design/recycler-over-counts.md`,
 //! §3.5).
 //!
@@ -84,7 +84,7 @@ fn an_edge_moved_out_after_the_mark_still_holds_its_target_live() {
         "the hook moved X out of L"
     );
 
-    let expected = if cfg!(feature = "recycler-over-counts") {
+    let expected = if cfg!(feature = "gc-window") {
         Verdict::ReadLive
     } else {
         // The heap the default build's scan reads no longer has the edge;

@@ -9,6 +9,23 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-07 — two collector kinds, named: `gc-checkpoint` and `gc-window`, one per build
+
+Edmond: keep both counting collectors, give them clear names, no tracing for
+now, a tracer may come later. A, the default, is `gc-checkpoint`: the
+collector thread finds garbage rings and the owner checks and frees them at
+its poll. B is `gc-window`: the collector judges and frees alone by window
+tags. Exactly one `gc-*` feature per build, enforced by `compile_error!`, and
+`ll_gc_kind()` reports it; a tracer would be a third feature and a third
+`GcKind` value.
+
+**Why build time, not run time.** `gc-window`'s tag is a store inside every
+count write; a run-time switch would put a branch on the commonest operation
+in the runtime. **Why the names.** They say where the decision to free is
+made: at the owner's checkpoint, or by the collector inside a window. Both
+descend from Bacon–Rajan (2001); an author's name would not tell them apart.
+The page: `dev/design/gc-kinds.md`.
+
 ## 2026-10-07 — less garbage comes from more deaths by count, not from fewer +1/−1
 
 **Decided (Edmond, 2026-10-07, «согласен», on the Critic's reading of his

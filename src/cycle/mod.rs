@@ -145,21 +145,21 @@ pub(crate) mod reclamation;
 // built on.
 pub(crate) mod records;
 // The edges a collector's mark subtracted, which its scan reads instead of the
-// heap under `recycler-over-counts`.
-#[cfg(feature = "recycler-over-counts")]
+// heap under `gc-window`.
+#[cfg(feature = "gc-window")]
 pub(crate) mod recorded_edges;
 // The collector's Δ-test of the set its scan proved, by the window tags,
-// under `recycler-over-counts`.
-#[cfg(feature = "recycler-over-counts")]
+// under `gc-window`.
+#[cfg(feature = "gc-window")]
 pub(crate) mod delta_test;
 // The collector's own free of a set its Δ-test proved, and the owner's
-// application of what it leaves, under `recycler-over-counts`.
-#[cfg(feature = "recycler-over-counts")]
+// application of what it leaves, under `gc-window`.
+#[cfg(feature = "gc-window")]
 pub(crate) mod collector_frees;
 // The split of a proved set into what a touch reaches, what the collector
-// cannot free, and the rest, under `recycler-over-counts`.
+// cannot free, and the rest, under `gc-window`.
 pub(crate) mod row;
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) mod split;
 // The second phase, and the proposal a collection reads: reached from
 // [`trace`], which [`collect`] drives.
@@ -172,8 +172,8 @@ pub(crate) mod stack;
 // waited for by a mutator whose candidates, and the entities the trace
 // reaches, a collector is tracing.
 pub(crate) mod token;
-// The mutator's offer of a batch of R at a poll, under `recycler-over-counts`.
-#[cfg(feature = "recycler-over-counts")]
+// The mutator's offer of a batch of R at a poll, under `gc-window`.
+#[cfg(feature = "gc-window")]
 pub(crate) mod offer;
 // The record the token stands in, with the words a collector thread's
 // handoff uses, in storage that outlives the thread.

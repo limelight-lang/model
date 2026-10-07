@@ -640,7 +640,7 @@ fn a_grant_recalled_before_its_batch_is_released_with_no_batch() {
 /// batch sees it: the mutator is held between its swap and anything it does
 /// after it until the collector has chosen, and the grant still goes back
 /// with no batch.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_consent_at_a_mark_is_read_as_a_recall_before_the_batch() {
     let _g = test_guard();
@@ -703,11 +703,11 @@ fn a_consent_at_a_mark_is_read_as_a_recall_before_the_batch() {
     reset_lanes();
 }
 
-/// Under `recycler-over-counts` the recall a stack at its mark raises is
+/// Under `gc-window` the recall a stack at its mark raises is
 /// stored by the offer before its swap publishes it, so the collector's
 /// reading after the take sees it: the grant goes back with no batch, and R
 /// keeps its root.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn an_offer_at_a_mark_is_read_as_a_recall_before_the_batch() {
     let _g = test_guard();
@@ -788,7 +788,7 @@ fn record_token() -> *const crate::cycle::token::TraceToken {
 /// batch's trace, is released at the trace's first reading of the recall, the
 /// first root of the pass before the trace, and the batch goes on to its end:
 /// the grant held behind it has no batch of its own to abandon.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
     let released_at = released_behind_another_batch(testing::at_the_start_of_the_next_trace, false);
@@ -800,7 +800,7 @@ fn a_grant_held_behind_another_mutators_batch_is_released_within_a_stride() {
 
 /// The same grant, its mutator asking between the mark and the scan of the
 /// other batch's trace, is released at the next reading of the stride.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
     let released_at = released_behind_another_batch(testing::between_the_next_phases, false);
@@ -814,7 +814,7 @@ fn a_grant_behind_another_trace_is_released_at_the_strides_next_reading() {
 /// at the reading that stops the other batch rather than after that batch's
 /// tail: the stop reads the grants behind the trace as a reading at the
 /// stride does (`dev/BENCHMARKS.md`, "S67.13: the grants behind a stop released at it").
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_grant_behind_a_stopped_trace_is_released_at_the_stop() {
     let released_at = released_behind_another_batch(testing::between_the_next_phases, true);
@@ -839,7 +839,7 @@ fn a_grant_behind_a_stopped_trace_is_released_at_the_stop() {
 ///
 /// The collector is the case's thread with a list of its own on a slot no
 /// thread stands in, as in `the_standing_list`.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 fn released_behind_another_batch(ask_at: fn(Box<dyn FnOnce() + Send>), traced_asks: bool) -> usize {
     const SLOT: usize = 6;
     let _g = test_guard();
@@ -1174,7 +1174,7 @@ fn a_stop_inside_the_first_regions_posts_unwalked_and_halves_k_down_to_one_read_
 /// whose scan the recall, raised between the phases, stops; the inner root's
 /// only reference is the outer root's.
 ///
-/// Under `recycler-over-counts` the scan reads the mark's record and opens on
+/// Under `gc-window` the scan reads the mark's record and opens on
 /// a reading of the recall (`crate::cycle::scan::scan_the_recorded_edges`),
 /// so the recall raised between the phases stops it before any colour is
 /// given: the inner root's row reads zero and is proposed, and the owner's
@@ -1230,7 +1230,7 @@ fn a_stop_inside_the_scan_reads_a_root_the_scan_coloured_live_as_live() {
         vec![
             (
                 inner,
-                if cfg!(feature = "recycler-over-counts") {
+                if cfg!(feature = "gc-window") {
                     Verdict::Proposed
                 } else {
                     Verdict::ReadLive

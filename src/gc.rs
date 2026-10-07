@@ -25,6 +25,45 @@
 //! The one an allocation failure starts is `crate::cycle::collect`'s other
 //! entry and reaches this module through no symbol.
 
+/// The cycle collector this build carries, one per `gc-*` feature
+/// (`dev/design/gc-kinds.md`). Chosen at build time because the window
+/// collector's tag is a store inside every count write.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[repr(u8)]
+pub enum GcKind {
+    /// `gc-checkpoint`: the collector thread finds garbage rings, and the
+    /// owning thread checks and frees them at its poll.
+    Checkpoint = 1,
+    /// `gc-window`: every count write tags the open window, and the
+    /// collector frees a garbage set alone.
+    Window = 2,
+}
+
+/// The kind this build carries.
+#[cfg(all(feature = "gc-checkpoint", not(feature = "gc-window")))]
+pub const GC_KIND: GcKind = GcKind::Checkpoint;
+/// The kind this build carries.
+#[cfg(all(feature = "gc-window", not(feature = "gc-checkpoint")))]
+pub const GC_KIND: GcKind = GcKind::Window;
+
+#[cfg(not(any(feature = "gc-checkpoint", feature = "gc-window")))]
+compile_error!(
+    "no cycle collector chosen: build with exactly one of the features \
+     `gc-checkpoint` (the default) or `gc-window`"
+);
+#[cfg(all(feature = "gc-checkpoint", feature = "gc-window"))]
+compile_error!(
+    "two cycle collectors chosen: `gc-window` builds with \
+     `--no-default-features --features gc-window`"
+);
+
+/// [`GC_KIND`] as its byte, for a program that reports the collector it
+/// links: 1 `gc-checkpoint`, 2 `gc-window`.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_kind() -> u8 {
+    GC_KIND as u8
+}
+
 thread_local! {
     /// The collection this thread owes at its next clean point
     /// ([`Arming`]), as its value.
@@ -221,9 +260,9 @@ pub unsafe extern "C" fn ll_gc_collect_cycles() -> usize {
     // What a collector freed on this thread's behalf, applied before the
     // collection reads P, as the poll applies it
     // (`crate::cycle::collector_frees`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let freed_by_the_collector = unsafe { crate::cycle::collector_frees::apply_this_threads() };
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     let freed_by_the_collector = 0;
     freed_by_the_collector + unsafe { crate::cycle::collect::collect_off_the_poll() }
 }
@@ -357,13 +396,13 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // posted set and keeps its arming for the poll that applies the last of
     // them: every reader of P applies the collector's drops first
     // (`dev/design/recycler-over-counts.md`, §5a, S68.6c, item 2).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let (freed_by_the_collector, frees_stand) =
         unsafe { crate::cycle::collector_frees::apply_a_slice_of_this_threads() };
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     let (freed_by_the_collector, frees_stand) = (0, false);
     if frees_stand {
-        #[cfg(all(test, feature = "recycler-over-counts"))]
+        #[cfg(all(test, feature = "gc-window"))]
         crate::cycle::worker::testing::wave_three::note_a_poll(true);
         if freed_by_the_collector > 0 {
             crate::cycle::queue::verdicts::note_freeing_disposition();
@@ -409,9 +448,9 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     // open gate alone, where every reference is counted, and after the fire,
     // whose collection may have left the byte `FREE` and R drained
     // (`crate::cycle::offer`).
-    #[cfg(all(test, feature = "recycler-over-counts"))]
+    #[cfg(all(test, feature = "gc-window"))]
     crate::cycle::worker::testing::wave_three::note_a_poll(false);
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let _ = unsafe { crate::cycle::offer::offer_if_due() };
 
     // The soft signal, last: a fire over R whole above read R and started
@@ -560,3 +599,6 @@ pub unsafe extern "C" fn ll_gc_checkpoint() {}
 /// Callable anywhere on a mutator thread: it runs no user code.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_gc_checkpoint_ack() {}
+
+#[cfg(test)]
+mod tests;

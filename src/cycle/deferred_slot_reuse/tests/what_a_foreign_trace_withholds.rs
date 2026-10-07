@@ -104,7 +104,7 @@ fn the_poll_makes_the_returns_a_holder_left_behind() {
 /// return's free, and the poll reads the byte after the returns: armed for R
 /// whole, it defers to the collector and keeps its arming rather than waiting
 /// out a batch (`rfc/dev/design/trace-token-handshake.md`, E9).
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_request_consented_to_by_the_polls_returns_defers_the_poll() {
     use crate::cycle::token::{REQUESTED, word};

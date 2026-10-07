@@ -3674,10 +3674,10 @@ impl CellReading {
         let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
         let offers = offer_counts();
         let (wave, by_span) = wave_three();
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         let written_back =
             joined(&testing::wave_three::take_unwalked_write_backs().map(|n| n as usize));
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         let written_back = String::new();
         let run_for = seconds_from_env("LL_RIG_SECONDS");
         let window = run_for.saturating_sub(seconds_from_env("LL_RIG_WARM_UP_SECONDS"));
@@ -3859,7 +3859,7 @@ impl CellReading {
             ),
             // The collector's Δ-test over the whole process — warm-up and
             // drain included, one cell a process — and zeros without
-            // `recycler-over-counts` (`crate::cycle::delta_test`).
+            // `gc-window` (`crate::cycle::delta_test`).
             ("tag_sets_proved", tag_counts().0.to_string()),
             ("tag_sets_touched", tag_counts().1.to_string()),
             ("tag_sets_weakly_held", tag_counts().2.to_string()),
@@ -3926,7 +3926,7 @@ impl CellReading {
                 longest_build_step().as_micros().to_string(),
             ),
             // Wave 3's readings (`PLAN.md`, S68.14), zeros without
-            // `recycler-over-counts` (`testing::wave_three`): the polls that
+            // `gc-window` (`testing::wave_three`): the polls that
             // reached the offer's reading and those a slice of drops held
             // back; the offers, their mean and largest ceiling and those at
             // the bound; the trace's expansions, at the frame, and at the
@@ -4676,12 +4676,12 @@ fn write_the_requests(path: &str, mutators: &[WebReading]) {
 
 /// The Δ-test's counts: sets proved, touched and weakly held.
 fn tag_counts() -> (usize, usize, usize) {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     {
         let counts = crate::cycle::delta_test::tag_reading_counts();
         (counts.proved, counts.touched, counts.weakly_held)
     }
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     (0, 0, 0)
 }
 
@@ -4689,7 +4689,7 @@ fn tag_counts() -> (usize, usize, usize) {
 /// taken offer at the median, the 99th centile and the longest in
 /// microseconds, and those withdrawn; zeros without the feature.
 fn offer_counts() -> [u64; 5] {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     {
         let (mut taken, withdrawn) = testing::take_offer_standings();
         taken.sort_unstable();
@@ -4706,7 +4706,7 @@ fn offer_counts() -> [u64; 5] {
             withdrawn.count as u64,
         ]
     }
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     [0; 5]
 }
 
@@ -4725,7 +4725,7 @@ fn trace_backup_counts() -> [u64; 11] {
 /// members, drops, held drops, the five refusals, the longest act, the
 /// applications in all and at the longest; zeros without the feature.
 fn frees_counts() -> [u128; 12] {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     {
         let counts = crate::cycle::collector_frees::frees_counts();
         let [a, b, c, d, e] = counts.not_freed.map(|n| n as u128);
@@ -4744,7 +4744,7 @@ fn frees_counts() -> [u128; 12] {
             counts.longest_application.as_micros(),
         ]
     }
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     [0; 12]
 }
 
@@ -4760,7 +4760,7 @@ fn joined(counts: &[usize]) -> String {
 /// [`testing::wave_three::take`] flat, the ceiling as a mean, and the
 /// buckets as one column; zeros without the feature.
 fn wave_three() -> ([u64; 9], String) {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     {
         let (polls, ceilings, expansions, by_span) = testing::wave_three::take();
         let mean = ceilings[1].checked_div(ceilings[0]).unwrap_or(0);
@@ -4788,17 +4788,17 @@ fn wave_three() -> ([u64; 9], String) {
             .join("/");
         (flat, buckets)
     }
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     ([0; 9], String::new())
 }
 
 /// [`crate::cycle::split::split_counts`], zeros without the feature.
 fn split_counts() -> [usize; 6] {
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     {
         crate::cycle::split::split_counts()
     }
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     [0; 6]
 }
 
@@ -4819,9 +4819,9 @@ fn a_cell_of_the_rig() {
     let _g = test_guard();
     let _wait = testing::HeldRequestWait::crate_own();
     let cell = Cell::from_env();
-    // The setting S68.8 reads under `recycler-over-counts`: the largest set
+    // The setting S68.8 reads under `gc-window`: the largest set
     // the collector frees itself.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     if let Ok(cap) = std::env::var("LL_RIG_MEMBER_CAP") {
         let _ = crate::cycle::collector_frees::set_member_cap_for_test(
             cap.parse().expect("LL_RIG_MEMBER_CAP is a count"),

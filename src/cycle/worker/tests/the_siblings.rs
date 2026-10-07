@@ -90,17 +90,17 @@ fn wait_for_rounds_of(index: usize, rounds: usize) {
 /// (`dev/POSTMORTEM.md`, "a wake inside the other mutator's tick meets a
 /// backlog of one").
 ///
-/// Under `recycler-over-counts` each mutator then offers R as its next poll
+/// Under `gc-window` each mutator then offers R as its next poll
 /// would, with no wake, so that the one round the case wakes next reads
 /// every offer standing.
 fn dispose_by_hand(others: &[&Mutator]) {
     unsafe { &*record() }.clear_posted_for_test();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let _ = testing::offer_and_wake_no_one();
     for other in others {
         other.run(|_| {
             unsafe { &*mutator_record::this_thread_record() }.clear_posted_for_test();
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             let _ = testing::offer_and_wake_no_one();
         });
     }
@@ -127,7 +127,7 @@ fn a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idl
     testing::permit_births(true);
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     dispose_by_hand(&[&other]);
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
@@ -284,7 +284,7 @@ fn one_backlogged_mutator_births_no_sibling() {
     testing::permit_births(true);
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     dispose_by_hand(&[]);
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);
@@ -327,7 +327,7 @@ fn a_cap_of_one_births_no_sibling() {
     let _ = testing::take_spawns();
     let _ = testing::take_rounds();
     let _ = testing::take_backlog_rounds_without_a_birth();
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     dispose_by_hand(&[&other]);
     ensure_thread();
     wait_for_rounds_of(ELDER, 1);

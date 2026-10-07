@@ -260,7 +260,7 @@ fn the_disposal_outranks_the_retirement_pass_and_is_outranked_by_the_collections
 /// One stand-in batch of `k` unwalked roots whose second chances are `bits`,
 /// one bit a post in order (`None`: a batch that stores none, as a stand-in
 /// that is not the collector's batch), released as the collector's batch is.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn unwalked_posts(k: usize, bits: Option<u64>) -> Posted {
     let record = Sent(crate::cycle::mutator_record::this_thread_record());
     std::thread::spawn(move || unsafe {
@@ -277,7 +277,7 @@ fn unwalked_posts(k: usize, bits: Option<u64>) -> Posted {
 }
 
 /// Whether each entry R holds, front first, carries the second chance's mark.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn marks_in_r() -> Vec<bool> {
     let record = crate::cycle::mutator_record::this_thread_record();
     let reader = unsafe { crate::ring::Reader::new((*record).candidate_ring()) };
@@ -293,7 +293,7 @@ fn marks_in_r() -> Vec<bool> {
 /// without the second chance's mark, so its next refusal is its first
 /// (`dev/design/the-general-algorithm.md`, "Wave 3: the second chance spent
 /// on a cut trace").
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn a_root_a_cut_left_unwalked_comes_back_unmarked() {
     let _g = test_guard();
@@ -314,7 +314,7 @@ fn a_root_a_cut_left_unwalked_comes_back_unmarked() {
 
 /// Of two unwalked roots, the one the batch's U refused (its bit set) comes
 /// back marked and the other, a cut's, does not.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn only_the_root_u_refused_comes_back_marked() {
     let _g = test_guard();
@@ -338,7 +338,7 @@ fn only_the_root_u_refused_comes_back_marked() {
 
 /// A disposition takes the batch's second chances and clears them: the next
 /// batch, which stores none, writes its unwalked root back unmarked.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn a_batchs_second_chances_mark_no_later_batch() {
     let _g = test_guard();

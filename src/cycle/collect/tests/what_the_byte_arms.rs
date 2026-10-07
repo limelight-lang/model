@@ -260,7 +260,7 @@ fn a_posted_mutator_is_a_skip_for_the_round_and_p_stands() {
 /// A request from a collector thread, consented to by this thread's poll
 /// and by its slot free entry: the byte reads `COLLECTOR|s` after either,
 /// and the collector reads the grant.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
     let _g = test_guard();
@@ -313,13 +313,13 @@ fn a_request_is_consented_to_at_the_poll_and_at_a_slot_free() {
     reset();
 }
 
-/// Under `recycler-over-counts` the poll offers R where it is due and a
+/// Under `gc-window` the poll offers R where it is due and a
 /// collector stands to take it, and makes no offer where none does, as here
 /// with births held; an offer that stands opens the window it carries, and a
 /// collector's take reads the frame and the ceiling the offer stored: R's
 /// count, here under the batch's bound. The release after the batch frees
 /// the byte for the next offer.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn the_poll_offers_r_and_a_take_reads_the_frame_it_opened() {
     let _g = test_guard();
@@ -372,7 +372,7 @@ fn the_poll_offers_r_and_a_take_reads_the_frame_it_opened() {
 /// mutator consents
 /// (`dev/design/the-standing-request-lives-on-the-record.md`, "The
 /// collector").
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_sleeping_mutators_request_stands_and_is_served_at_a_checkpoint() {
     let _g = test_guard();

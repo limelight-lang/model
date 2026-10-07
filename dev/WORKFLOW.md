@@ -99,14 +99,15 @@ cargo test --lib --features debug-journal -- --test-threads=8
 Three times, for the reason the run above is run three times: what this
 axis adds is a re-entry into the allocator from inside itself.
 
-Since 2026-10-04 there is a fourth, `recycler-over-counts`
-(`dev/design/recycler-over-counts.md`), the arm built beside the default
-collector. It changes what every count write and every slot store does and,
-as its steps land, what the collector does with a batch, so it is a full leg:
+Since 2026-10-04 there is a fourth, the cycle collector's kind
+(`dev/design/gc-kinds.md`): exactly one of `gc-checkpoint`, the default,
+and `gc-window` (`dev/design/recycler-over-counts.md`). `gc-window` changes
+what every count write and every slot store does and what the collector
+does with a batch, so it is a full leg:
 
 ```
-cargo test --lib --features recycler-over-counts -- --test-threads=8
-cargo build --release --features recycler-over-counts
+cargo test --lib --no-default-features --features gc-window -- --test-threads=8
+cargo build --release --no-default-features --features gc-window
 ```
 
 The tests three times, as the default build's.
@@ -853,14 +854,14 @@ table's version bracket, `src/journal/ring_model.rs` for the journal
 ring's, which is the same bracket read the other way round,
 `src/cycle/token/free_path_model.rs` for the free path's reading of the
 trace token against a collector's take, the store-buffering pair, and,
-under `recycler-over-counts`, `src/cycle/token/offer_model.rs` for the
+under `gc-window`, `src/cycle/token/offer_model.rs` for the
 mutator's offer, the window tag and its stale clear:
 
 ```
 RUSTFLAGS="--cfg loom" cargo test --lib version_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib ring_bracket
 RUSTFLAGS="--cfg loom" cargo test --lib free_path
-RUSTFLAGS="--cfg loom" cargo test --lib --features recycler-over-counts offer_model
+RUSTFLAGS="--cfg loom" cargo test --lib --no-default-features --features gc-window offer_model
 ```
 
 It is outside the commit gate, and the dependency is gated the same way

@@ -1,5 +1,5 @@
 //! The mutator's offer of a batch of R (`dev/design/recycler-over-counts.md`,
-//! §5f): under `recycler-over-counts` the frame a batch is tested against is
+//! §5f): under `gc-window` the frame a batch is tested against is
 //! a poll of the mutator's, where every reference it holds is counted, and the
 //! mutator decides when to offer one. The collector takes what is offered and
 //! asks for nothing ([`crate::cycle::token::TraceToken::take_the_offer`]).

@@ -500,7 +500,7 @@ pub(crate) struct TraceScratchArena {
     /// Positions a stride restarted early skipped, which
     /// [`Self::positions_read`] leaves out
     /// ([`Self::read_the_recall_as_a_stride`]).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     positions_skipped: usize,
     /// Whether a reading found the recall standing at [`Self::stops_at`] or
     /// above: what tells a trace the recall stopped from one a refused
@@ -610,7 +610,7 @@ pub(crate) struct TraceScratchArena {
     /// The edges a collector's mark subtracted, in the order it wrote them
     /// ([`crate::cycle::recorded_edges`]). Segments of this bump, empty
     /// outside a collector's trace and spent by its scan.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     edges: crate::cycle::recorded_edges::RecordedEdges,
     /// Bytes of this arena's bump already charged to the manager's
     /// ledger, so that [`reset`](TraceScratchArena::reset) discharges exactly
@@ -706,7 +706,7 @@ impl TraceScratchArena {
             reserve_kept: false,
             traced_token: std::ptr::null(),
             positions_to_the_reading: RECALL_STRIDE,
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             positions_skipped: 0,
             recalled: false,
             stops_at: crate::cycle::token::RECALL_WIND_DOWN,
@@ -737,7 +737,7 @@ impl TraceScratchArena {
             stamps: StampReading::UnregisteredTargets,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             edges: crate::cycle::recorded_edges::RecordedEdges::new(),
             published: 0,
             harvest: Harvest::Unarmed,
@@ -1101,7 +1101,7 @@ impl TraceScratchArena {
         // `reset` again — over a list whose head was already returned. A
         // rewound bump reads a residue of zero, which is what that second pass
         // needs to see.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         self.edges.clear();
         self.cursor =
             unsafe { BlockHeader::payload_start(self.base.block()).add(WORKSPACE_PREFIX_BYTES) };
@@ -1562,19 +1562,19 @@ impl TraceScratchArena {
     /// after this, up to the next run, are the ones its expansion subtracted
     /// ([`crate::cycle::recorded_edges`]). False when both allocation paths
     /// refused, or the record is full: the trace aborts as on any refusal.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn open_run(&mut self, row: *mut u32) -> bool {
         self.record_entry(row as u64 | crate::cycle::recorded_edges::RUN)
     }
 
     /// Record one edge the open run's expansion subtracted, into the row
     /// `row`. False as [`Self::open_run`].
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn record_edge(&mut self, row: *mut u32) -> bool {
         self.record_entry(row as u64)
     }
 
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     fn record_entry(&mut self, entry: u64) -> bool {
         use crate::cycle::recorded_edges::{PAGE_SEGMENTS, Room, SEGMENT_ENTRIES};
 
@@ -1619,7 +1619,7 @@ impl TraceScratchArena {
     }
 
     /// The edges this collector's mark recorded.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn recorded_edges(&self) -> &crate::cycle::recorded_edges::RecordedEdges {
         &self.edges
     }
@@ -1722,7 +1722,7 @@ impl TraceScratchArena {
     /// one (`crate::cycle::scan::scan_the_recorded_edges`), since the record
     /// may be far shorter than the storage a heap scan reads and a recall
     /// raised between the phases would otherwise wait out the scan.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn read_the_recall_as_a_stride(&mut self) -> ControlFlow<()> {
         // The positions the restarted stride skips were never read, and the
         // epoch's clock takes the positions a trace read
@@ -1809,7 +1809,7 @@ impl TraceScratchArena {
     /// read, for the commit's sum to confirm against
     /// (`crate::cycle::finalization`); the external children stay unread, for
     /// the teardown's own walk to count.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn take_the_internal_edges_the_collector_recorded(&mut self, edges: usize) {
         self.internal_edges_read = Some(edges);
         self.external_children_read = None;
@@ -1819,7 +1819,7 @@ impl TraceScratchArena {
     /// free of the rest left counted, its drops into the set held: what the
     /// members' counts carry besides the edges between them, which the
     /// commit's validations allow for (`crate::cycle::posted_set`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn take_the_references_held_from_outside(&mut self, held: usize) {
         self.held_from_outside_read = held;
     }
@@ -1931,11 +1931,11 @@ impl TraceScratchArena {
     /// [`Self::positions_inspected`] less the positions a stride restarted
     /// early skipped (`read_the_recall_as_a_stride`): the storage the
     /// trace read, which is what the epoch's clock takes. The two differ under
-    /// `recycler-over-counts` alone.
+    /// `gc-window` alone.
     pub(crate) fn positions_read(&self) -> usize {
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         return self.positions_inspected() - self.positions_skipped;
-        #[cfg(not(feature = "recycler-over-counts"))]
+        #[cfg(feature = "gc-checkpoint")]
         self.positions_inspected()
     }
 
@@ -2142,7 +2142,7 @@ pub(crate) enum Consumer {
     Drops,
     /// A segment of the recorded edges, or a page of their directory
     /// (`crate::cycle::recorded_edges`).
-    #[cfg_attr(not(feature = "recycler-over-counts"), allow(dead_code))]
+    #[cfg_attr(feature = "gc-checkpoint", allow(dead_code))]
     RecordedEdges,
 }
 

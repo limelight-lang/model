@@ -37,7 +37,7 @@
 //! belongs to the deferred lane ([`DEFERRED_MARK`]), written over the entries
 //! a collection read and read once, by the pass that disposes of them;
 //! **bit 2 is the second chance's** ([`SECOND_CHANCE_MARK`]), under
-//! `recycler-over-counts`; bit 1 is unused here, and is the collector's copy's
+//! `gc-window`; bit 1 is unused here, and is the collector's copy's
 //! own (`crate::cycle::worker`, `HAS_A_VERDICT`); P's ledger is
 //! `queue::verdicts`. Every
 //! walk that hands an entry out as an address masks the mark
@@ -1206,7 +1206,7 @@ pub(crate) const ENTRY_MARK_BITS: usize = DEFERRED_MARK | SECOND_CHANCE_MARK;
 /// The bit that says a root came back to R after the collector refused the
 /// part of a proved set it stands in: bit 2 of the stored address, written
 /// by the disposition on an unwalked entry it writes back, under
-/// `recycler-over-counts` alone, and read by the collector off its copy of
+/// `gc-window` alone, and read by the collector off its copy of
 /// the entry; a root carrying it is refused no second time, but taken the
 /// exact way (`crate::cycle::split`). A path that writes the entry again
 /// without it gives the root one more chance.
@@ -1441,7 +1441,7 @@ pub(crate) unsafe fn retire_at_the_poll() {
     let mutator_state = unsafe { mutator_state_ref(state) };
 
     // This thread alone consents, so no grant lands between this read and
-    // the take. Under `recycler-over-counts` an offer of this thread's stands
+    // the take. Under `gc-window` an offer of this thread's stands
     // for the same: a take may land on it at any instant, and the take below
     // would then wait out a batch, which this pass never does; the batch
     // posts the completed deaths it takes as zero-count verdicts, and the

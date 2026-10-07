@@ -466,12 +466,12 @@ fn a_mutator_freeing_at_full_rate_under_continuous_requests_balances_its_ledger(
         outcomes.refusals
     );
     // Every batch is read by the owner, or found still posted by a later
-    // round. Under `recycler-over-counts` the collector frees what it proved
+    // round. Under `gc-window` the collector frees what it proved
     // itself, and the owner reads most of its batches with no collection: a
     // disposition of P with no trace window.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     let answered = collections;
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     let answered = collections + disposals;
     assert!(
         outcomes.posted + answered >= outcomes.batches,

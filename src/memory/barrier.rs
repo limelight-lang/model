@@ -296,7 +296,7 @@ pub unsafe fn store_ptr(
 /// that word alone decides the arm (`rfc/model/values.md`, "ValueBox
 /// Layout") and the atomics make the race defined.
 ///
-/// [`SLOT_PUBLISH`] orders it: a release under `recycler-over-counts`, so
+/// [`SLOT_PUBLISH`] orders it: a release under `gc-window`, so
 /// that the holder's window tag, which the caller stores first, reaches a
 /// collector whose trace reads this slot (`dev/design/recycler-over-counts.md`,
 /// §5f, "The write order").
@@ -321,14 +321,14 @@ pub(crate) unsafe fn write_value_slot(slot: *mut Value, new: Value) {
 
 /// The ordering of the store that publishes an address a trace reads: a slot
 /// of an object, the `+8` word of a value slot, an array element's `+8` word
-/// and an ordered hash's key word. A release under `recycler-over-counts`,
+/// and an ordered hash's key word. A release under `gc-window`,
 /// where the store comes after the holder's window tag and the collector
 /// tests a set by the tags its acquire fence makes visible
 /// (`dev/design/recycler-over-counts.md`, §5f, "The write order"); relaxed
 /// without it.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const SLOT_PUBLISH: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Release;
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 pub(crate) const SLOT_PUBLISH: std::sync::atomic::Ordering = std::sync::atomic::Ordering::Relaxed;
 
 /// The `store_box` micro-op: the same publish for a 16-byte `Value` slot.
@@ -561,7 +561,7 @@ pub unsafe fn ref_store(
     let owner_cat = unsafe { crate::object::header_category(owner) };
     // The holder whose slot changes, tagged with the open window
     // (`dev/design/recycler-over-counts.md`, §2).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         crate::refcount::tag_with_the_window(owner)
     };
@@ -601,10 +601,10 @@ pub unsafe extern "C" fn ll_ref_store(
 ///
 /// # Safety
 /// As [`store_ptr`]; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-// Not exported under `recycler-over-counts`, where generated code stores
+// Not exported under `gc-window`, where generated code stores
 // through the holder-tagging `_in` forms or the `_root` forms below, so an
 // emitter still calling this name fails to link.
-#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
+#[cfg_attr(feature = "gc-checkpoint", unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_ptr(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -625,10 +625,10 @@ pub unsafe extern "C" fn ll_store_ptr(
 ///
 /// # Safety
 /// As [`store_box`]; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-// Not exported under `recycler-over-counts`, where generated code stores
+// Not exported under `gc-window`, where generated code stores
 // through the holder-tagging `_in` forms or the `_root` forms below, so an
 // emitter still calling this name fails to link.
-#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
+#[cfg_attr(feature = "gc-checkpoint", unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_box(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -649,10 +649,10 @@ pub unsafe extern "C" fn ll_store_box(
 ///
 /// # Safety
 /// As `store_ptr_owned`; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-// Not exported under `recycler-over-counts`, where generated code stores
+// Not exported under `gc-window`, where generated code stores
 // through the holder-tagging `_in` forms or the `_root` forms below, so an
 // emitter still calling this name fails to link.
-#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
+#[cfg_attr(feature = "gc-checkpoint", unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_ptr_owned(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -673,10 +673,10 @@ pub unsafe extern "C" fn ll_store_ptr_owned(
 ///
 /// # Safety
 /// As `store_box_owned`; `owner_cat` a valid `MemoryCategory` code (`0..=3`).
-// Not exported under `recycler-over-counts`, where generated code stores
+// Not exported under `gc-window`, where generated code stores
 // through the holder-tagging `_in` forms or the `_root` forms below, so an
 // emitter still calling this name fails to link.
-#[cfg_attr(not(feature = "recycler-over-counts"), unsafe(no_mangle))]
+#[cfg_attr(feature = "gc-checkpoint", unsafe(no_mangle))]
 pub unsafe extern "C" fn ll_store_box_owned(
     ctx: *mut LLContext,
     owner_cat: u32,
@@ -694,7 +694,7 @@ pub unsafe extern "C" fn ll_store_box_owned(
 }
 
 /// The holder-tagging forms of the four `store_*` entries, for a build with
-/// `recycler-over-counts`: each tags `holder`, the entity whose slot the store
+/// `gc-window`: each tags `holder`, the entity whose slot the store
 /// writes, with the thread's window, then runs its namesake
 /// (`dev/design/recycler-over-counts.md`, §2 and §7). Generated code under the
 /// feature emits these for every slot of an entity, and the untagged names are
@@ -706,7 +706,7 @@ pub unsafe extern "C" fn ll_store_box_owned(
 ///
 /// # Safety
 /// `holder` the live entity containing `slot`; the rest per [`ll_store_ptr`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_store_ptr_in(
     ctx: *mut LLContext,
@@ -725,7 +725,7 @@ pub unsafe extern "C" fn ll_store_ptr_in(
 ///
 /// # Safety
 /// As [`ll_store_ptr_in`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_store_box_in(
     ctx: *mut LLContext,
@@ -744,7 +744,7 @@ pub unsafe extern "C" fn ll_store_box_in(
 ///
 /// # Safety
 /// As [`ll_store_ptr_in`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_store_ptr_owned_in(
     ctx: *mut LLContext,
@@ -763,7 +763,7 @@ pub unsafe extern "C" fn ll_store_ptr_owned_in(
 ///
 /// # Safety
 /// As [`ll_store_ptr_in`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_store_box_owned_in(
     ctx: *mut LLContext,
@@ -780,7 +780,7 @@ pub unsafe extern "C" fn ll_store_box_owned_in(
 
 /// The store into a slot of a headerless holder — a static block, whose
 /// slots are roots a trace does not subtract — for a build with
-/// `recycler-over-counts`: [`ll_store_ptr`] under a name of its own, so that
+/// `gc-window`: [`ll_store_ptr`] under a name of its own, so that
 /// a slot of an entity cannot reach the untagged store by its old name
 /// (`dev/design/recycler-over-counts.md`, §7). Nothing here can tell a
 /// static slot from an entity's without a lookup the hot path does not pay;
@@ -788,7 +788,7 @@ pub unsafe extern "C" fn ll_store_box_owned_in(
 ///
 /// # Safety
 /// `slot` in a static block; the rest per [`ll_store_ptr`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_store_ptr_root(
     ctx: *mut LLContext,
@@ -803,7 +803,7 @@ pub unsafe extern "C" fn ll_store_ptr_root(
 ///
 /// # Safety
 /// As [`ll_store_ptr_root`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_store_box_root(
     ctx: *mut LLContext,

@@ -1,5 +1,9 @@
 # Recycler over counts: the collector judges and frees a garbage set alone
 
+Built as the `gc-window` collector kind (`dev/design/gc-kinds.md`). Where
+this page names the feature `recycler-over-counts`, read `gc-window`
+(renamed 2026-10-07).
+
 The design ruled on 2026-10-04 (`dev/DECISIONS.md`, "the collector judges and
 frees a garbage set by window tags, built as an arm beside the default
 build"), after two Critic rounds and the Sage (Fable). It is built as a

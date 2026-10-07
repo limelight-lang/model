@@ -173,7 +173,7 @@ pub(crate) unsafe fn scan<R: CellReader>(
 /// # Safety
 /// As [`scan`], after a [`crate::cycle::mark::drain`] that completed, the
 /// record's rows still standing.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) unsafe fn scan_the_recorded_edges(arena: &mut TraceScratchArena) -> ScanResult {
     use crate::cycle::recorded_edges::RUN;
 
@@ -242,7 +242,7 @@ pub(crate) unsafe fn scan_the_recorded_edges(arena: &mut TraceScratchArena) -> S
 
 /// Queue a live row whose run the second pass reads; false when both
 /// allocation paths refused.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn push_a_row(arena: &mut TraceScratchArena, row: *mut u32) -> bool {
     arena.push_work(WorklistEntry {
         entity: std::ptr::null_mut(),
@@ -251,7 +251,7 @@ fn push_a_row(arena: &mut TraceScratchArena, row: *mut u32) -> bool {
 }
 
 /// What a refused push answers: a recall the growth read, or the refusal.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 fn stopped(arena: &TraceScratchArena) -> ScanResult {
     if arena.was_recalled() {
         ScanResult::Recalled
@@ -266,7 +266,7 @@ fn stopped(arena: &TraceScratchArena) -> ScanResult {
 ///
 /// # Safety
 /// `row` is a row the record names, met by the trace and still standing.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 unsafe fn colour_by_the_count(row: *mut u32) {
     let word = unsafe { *row };
     if shadow::color(word) != Color::Unclassified {

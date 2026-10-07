@@ -10,7 +10,7 @@
 
 use super::*;
 use crate::cycle::token::testing::HeldByACollector;
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 use crate::cycle::token::{REQUESTED, word};
 use crate::cycle::token::{TraceToken, this_thread_token};
 use crate::cycle::worker::{ELDER, take_the_recall_of};
@@ -36,10 +36,10 @@ fn recalled(token: *const TraceToken) -> bool {
 /// A grant this thread consented to with no collector behind it, released
 /// on the unwind as well: a failed assertion under it would leave the
 /// thread's exit waiting on `COLLECTOR` for good.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 struct Consented(*const TraceToken);
 
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 impl Drop for Consented {
     fn drop(&mut self) {
         unsafe { (*self.0).release_claim(ELDER, false) };
@@ -219,7 +219,7 @@ fn a_recall_at_the_mark_stops_no_later_grant() {
 /// Red without the consent's clear: a recall standing stale when the
 /// mutator consents — its holder gone, no stack at its mark — would stop the
 /// new grant at its first reading.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn the_consent_clears_a_stale_recall() {
     let _guard = test_guard();
@@ -241,7 +241,7 @@ fn the_consent_clears_a_stale_recall() {
 /// Red without the consent's reading of the counts: a grant opened while a
 /// stack still holds its mark — the holder let go and no drain ran before
 /// the next consent — would withhold on without a recall.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_grant_opened_on_a_stack_at_its_mark_is_recalled_at_its_consent() {
     let _guard = test_guard();
@@ -350,7 +350,7 @@ fn a_large_entitys_death_counts_its_blocks() {
 /// nested in it gave the chunks back: red if the nested drain zeroed the
 /// counts, the consent then reading nothing withheld with the deaths still
 /// standing in the outer drain's hands.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_consent_inside_a_drain_reads_what_the_stacks_hold() {
     let _guard = test_guard();
@@ -398,7 +398,7 @@ fn a_consent_inside_a_drain_reads_what_the_stacks_hold() {
 /// A consent at a drain's last return, whose re-withheld death crosses the
 /// blocks' mark: the grant is recalled, and the drain, whole, does not clear
 /// that recall. Red if the drain's end clears a recall under an open grant.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_drain_ending_under_a_grant_keeps_its_recall() {
     let _guard = test_guard();
@@ -470,7 +470,7 @@ fn the_mark_winds_the_grant_down_and_its_second_stops_it() {
 
 /// The consent stores the level the stacks hold: a grant opened on a stack
 /// past its second mark starts stopped.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_grant_opened_on_a_stack_past_its_second_mark_starts_stopped() {
     use crate::cycle::token::RECALL_STOP;
@@ -499,10 +499,10 @@ fn a_grant_opened_on_a_stack_past_its_second_mark_starts_stopped() {
 /// An offer this thread made with the level its stacks hold, as the poll
 /// makes it (`crate::cycle::offer`), taken by a collector the case stands in
 /// for; released on the unwind as well, as [`Consented`] is.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 struct Taken(*const TraceToken);
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 impl Taken {
     fn offer(token: *const TraceToken) -> Self {
         let token_ref = unsafe { &*token };
@@ -514,19 +514,19 @@ impl Taken {
     }
 }
 
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 impl Drop for Taken {
     fn drop(&mut self) {
         unsafe { (*self.0).release_claim(ELDER, false) };
     }
 }
 
-/// Under `recycler-over-counts` the offer stores the level its stacks hold:
+/// Under `gc-window` the offer stores the level its stacks hold:
 /// over a recall a gone holder left, with no stack at its mark, the offer
 /// clears it; over a stack at its mark it winds the take down; past the
 /// second mark the take starts stopped. Red where the offer stores no level,
 /// which leaves the stale recall standing and the stack's take unrecalled.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn the_offer_stores_the_level_its_stacks_hold() {
     use crate::cycle::token::{RECALL_NONE, RECALL_STOP, RECALL_WIND_DOWN};
@@ -556,12 +556,12 @@ fn the_offer_stores_the_level_its_stacks_hold() {
     }
 }
 
-/// Under `recycler-over-counts` a stack's marks under a take count from what
+/// Under `gc-window` a stack's marks under a take count from what
 /// it held at the take's first return: a stack the offer found one short of
 /// its mark winds the take down only at the mark's death past that base.
 /// Red where the marks count the whole stack, which winds the take down at
 /// its first death.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn the_marks_under_a_take_count_from_its_first_return() {
     use crate::cycle::token::{RECALL_NONE, RECALL_WIND_DOWN};
@@ -621,7 +621,7 @@ fn a_death_past_both_marks_stops_the_grant_at_once() {
 /// The consent reads the blocks' and the chunks' stacks as it reads the
 /// deaths': a grant opened on either at its mark winds down. Red where the
 /// consent reads the deaths alone.
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 #[test]
 fn a_consent_reads_the_blocks_and_the_chunks_stacks() {
     use crate::cycle::token::RECALL_WIND_DOWN;

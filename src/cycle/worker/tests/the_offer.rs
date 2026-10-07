@@ -1,4 +1,4 @@
-//! The mutator's offer under `recycler-over-counts` (`crate::cycle::offer`;
+//! The mutator's offer under `gc-window` (`crate::cycle::offer`;
 //! `dev/design/recycler-over-counts.md`, §5f): when the poll offers — R at
 //! the threshold, a ring standing below it for the interval, a lane merged
 //! since the merges were last accounted for — and what the offer carries;

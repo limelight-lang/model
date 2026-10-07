@@ -104,7 +104,7 @@
 
 use std::cell::Cell;
 use std::sync::Mutex;
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::{
     AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, AtomicUsize, Ordering,
@@ -163,12 +163,12 @@ pub(crate) struct MutatorRecord {
     hold: HoldLine,
     /// Which of the last batch's posts are written back into R with the
     /// second chance's mark (`crate::cycle::queue::SECOND_CHANCE_MARK`).
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     second_chances: SecondChanceLines,
 }
 
 /// Words of the bitset of [`SecondChanceLines`]: one bit a root of a batch.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) const SECOND_CHANCE_WORDS: usize = crate::cycle::worker::BATCH_BOUND / 64;
 
 /// The last batch's posts that carry the second chance's mark back into R,
@@ -179,7 +179,7 @@ pub(crate) const SECOND_CHANCE_WORDS: usize = crate::cycle::worker::BATCH_BOUND 
 /// ([`HoldLine::second_chance_posts`]), and taken and cleared by the
 /// disposition of P under the mutator's own token; the release and the
 /// take's acquire order both, so relaxed.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[repr(C, align(64))]
 struct SecondChanceLines {
     bits: [AtomicU64; SECOND_CHANCE_WORDS],
@@ -297,13 +297,13 @@ struct WriterLine {
     /// A path that gives the posted set back unread gives it back before it
     /// applies the stack, so that the set's held drops stand on it and go
     /// with the rest.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     collectors_frees: AtomicPtr<BlockHeader>,
     /// The identity of this record's thread's entity heap, as its blocks'
     /// owner word names it, stored when the thread's initialisation makes the
     /// record claimable: a collector frees only members in blocks it names
     /// (`crate::cycle::collector_frees`). Compared, never dereferenced.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     owner_heap: AtomicPtr<u8>,
 }
 
@@ -385,7 +385,7 @@ struct HoldLine {
     /// How many posts the last batch made, of which
     /// [`MutatorRecord::second_chances`] holds one bit each; zero when
     /// taken. In the line's padding before `spent`.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     second_chance_posts: AtomicU16,
     /// The positions the collector's batches for this mutator read since the
     /// last advance, and what the stamps they wrote cost to prove: the
@@ -487,9 +487,9 @@ impl WriterLine {
             freeing_dispositions: AtomicU32::new(0),
             merges: AtomicU32::new(0),
             posted_set: AtomicPtr::new(std::ptr::null_mut()),
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             collectors_frees: AtomicPtr::new(std::ptr::null_mut()),
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             owner_heap: AtomicPtr::new(std::ptr::null_mut()),
         }
     }
@@ -505,7 +505,7 @@ impl WriterLine {
         self.merges.store(0, Ordering::Relaxed);
         // The exit applies a collector's frees under its final claim, which no
         // grant follows, so a record goes back with none standing.
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         {
             debug_assert!(
                 self.collectors_frees.load(Ordering::Relaxed).is_null(),
@@ -522,11 +522,11 @@ impl WriterLine {
 unsafe impl Sync for MutatorRecord {}
 
 const _: () = assert!(size_of::<HoldLine>() == 64);
-#[cfg(not(feature = "recycler-over-counts"))]
+#[cfg(feature = "gc-checkpoint")]
 const _: () = assert!(size_of::<MutatorRecord>() == 256);
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 const _: () = assert!(size_of::<MutatorRecord>() == 384);
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 const _: () = assert!(SECOND_CHANCE_WORDS * 64 == crate::cycle::worker::BATCH_BOUND);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, reader) == 64);
 const _: () = assert!(std::mem::offset_of!(MutatorRecord, writer) == 128);
@@ -586,7 +586,7 @@ impl MutatorRecord {
                 standing_slot: AtomicU8::new(0),
                 collector: AtomicU8::new(0),
                 new_life: AtomicU8::new(0),
-                #[cfg(feature = "recycler-over-counts")]
+                #[cfg(feature = "gc-window")]
                 second_chance_posts: AtomicU16::new(0),
                 spent: AtomicU64::new(0),
                 proving: AtomicU64::new(0),
@@ -595,7 +595,7 @@ impl MutatorRecord {
                 advanced_at: AtomicU64::new(0),
                 merges_seen: AtomicU32::new(0),
             },
-            #[cfg(feature = "recycler-over-counts")]
+            #[cfg(feature = "gc-window")]
             second_chances: SecondChanceLines {
                 bits: [const { AtomicU64::new(0) }; SECOND_CHANCE_WORDS],
             },
@@ -605,7 +605,7 @@ impl MutatorRecord {
     /// Store the last batch's second chances: `posts` posts, the first
     /// `posts` bits of `bits`. The collector's, under its grant, before its
     /// release of the token.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn store_second_chances(&self, posts: u16, bits: &[u64; SECOND_CHANCE_WORDS]) {
         let words = usize::from(posts).div_ceil(64);
         for (word, bits) in self.second_chances.bits[..words].iter().zip(bits) {
@@ -619,7 +619,7 @@ impl MutatorRecord {
     /// Take the last batch's second chances and clear them: how many posts
     /// it made, and their bits. The mutator's, under its token, at the
     /// disposition of P.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn take_second_chances(&self) -> (u16, [u64; SECOND_CHANCE_WORDS]) {
         let posts = self.hold.second_chance_posts.swap(0, Ordering::Relaxed);
         let mut bits = [0; SECOND_CHANCE_WORDS];
@@ -731,7 +731,7 @@ impl MutatorRecord {
     /// Push `head` onto the record's stack of frees (`collectors_frees`),
     /// `link` writing the entry it goes on top of into it; from a collector
     /// under its grant, or from the owner putting back what it left.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn push_collectors_frees(
         &self,
         head: *mut BlockHeader,
@@ -754,7 +754,7 @@ impl MutatorRecord {
 
     /// Whether a collector's frees stand unapplied: a collector frees nothing
     /// more until they are.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn collectors_frees_stand(&self) -> bool {
         !self
             .writer
@@ -766,13 +766,13 @@ impl MutatorRecord {
     /// The identity of this record's thread's entity heap (the record's
     /// `owner_heap` word), read by the collector under its grant, whose
     /// consent's release orders the initialisation's store before it.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn owner_heap(&self) -> *mut u8 {
         self.writer.owner_heap.load(Ordering::Relaxed)
     }
 
     /// Take the stack of frees off this record whole, leaving null.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn take_collectors_frees(&self) -> *mut BlockHeader {
         self.writer
             .collectors_frees
@@ -859,7 +859,7 @@ impl MutatorRecord {
     /// ([`ReaderLine::released_unserved`]); the collector's own line, so
     /// relaxed.
     #[inline]
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     pub(crate) fn was_released_unserved(&self) -> bool {
         self.reader.released_unserved.load(Ordering::Relaxed)
     }
@@ -1171,7 +1171,7 @@ pub(crate) unsafe fn make_thread_record_claimable() {
                 == crate::cycle::token::MUTATOR,
         "the initialisation's hold is what this releases"
     );
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     unsafe {
         (*record).writer.owner_heap.store(
             crate::memory::heap::thread_entity_heap().cast(),
@@ -1395,7 +1395,7 @@ unsafe fn reset_for_a_new_life(released: *mut MutatorRecord) {
         (*released).hold.proving_wall.store(0, Ordering::Relaxed);
         (*released).hold.advanced_at.store(0, Ordering::Relaxed);
         (*released).hold.merges_seen.store(0, Ordering::Relaxed);
-        #[cfg(feature = "recycler-over-counts")]
+        #[cfg(feature = "gc-window")]
         let _ = (*released).take_second_chances();
         debug_assert!(
             (*released)

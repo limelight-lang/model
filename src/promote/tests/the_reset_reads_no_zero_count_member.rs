@@ -1525,7 +1525,7 @@ fn no_survivor_leaves_the_reconciliation_in_hand() {
 /// reconciliation's former marker, bit 24, in two ways: an odd window raised
 /// it on entities never taken in hand, an even one cleared it between the
 /// passes. Red on that marker (seen with window 9).
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 #[test]
 fn the_reconciliation_settles_under_an_open_window() {
     let _g = crate::memory::block_pool::test_guard();

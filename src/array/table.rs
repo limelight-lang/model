@@ -1538,7 +1538,7 @@ impl Table {
     /// makes the order of the three stores below free to change: without
     /// it the null chunk has to be published first and nothing says so.
     /// The capacity the storage body was granted at, which its free takes.
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     pub(crate) fn storage_capacity(&self) -> usize {
         self.storage_capacity
     }

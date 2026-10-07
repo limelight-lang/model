@@ -132,7 +132,7 @@ chain is in `git log -- dev/`. The collector–mutator memory protocol of
   condition is proved live by a `#[cfg(test)]` counter
   (`refcount::tests::the_candidate_gate`).
 - GC C ABI and the safepoint: `src/gc.rs` — `ll_gc_collect_cycles`,
-  `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`,
+  `ll_gc_maybe_collect`, `ll_gc_checkpoint`, `ll_gc_checkpoint_ack`, `ll_gc_kind`,
   `ll_gc_set_collector_cap`, `ll_gc_set_epoch_interval`, `ll_gc_set_epoch_ratio`,
   `ll_gc_set_standing_interval`; the poll's duties in order are
   `dev/ARCHITECTURE.md`'s `gc` row and `cycle::queue`'s module doc, "What the
@@ -387,7 +387,10 @@ best D build of `dev/BENCHMARKS.md`, "S67.6: D and HG on the web loads",
 stated for reviewers outside the project; `dev/data/s67.6/` — that run's raw
 cells, requests, A/A check, pilots and analysis script (`README.md` there).
 
-`dev/design/recycler-over-counts.md` — the collector judges and frees a
+`dev/design/gc-kinds.md` — the two cycle collector kinds, `gc-checkpoint`
+(default) and `gc-window`, one per build: who frees, what each costs, how to
+choose (2026-10-07).
+`dev/design/recycler-over-counts.md` — `gc-window`: the collector judges and frees a
 garbage set alone by window tags in header byte 7 (Recycler over counts),
 ruled 2026-10-04 and built in S68 as an arm beside the default build;
 §5f holds the frame the mutator offers (S68.13): Edmond's proposal, built after three Critics by aspect.

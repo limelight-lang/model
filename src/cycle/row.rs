@@ -328,7 +328,7 @@ unsafe fn for_each_met_row_of(
 ///
 /// # Safety
 /// As [`colour_unreachable_where_every_met_row_reads_zero`].
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) unsafe fn colour_every_met_row_unreachable(
     touched: *mut crate::cycle::shadow::RowArray,
 ) {

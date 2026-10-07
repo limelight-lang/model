@@ -283,10 +283,10 @@ fn a_record_is_carved_from_a_gc_block_on_a_line_boundary() {
 
 #[test]
 fn a_record_is_whole_lines_and_a_block_holds_as_many_as_fit() {
-    // Under `recycler-over-counts` two lines more: the second chances.
-    #[cfg(not(feature = "recycler-over-counts"))]
+    // Under `gc-window` two lines more: the second chances.
+    #[cfg(feature = "gc-checkpoint")]
     assert_eq!(size_of::<MutatorRecord>(), 256);
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     assert_eq!(size_of::<MutatorRecord>(), 384);
     assert_eq!(std::mem::offset_of!(MutatorRecord, token), 0);
     assert_eq!(
@@ -304,9 +304,9 @@ fn a_record_is_whole_lines_and_a_block_holds_as_many_as_fit() {
         192,
         "the hold word the collector and the exit share is the fourth"
     );
-    #[cfg(not(feature = "recycler-over-counts"))]
+    #[cfg(feature = "gc-checkpoint")]
     assert_eq!(RECORDS_PER_BLOCK, 255);
-    #[cfg(feature = "recycler-over-counts")]
+    #[cfg(feature = "gc-window")]
     assert_eq!(RECORDS_PER_BLOCK, 170);
 }
 

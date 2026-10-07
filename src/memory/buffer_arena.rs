@@ -767,7 +767,7 @@ fn pop_fit_in(
 /// # Safety
 /// `(ptr, capacity)` is a live body of a block of kind `BLOCK_KIND_BUFFER`,
 /// freed by this call, which no thread reads again.
-#[cfg(feature = "recycler-over-counts")]
+#[cfg(feature = "gc-window")]
 pub(crate) unsafe fn post_a_body_remote(ptr: *mut u8, capacity: usize) {
     let block = BufferBlockHeader::of_ptr(ptr);
     unsafe { post_remote(block, ptr, round_up_8(capacity).max(MIN_CHUNK)) };
