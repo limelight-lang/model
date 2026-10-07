@@ -8,6 +8,33 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the backup trace's measuring arm on `web-heap`: no cheaper than B's collector at any ratio, garbage held 7–40 times longer, the owner stopped 1–5 s
+
+**Build.** `trace-backup-rig` (`src/cycle/trace_backup/`, design page "The
+backup trace: the build" and the Sage's reduced arm), built for an
+executable, the ratio read from `LL_TB_RATIO`; against **M**, `main` with
+`recycler-over-counts`. Three repeats each in one rotation, no cell void.
+The trace runs on the mutator's thread, so its CPU is inside the mutator's.
+
+| `web-heap`, CPU s | mutator | of which the trace | collector | total | garbage mean | longest trace |
+|---|---|---|---|---|---|---|
+| M | 46.4–47.0 | — | 58.6–60.8 | 105–108 | 23–28 MB | — |
+| ratio 1.5 (106–107 traces) | 130.0–131.3 | 87.7–89.4 | 0 | 130–131 | 180–183 MB | 1.04–1.16 s |
+| ratio 2 (54 traces) | 110.8–111.2 | 68.0–69.2 | 0 | 111 | 344–347 MB | 1.56 s |
+| ratio 4 (18–19 traces) | 106.4–107.9 | 59.2–60.7 | 0 | 106–108 | 1.02–1.04 GB | 3.96–5.24 s |
+
+The trace's parts at ratio 2: fill and subtract 15.7 s, mark 8.7 s, the
+components 19.2 s, finalization and reclamation 23.7 s; about 81M freed.
+At every ratio the components and finalization cost 41–47 s: the arm sends
+all garbage through A's finalization (a binary search a garbage edge, the
+revalidation), destructors or not.
+
+**Reading.** The measured census and mark (24 s at ratio 2) agree with the
+estimate of the inputs entry; the garbage path does not, and makes the arm
+no cheaper than B in total at ratio 4 and dearer below, with garbage and
+pauses far past B's. Not built further pending Edmond's reading of the
+algorithm.
+
 ## 2026-10-07 — batches past 1,024 under the offer at the bound: `web-heap`'s collector 6–10 % cheaper at 2,048–8,128, the six loads no better and `live-churn`'s collector up to a fifth dearer
 
 **Builds.** Diagnostic arms of `main` (`afc7cef`, the offer at the bound),
