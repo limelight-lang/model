@@ -9,6 +9,14 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-07 — the batch's bound stays 1,024
+
+**Decided (Edmond, 2026-10-07: «беру твои рекомендации»).** `BATCH_BOUND`
+stays 1,024. Bounds of 2,048 to 8,128 under the offer at the bound made
+`web-heap`'s collector 6–10 % cheaper, paid nothing on the six deciding loads
+and made `live-churn`'s collector up to a fifth dearer (`dev/BENCHMARKS.md`,
+"batches past 1,024 under the offer at the bound"). P2 is closed.
+
 ## 2026-10-07 — the offer at the bound over the accepted rule (R50)
 
 **Decided (Edmond, 2026-10-07, on the decision card: «Включить»).** Under
