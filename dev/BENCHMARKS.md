@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — A with the same higher offer against B with R50: B about 10 % cheaper in total on `web-heap`; a 20 ms short interval gives half R50's saving at half its delay
+
+**Builds.** Diagnostic arms, not kept (worktrees), built for an executable:
+**A1k** is A with its round threshold read from the environment and set to
+1,024, and its standing interval set to 50 ms (`LL_ROUNDS_THRESHOLD=1024
+LL_STANDING_MS=50`); **R20** is R50 with the short interval at 20 ms. A1k
+answers whether the higher offer, not the windows, made B's gain. Three
+repeats each, `web-heap` by the protocol's cell, the six deciding loads
+with two mutators; void cells were rerun by the rig.
+
+| `web-heap`, CPU s | mutator | collector | total | garbage mean, MB |
+|---|---|---|---|---|
+| A | 69.4–71.4 | 49.5–51.7 | 119–123 | 25.8–31.3 |
+| A1k | 68.9–70.9 | 44.7–47.4 | 114–118 | 27.0–29.9 |
+| R50 | 45.6–46.6 | 56.4–58.5 | 102–105 | 23.1–26.8 |
+
+Six loads, mutator + collector CPU in s (spare / shared); time to free in
+ms; request latency p99 in µs:
+
+| load | A | A1k | R50 |
+|---|---|---|---|
+| `live-churn` | 2.18–2.22 + 0.76–0.80 / 1.83–2.20 + 0.63–0.68; 3363–3397; 786–983 | 1.91–2.08 + 0.60–0.62 / 1.77–2.03 + 0.53–0.61; 3360–3437; 721–983 | 1.66–1.86 + 0.63–0.67 / 1.58–1.86 + 0.56–0.69; 2972–2984; 164–262 |
+| `live-churn-dies-by-count` | 1.82–2.02 + 0.58 / 1.69–1.95 + 0.40–0.44; 0; 147–180 | 1.67–1.77 + 0.39–0.42 / 1.67–1.81 + 0.40–0.41; 0; 147–197 | 1.76–1.82 + 0.38–0.40 / 1.70–2.02 + 0.35–0.38; 0; 164–197 |
+| `registered-ring-live` | 1.51–1.67 + 0.39–0.44 / 1.58–1.60 + 0.35–0.38; 0; 262–655 | 1.55–1.72 + 0.41–0.45 / 1.49–1.64 + 0.36–0.37; 0; 295–492 | 1.27–1.42 + 0.43–0.47 / 1.34–1.37 + 0.40–0.42; 0; 295–852 |
+| `garbage-25` | 1.11–1.26 + 0.03 / 1.14–1.25 + 0.02–0.03; 2890–2894; 131–213 | 1.06–1.21 + 0.02–0.03 / 1.13–1.21 + 0.02–0.03; 2895–2902; 147–246 | 1.08–1.23 + 0.05–0.06 / 1.16–1.22 + 0.04–0.05; 45; 57–74 |
+| `deferred-live-large` | 1.22–1.30 + 0.14–0.15 / 1.17–1.36 + 0.12; 35–37; 82–98 | 1.19–1.26 + 0.14–0.15 / 1.18–1.35 + 0.13; 37–40; 82–90 | 1.24–1.31 + 0.12–0.14 / 1.23–1.40 + 0.10–0.12; 57–58; 57–74 |
+| `deferred-then-dead` | 1.23–1.28 + 0.09 / 1.19–1.28 + 0.07; 1375–1387; 90–98 | 1.18–1.25 + 0.09 / 1.18–1.29 + 0.07; 1375–1393; 74–82 | 1.18–1.34 + 0.08–0.10 / 1.17–1.30 + 0.07–0.08; 1385–1397; 27–41 |
+
+R20 against B and R50, same rotation: `web-heap` collector 58.2–60.9 s
+(B 62.8–64.6, R50 55.8–57.3), garbage mean 24.4–26.8 MB (B 31.4–35.8, R50
+21.0–26.4); time to free on `garbage-25` 30 ms (B 23, R50 45), on
+`deferred-live-large` 43 ms (B 32–33, R50 57).
+
+**Reading.** The higher offer helps A too: its collector 9 % cheaper on
+`web-heap`, so part of the gain earlier credited to the windows was the
+offer's. With the offer equal, B moves about 24 s of mutator work for about
+11 s more collector, 12 s less in total. On the six loads B's mutator is 8–13
+% cheaper on `live-churn` and `registered-ring-live`, `live-churn`'s p99 falls
+from 721–983 to 164–262 µs, and `garbage-25` is freed in 45 ms rather than
+2.9 s; `deferred-live-large` is freed in 57 rather than 37–40 ms. Two cells
+come out 4–6 % worse in total for B, within the repeats' spread:
+`garbage-25` shared and `live-churn-dies-by-count` spare. Edmond chose R50
+for main on 2026-10-07.
+
 ## 2026-10-07 — the offer at the bound over today's rule (R50): the collector's saving and `web-heap`'s lower garbage kept, a trickle freed twice as slowly, with two mutators or eight blocking ones
 
 **Builds.** A diagnostic arm of B at `35bd45a`, not kept (a worktree),
