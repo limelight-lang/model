@@ -1082,3 +1082,22 @@ any R after 4 s; the elder started at R ≥ 64 as today; and an offer at an
 embedder's "about to block" point. Measured against B in the same rotation,
 with many mutators and a load that blocks between requests, before it goes
 back to Edmond.
+
+### The offer at the bound, repaired (Claude's proposal, 2026-10-07)
+
+Measured as R50 (`dev/BENCHMARKS.md`, "the offer at the bound over
+today's rule"). At its poll, with the gate open and the token `FREE`, the
+mutator offers when:
+- R reaches the bound (1,024 today); or
+- R holds at least 64 and has held it 50 ms on the thread's own clock;
+  the elder is started at R ≥ 64, as today's offer starts it; or
+- R holds anything and has stood the accepted 4 s; or a lane merged.
+
+Today's rule stays as the floor of the behaviour: nothing it offers waits
+more than 50 ms longer, an R under 64 keeps 4 s, so the Critic's findings
+1, 2 and 4 do not arise. Finding 3 (a thread blocked for seconds with up to
+1,023 roots) is bounded only by an offer at the embedder's "about to
+block" point, which the runtime does not have yet; not measured. Finding 7
+stands: 1,024 is the workspace's limit, and the bound's value is P2's to
+measure. The cost measured: a trickle's time to free about doubles (45 ms
+against 23 on `garbage-25`).
