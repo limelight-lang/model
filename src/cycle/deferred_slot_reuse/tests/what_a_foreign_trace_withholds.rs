@@ -338,9 +338,11 @@ fn a_death_under_a_running_trace_is_not_reused_before_the_release() {
             crate::value::Value::entity(crate::value::Tag::Object, held as *mut RcHeader),
         )
     };
-    storing_sender
-        .send(())
-        .expect("the collector waits for this");
+    // The collector holds the token from here but starts its traces only at
+    // the signal sent after the second death: on one CPU a thousand traces
+    // can otherwise end before the mutator runs, and no allocation is
+    // checked against a slot freed under the holder.
+    let mut storing_sender = Some(storing_sender);
 
     // The loop ends at the collector's signal or at the first free that
     // found the token released and made the returns: from there a slot
@@ -372,8 +374,20 @@ fn a_death_under_a_running_trace_is_not_reused_before_the_release() {
         freed_under_the_trace.push(held as usize);
         held = next;
         deaths += 1;
+        if deaths == 2 {
+            storing_sender
+                .take()
+                .expect("sent once")
+                .send(())
+                .expect("the collector waits for this");
+        }
     }
 
+    if let Some(storing_sender) = storing_sender {
+        storing_sender
+            .send(())
+            .expect("the collector waits for this");
+    }
     collector.join().expect("the collector thread returned");
     assert!(deaths > 1, "the mutator killed leaves under the trace");
     unsafe { crate::gc::ll_gc_maybe_collect() };
