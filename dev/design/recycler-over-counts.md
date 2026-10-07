@@ -865,8 +865,11 @@ checkpoint, the bounded wait and the consent go.
   ordering, finding 2).
 - **The offer.** At a poll with the gate open, never on the slot-free path
   (a free's reading may hold ARC-elided temporaries, §4.7), when its root
-  queue R passes a threshold, or R has stood non-empty below it for
-  `STANDING_INTERVAL` since the last release, or the merged lanes are due,
+  queue R reaches the batch's bound, or R has held the rounds' threshold for
+  `SHORT_STANDING_INTERVAL` (50 ms) on the thread's own clock, or R has stood
+  non-empty for `STANDING_INTERVAL` since the last release, or the merged
+  lanes are due (Edmond, 2026-10-07; `DECISIONS.md`, "the offer at the
+  bound"),
   the mutator records on the token the next window F and R's end as the
   batch's ceiling, moves the token by one CAS `FREE` → `OFFERED` with
   acquire–release, and once the swap has landed, before any count write,

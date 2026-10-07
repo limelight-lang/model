@@ -84,8 +84,9 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ABANDON_NEXT_PUSH", false), // test-only const Cell, no drop glue
         ("ADMITTED", false),
         ("ALLOCATING", false),
-        ("ARMED", false),                 // test-only const Cell, no drop glue
-        ("AT_THE_SURPLUS_UNLINK", false), // test-only const Cell of an fn pointer, no drop glue
+        ("ARMED", false),                  // test-only const Cell, no drop glue
+        ("AT_THE_SURPLUS_UNLINK", false),  // test-only const Cell of an fn pointer, no drop glue
+        ("AT_THE_THRESHOLD_SINCE", false), // const Cell<Option<Instant>>, no drop glue (`recycler-over-counts`)
         ("BATCH", false), // test-only const Cell of a Copy pair, no drop glue (`recycler-over-counts`)
         ("BETWEEN_THE_READS", false), // test-only const Cell of an fn pointer, no drop glue
         ("BLOCKS", false),

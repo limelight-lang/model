@@ -1114,11 +1114,32 @@ fn reclaims(index: usize, record: &MutatorRecord) -> bool {
     false
 }
 
-/// The threshold a mutator offers R at: the rounds' own.
+/// The count a mutator offers R at with no interval to stand: the batch's
+/// bound, or a case's threshold for the rounds
+/// (`dev/design/the-general-algorithm.md`, "The offer at the bound,
+/// repaired"; Edmond, 2026-10-07).
 #[cfg(feature = "recycler-over-counts")]
 pub(crate) fn threshold_for_offers() -> usize {
+    #[cfg(test)]
+    if let Some(threshold) = testing::threshold_for_rounds() {
+        return threshold;
+    }
+
+    BATCH_BOUND
+}
+
+/// The count a mutator offers R at once R has held it
+/// [`SHORT_STANDING_INTERVAL`]: the rounds' own threshold.
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) fn threshold_for_short_offers() -> usize {
     threshold_for_rounds()
 }
+
+/// How long R holds the rounds' threshold, on the mutator's own clock,
+/// before it is offered under the bound: 50 ms, measured as R50
+/// (`dev/BENCHMARKS.md`, 2026-10-07).
+#[cfg(feature = "recycler-over-counts")]
+pub(crate) const SHORT_STANDING_INTERVAL: Duration = Duration::from_millis(50);
 
 /// The threshold the rounds serve at: the module's own, or a case's.
 fn threshold_for_rounds() -> usize {

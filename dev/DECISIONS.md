@@ -9,6 +9,24 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-07 — the offer at the bound over the accepted rule (R50)
+
+**Decided (Edmond, 2026-10-07, on the decision card: «Включить»).** Under
+`recycler-over-counts` the mutator's poll offers R when R reaches the batch's
+bound (1,024); or when R has held the rounds' threshold (64) for 50 ms on the
+thread's own clock, the elder started while it waits; or, as before, when R
+has stood the 4 s standing interval or a lane merged. In place of the offer at
+64. Why: with the offer equal for A and B (`dev/BENCHMARKS.md`, 2026-10-07),
+batches judged at 64 were small and young, about half refused; at the bound
+the collector costs 15–42 % less and `web-heap`'s mean garbage is a third
+lower. The cost, accepted: a slow trickle of garbage is freed about twice as
+late (45 ms against 23 on `garbage-25`), and a thread that blocks between
+requests may hold up to 1,023 roots until an embedder's "about to block"
+offer exists (open). The bound's value stays P2's to measure; 20 ms was
+measured as the alternative (half the saving at half the delay). Reviewed by
+the Critic and the Sage (`dev/design/the-general-algorithm.md`, "The offer
+at the bound, repaired").
+
 ## 2026-10-06 — the general algorithm accepted after two waves
 
 **Decided (Edmond, 2026-10-06 18:35: «да алгоритм выглядит хорошо, если ты в нём

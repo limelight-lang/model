@@ -111,6 +111,9 @@ fn a_backlog_births_a_sibling_that_takes_half_the_mutators_and_is_ended_when_idl
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
+    // The case reads rounds over R offered at the rounds' threshold, not at
+    // the bound the poll offers at today (Edmond, 2026-10-07).
+    testing::serve_rounds_at(SOFT_THRESHOLD);
     reset_lanes();
     let other = Mutator::start();
     let class = node_class("SiblingNode");
@@ -306,6 +309,9 @@ fn a_cap_of_one_births_no_sibling() {
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
+    // The case reads rounds over R offered at the rounds' threshold, not at
+    // the bound the poll offers at today (Edmond, 2026-10-07).
+    testing::serve_rounds_at(SOFT_THRESHOLD);
     reset_lanes();
     let other = Mutator::start();
     let class = node_class("CappedNode");

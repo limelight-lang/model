@@ -536,6 +536,9 @@ fn a_wake_whose_counts_are_below_the_threshold_makes_a_round_and_no_batch() {
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
+    // The case reads rounds over R offered at the rounds' threshold, not at
+    // the bound the poll offers at today (Edmond, 2026-10-07).
+    testing::serve_rounds_at(SOFT_THRESHOLD);
     reset_lanes();
     born_waiting_for(record, PAST_THE_CASE);
 
@@ -667,6 +670,9 @@ fn the_fallback_timer_lengthens_after_empty_rounds_and_shortens_on_a_freeing_dis
     let _g = test_guard();
     let record = record();
     let _end = RetireOnDrop;
+    // The case reads rounds over R offered at the rounds' threshold, not at
+    // the bound the poll offers at today (Edmond, 2026-10-07).
+    testing::serve_rounds_at(SOFT_THRESHOLD);
     reset_lanes();
     born_waiting_for(record, PAST_THE_CASE);
     assert_eq!(

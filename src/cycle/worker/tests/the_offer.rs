@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::cycle::deferred_slot_reuse::{DEATHS_MARK, foreign_withheld_count};
-use crate::cycle::offer::{note_a_withdrawal_at_a_mark, offer_at};
+use crate::cycle::offer::{note_a_withdrawal_at_a_mark, offer_at, offer_between};
 use crate::cycle::token::{FREE, OFFERED, RECALL_NONE, state};
 use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
@@ -137,6 +137,71 @@ fn a_merged_lane_is_offered_below_the_threshold() {
     mutator.note_merges_seen(mutator.merges().wrapping_sub(1));
     assert!(unsafe { offer_at(THRESHOLD) }, "a merge not yet seen");
     withdraw_and_collect();
+}
+
+/// R at the threshold and below the bound is not offered at the poll that
+/// first reads it there, and is offered at the first poll after it has held
+/// the threshold the short interval on the thread's own clock, with no round
+/// to stamp the round's clock (Edmond, 2026-10-07: the offer at the bound,
+/// repaired).
+#[test]
+fn r_at_the_threshold_below_the_bound_is_offered_after_the_short_interval() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_secs(60));
+    let mut arena = Arena::new();
+    let _ = a_record_with_nothing_standing();
+    garbage_rings(&mut arena, THRESHOLD / 2, "OfferAfterShortNode");
+    let short = Duration::from_millis(2);
+
+    assert!(
+        !unsafe { offer_between(THRESHOLD, 2 * THRESHOLD, short) },
+        "the first poll at the threshold offers nothing"
+    );
+    std::thread::sleep(short * 2);
+    assert!(
+        unsafe { offer_between(THRESHOLD, 2 * THRESHOLD, short) },
+        "offered once the short interval has passed"
+    );
+    assert_eq!(token().ceiling(), THRESHOLD, "R's count");
+    withdraw_and_collect();
+}
+
+/// R at the bound is offered at once, with no interval to stand.
+#[test]
+fn r_at_the_bound_is_offered_at_once() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_secs(60));
+    let mut arena = Arena::new();
+    let _ = a_record_with_nothing_standing();
+    garbage_rings(&mut arena, THRESHOLD, "OfferAtBoundNode");
+
+    assert!(unsafe { offer_between(THRESHOLD, 2 * THRESHOLD, Duration::from_secs(60)) });
+    assert_eq!(token().ceiling(), 2 * THRESHOLD, "R's count");
+    withdraw_and_collect();
+}
+
+/// R below the threshold waits for the standing interval, not the short one.
+#[test]
+fn r_below_the_threshold_does_not_take_the_short_interval() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_secs(60));
+    let mut arena = Arena::new();
+    let _ = a_record_with_nothing_standing();
+    garbage_rings(&mut arena, 1, "OfferBelowShortNode");
+    let short = Duration::from_millis(1);
+
+    assert!(!unsafe { offer_between(THRESHOLD, 2 * THRESHOLD, short) });
+    std::thread::sleep(short * 3);
+    assert!(
+        !unsafe { offer_between(THRESHOLD, 2 * THRESHOLD, short) },
+        "under the threshold"
+    );
+    assert_eq!(token().read(), FREE);
+    let _ = unsafe { crate::gc::ll_gc_collect_cycles() };
+    reset_lanes();
 }
 
 /// No offer over a byte that is not `FREE`: the thread's own token taken, or

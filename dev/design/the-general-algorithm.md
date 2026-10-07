@@ -1023,7 +1023,7 @@ in three places, and not worth the full build before a one-constant probe.
 Taken whole (settled by Claude on the Sage's advice, open to Edmond's
 overturning): the probe runs first, as a diagnostic arm not pushed.
 
-## Wave 3: the offer at the bound (Claude's proposal, awaiting Edmond, 2026-10-07)
+## Wave 3: the offer at the bound (Claude's proposal, 2026-10-07)
 
 **What the probes showed** (`dev/BENCHMARKS.md`, the three entries of
 2026-10-07 on the bound and the offer). A bound of 2,048 with the offer at
@@ -1123,6 +1123,17 @@ Advice:
 - The offer point is tied to the bound, whose value P2 measures.
 - One arm more, 20 ms, may halve the trickle's cost at no loss; it changes
   the constant, not the rule (running).
+
+### Taken (Edmond, 2026-10-07)
+
+Edmond chose the repaired rule with 50 ms («Включить»), after A was measured
+with the same higher offer (`dev/BENCHMARKS.md`, "A with the same higher
+offer against B with R50"). Built: `worker::threshold_for_offers` is the
+bound, `threshold_for_short_offers` the rounds' threshold,
+`SHORT_STANDING_INTERVAL` 50 ms; `offer::is_due` reads `Instant` only after
+the byte, the ring and the threshold, and the poll starts the elder while R
+waits at the threshold. Open: the embedder's "about to block" offer; the
+bound's value (P2).
 
 ## Wave 3: the tag before the load (2026-10-07)
 
