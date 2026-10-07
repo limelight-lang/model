@@ -1462,3 +1462,36 @@ unwind.
   promoted arena object, to be measured on `web-arena`); at exit, traces until
   one frees nothing, up to A's 8 rounds, then the leftovers abandoned and
   adopted as today, traced by the adopter like its own.
+
+### The Sage on the revised build (2026-10-07)
+
+The Sage (Fable): findings 1, 4 and 5 answered (raising the collecting word
+stops nesting, `src/cycle/collect.rs:93`; bytes 6–7 are 0 at birth,
+`publish_header`; finalization runs per component, but `revalidate` itself
+calls `stamp_component`, a seam inside finalization). Answered wrongly:
+- **8, unsafe**: nothing serialises traces under T, so "walked" means walked
+  by some thread; X subtracting an edge into Y's entity while Y traces
+  removes a real external reference and frees Y's entity live. Repair: an
+  ownership test before every subtract and mark (a non-test version of
+  `block_is_owned_by_this_thread`, an owner field for large entities), or
+  traces serialised process-wide.
+- **7**: large entities carry no owner (`src/memory/large_entity.rs:30`), so
+  "filtered by owner" has nothing to filter on.
+- **6**: "slots in use" is the per-slot counter on the fast path the draft
+  refused; one trace per freed-nothing interval reverses the recorded
+  decision not to cache an empty pressure collection.
+
+Scope: 2,500–4,000 lines touching 8–10 files, a subsystem, not an experiment.
+Advice: build a reduced measuring arm first, a rig-only feature: the header
+fill, subtract and mark; the component split; the real finalization and
+reclamation (the pause needs them); the gate raised; an ownership test on
+every target; the trigger from the existing test counter at a fixed ratio;
+the check against A. Left out: exit rounds, the pressure and
+`gc_collect_cycles()` seams, retained, large and adopted indexing, the
+memory-limit headroom, the overflow map (a saturated count reads as a root).
+Run on `web-heap`, the ring probe and the two loads where tracing should
+lose, at ratios 1.5, 2 and 4. The full module only if that arm beats B's
+collector with finalization counted.
+
+Taken (settled by Claude on the Sage's advice, open to Edmond's
+overturning): the reduced arm first, kept out of `main` as a diagnostic arm.
