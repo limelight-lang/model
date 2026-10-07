@@ -335,6 +335,12 @@ per-thread trace at the owner's safepoint triggered by heap growth, roots read
 off the counts, cyclic garbage's destructors run once and freed at the next
 trace. Not planned in steps yet; how the two are chosen between is open.
 
+Moved to the far list by Edmond on 2026-10-07 (`dev/DECISIONS.md`, "both
+counting collectors stay"): A and B stay as the two selectable collectors,
+and a tracing collector with roots from compiler stack maps waits. The
+measuring arm `trace-backup-rig` and its numbers (`dev/BENCHMARKS.md`,
+2026-10-07) are where it starts from.
+
 ## Then: arrays as a performance problem
 
 Opened 2026-08-07; the representation is built (`dev/DECISIONS.md`,

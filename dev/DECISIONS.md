@@ -9,6 +9,23 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-07 — both counting collectors stay, the tracing collector with stack-map roots goes to the far list
+
+**Decided (Edmond, 2026-10-07: «давай оставим алгоритм который не платит
+налог на +1. но и алгоритм с окнами - тоже оставим... чистый трейсинг с
+корнями запишем в дальний туду»).** A (no window tag on +1/−1) and B
+(`recycler-over-counts`, windows) both stay as selectable collectors; neither
+replaces the other. The tracing cycle collector with roots from compiler stack
+maps goes to the far list. The backup trace's measuring arm
+(`trace-backup-rig`) stays as it is, a diagnostic arm. Why: B's window tag
+taxes every +1/−1, which Edmond does not want paid by every program, and B is
+already built; the tracing collector beats B only with 2.3 times B's garbage
+or more and stack maps (`dev/BENCHMARKS.md`, the backup trace's second arm,
+and the extrapolation the Critic and the Sage checked on 2026-10-07). His
+reason for the counting collectors: an optimizing compiler that removes +1/−1
+and root writes leaves the collector little to do; that claim is under the
+Critic's review, not accepted by this entry.
+
 ## 2026-10-07 — the batch's bound stays 1,024
 
 **Decided (Edmond, 2026-10-07: «беру твои рекомендации»).** `BATCH_BOUND`
