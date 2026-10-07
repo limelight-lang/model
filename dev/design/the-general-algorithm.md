@@ -772,3 +772,57 @@ repair and pass with it; both builds green. On `web-heap` nothing moves,
 since no batch is cut there (`dev/BENCHMARKS.md`, "the second chance kept
 for refusals alone"); the gate's count of roots refused three times or
 more by address is dropped, addresses being reused.
+
+## Wave 3: P6, the window read without a frame (Claude's draft, 2026-10-07)
+
+**What the frame is** (read on the assembly, both before and after the
+link). `cargo rustc --emit=asm` of the feature build shows `ll_retain`
+reading the window through `callq __tls_get_addr@PLT`: rustc compiles a
+library as position-independent code, and `thread_local!` then takes the
+general-dynamic TLS model. The linker relaxes that call in an executable
+to `mov %fs:0,%rax; lea -0x50(%rax),%rax`, so the linked binary has no
+call (as the wave-2 audit found), but the register allocator ran before
+the link: the call's clobbers left `push %r14; push %rbx; push %rax` and
+their pops on the fast path. `ll_release` pays the same, plus a second
+general-dynamic read (`MUTATOR_STATE`) because the feature build inlines
+`register_candidate` into it; its frame is four registers. The A build
+calls `register_candidate` out of line and reads no thread-local on the
+fast path. Callgrind, self cost per call (2026-10-06): `ll_retain` A 13,
+B 26; `ll_release` A 22, B 36.
+
+The heap's comment ("ELF `__thread` is already a single `%fs`-relative
+load") holds for the linked instructions only; `THREAD_HEAP` has the same
+call in the compiled code. Its paths call out anyway, so the frame costs
+them less; the comment is corrected here and its cost is not measured.
+
+**The change.**
+1. **x86_64 ELF**: the window is one byte in `.tbss`, defined by
+   `global_asm!` (hidden), read and written by inline `asm!` through the
+   initial-exec relocation `window@GOTTPOFF(%rip)`. The asm is opaque to
+   the compiler, so it sees no call and keeps no frame. Linked into an
+   executable the load relaxes to `mov $imm,%reg; movzbl %fs:(%reg)`;
+   linked into a shared library it stays one GOT load before the `%fs`
+   read, valid for a library loaded at start-up and, through glibc's
+   static-TLS surplus, for one byte opened later. Checked on a scratch
+   crate: an executable, a C program linked to the staticlib, and a
+   shared library built from it all link; a thread starts at window 0 and
+   sets its own; the linked retain is 7 instructions with no push.
+2. **Every other target**, windows-msvc included, keeps `thread_local!`.
+   The crate does not build for Windows today (`hash/process_key.rs`
+   stops it with `compile_error!` for want of an OS randomness read), so a
+   fast `TlsSlots` slot for the window waits until it does.
+3. **`register_candidate` out of line** (`#[inline(never)]`, not `#[cold]`:
+   a −1 that registers is common), so `ll_release`'s fast path holds no
+   second thread-local read and the shape matches A's.
+
+**What does not change.** The window's meaning, where it is opened
+(`set_window` at the offer), the tag's store order (tag before the count
+store), every accepted rule. `the_next_window`, `this_threads_window` and
+the tagging slot stores read through the same two functions.
+
+**Gate.** Both builds green, with a case that a new thread's window is 0
+and a set on one thread is not seen on another (both the ELF and the
+fallback form). The linked `ll_retain` of the feature build has no push;
+callgrind self cost of `ll_retain` and `ll_release` in B falls from 26 and
+36, the target being A's 13 and 22 plus the tag's 3. On `web-heap`, three
+repeats: mutator CPU not above the 48.7–49.2 s of 2026-10-06.
