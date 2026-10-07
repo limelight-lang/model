@@ -8,6 +8,60 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the offer at the bound over today's rule (R50): the collector's saving and `web-heap`'s lower garbage kept, a trickle freed twice as slowly, eight blocking mutators no worse
+
+**Builds.** A diagnostic arm of B at `35bd45a`, not kept (a worktree),
+built for an executable: **R50** offers at R = 1,024; or at R ≥ 64 once R
+has stood 50 ms on the thread's own clock (`Instant`, read at each poll
+while R ≥ 64), the elder started there as the offer at 64 starts it; or at
+any R after the accepted 4 s. It answers the Critic's findings on the
+offer at the bound (`dev/design/the-general-algorithm.md`): no R that
+today's rule would offer goes unoffered longer than 50 ms, and an R under
+64 keeps today's 4 s. Against B in the same rotation, three repeats, no
+cell void: `web-heap` by the protocol's cell; the six deciding loads with
+two mutators; the six again with eight mutators on two CPUs whose paced
+wait sleeps without a poll (`LL_RIG_WAIT_WITHOUT_POLL=1`).
+
+| | B | R50 |
+|---|---|---|
+| `web-heap` collector CPU, s | 62.7–63.1 | 53.5–55.3 |
+| `web-heap` mutator CPU, s | 45.0–45.7 | 44.1–45.1 |
+| `web-heap` garbage mean, MB | 32.1–34.1 | 21.7–23.2 |
+| `web-heap` garbage peak, MB | 146–207 | 138–177 |
+| `web-heap` Δ-tests touched | 7,995–8,676 | 3,922–4,014 |
+
+Two mutators, collector CPU in s (spare / shared) and time to free in ms:
+
+| load | B | R50 |
+|---|---|---|
+| `live-churn` | 0.76–0.81 / 0.61–0.70 | 0.59–0.65 / 0.52–0.58 |
+| `live-churn-dies-by-count` | 0.57–0.62 / 0.46–0.49 | 0.35–0.37 / 0.32–0.35 |
+| `garbage-25` | 0.069 / 0.046–0.051; 22.5–22.7 | 0.050–0.052 / 0.036–0.038; 45.1 |
+| `deferred-live-large` | 0.13–0.14 / 0.11–0.12; 32.4–32.5 | 0.11–0.13 / 0.11; 57.2–57.9 |
+
+Eight blocking mutators:
+
+| load | B | R50 |
+|---|---|---|
+| `live-churn` | 2.26–2.41 / 2.22–2.53 | 1.93–2.33 / 2.21–2.30 |
+| `live-churn-dies-by-count` | 1.50–1.53 / 1.31–1.37 | 1.20–1.32 / 1.24–1.27 |
+| `garbage-25` | 0.15–0.17 / 0.13–0.14; 37.4–37.7 | 0.11 / 0.10–0.11; 67.7–68.0 |
+| `deferred-live-large` | 0.36–0.41 / 0.35–0.39; 32.4–32.6 | 0.35–0.39 / 0.29–0.39; 57.3–57.7 |
+
+`deferred-then-dead` and `registered-ring-live` stay within or under B's
+spread in both sets (one R50 cell of `registered-ring-live` freed in 35 ms
+against 15); mutator CPU stays within B's spread everywhere.
+
+**Reading.** Keeping today's rule under the bound keeps what the bound
+bought: on `web-heap` the collector spends 13 % less and holds 30 % less
+garbage on average, and the churn loads 15–40 % less collector with two
+mutators. The price
+is the trickle's time to free, about doubled (`garbage-25` 45 ms against
+23; `deferred-live-large` 57 against 32), the 50 ms interval's. Eight
+mutators that sleep between iterations show no blow-up, but their sleeps
+are the pace's milliseconds: a thread blocked for seconds with up to
+1,023 roots in R is not measured here. The choice is Edmond's.
+
 ## 2026-10-07 — the offer at 1,024 or after R has stood 50 ms: the collector's saving kept, a slow trickle freed in 83 ms rather than half a second
 
 **Builds.** The T1k arm of the entry below with the standing interval read
