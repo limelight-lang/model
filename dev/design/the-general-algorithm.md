@@ -1327,3 +1327,19 @@ wins CPU.
 Claude's note: the CPU to beat is B's, not A's. T keeps A's mutator (about
 70 s on `web-heap` against B's 46 s), so T's trace must cost under about
 33 s for T to beat B's 102–105 s in total, against B's collector at 56–59 s.
+
+### The Sage's arithmetic, measured (2026-10-07)
+
+`dev/BENCHMARKS.md`, "the backup trace's inputs": on one mutator's `web-heap`
+state a census costs 0.21–0.33 s, a mark 0.09–0.13 s; at a 2× trigger about 27
+traces a mutator a run, about 19–29 s of CPU for two, against B's collector at
+51–59 s, the frees counted in neither. The Sage's condition holds, so the
+census variant is built as the selectable arm (settled by Claude on the
+Sage's advice, Edmond having chosen to build; open to his overturning). Its
+known loss: the owner stops 0.35–0.54 s a trace, about every 3.6 s.
+
+For the build's design, to go to the Critic: the side count in header bytes
+6–7 as a 16-bit count saturating at its top (a saturated entity is read as a
+root, which only keeps it), in place of the 64 MB hash table, since T writes
+neither the window tag nor the maturation stamp; the Critic's findings 1–4 and
+6 as the build's scope.

@@ -8,6 +8,43 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the backup trace's inputs on `web-heap`'s state: a census 0.21–0.33 s and a mark 0.09–0.13 s a trace, so about 19–29 s of CPU a run at a 2× trigger
+
+**Build.** A diagnostic worktree at `5fda18b`, not kept: two ignored tests in
+`the_web_loads.rs` and a feature dropping the registration in `release_word`.
+Default features, release, one thread pinned to CPU 0 while the rig ran on
+CPUs 1–3 (shared L3: 20–40 % spread). Measured by a subagent; the census and
+mark re-run by Claude, 296–331 ms and 109–132 ms.
+
+**The state** (one mutator's `web-heap`, 150,000 values, seed 0, after a full
+collection that freed nothing): 1,530,039 entities, 1,837,038 edges between
+them, 236,969,344 slot bytes; one entity keeps a side count above 0.
+
+| pass, five repeats a run | ms |
+|---|---|
+| mark, one byte stored per header, every entity reached | 85–132 |
+| census: side counts filled, one decrement an edge (a 64 MB hash table) | 207–331 |
+| of which the fill | 48–84 |
+| `ll_gc_collect_cycles` from one root, freeing nothing (test build) | 373–557 |
+
+R1's 202 ms (2026-09-30) is not reproduced: this is the whole collection with
+the test build's counters, not the rows alone.
+
+**Garbage** (`webA1k.csv`, `web_garbage_made_bytes`: request ends, evictions,
+session replacements, all hung from cycles on this load): 2.50–2.55 MB a
+request, 10.42–10.51 GB in the 96 s window after warm-up, two mutators.
+
+**Registration** (4,096 releases from 2 to 1, 500 repeats): 3.3–3.5 ns a
+registering release against 1.26 ns with it skipped, about 2 ns; at 1.60M
+registrations a run (S67.5) about 3 ms.
+
+**Reading.** At a 2× trigger a trace runs when garbage reaches the live heap
+(237 MB): about 27 traces a mutator a 116 s run, by extrapolation from the 96 s
+window. At 0.35–0.54 s a trace (census, mark, and a sweep estimated as one more
+fill), about 19–29 s of CPU for two mutators, against B's collector at 51–59 s;
+freeing the garbage is not counted, in either. Each trace stops its owner
+0.35–0.54 s, about every 3.6 s.
+
 ## 2026-10-07 — A with the same higher offer against B with R50: B about 10 % cheaper in total on `web-heap`; a 20 ms short interval gives half R50's saving at half its delay
 
 **Builds.** Diagnostic arms, not kept (worktrees), built for an executable:
