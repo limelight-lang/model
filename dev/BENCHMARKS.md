@@ -8,6 +8,33 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — an offer no sooner than a floor after the last: at 5 ms the collector spends a fifth less and refuses 40 % fewer sets, the mean garbage within the spread, the peak half again
+
+**Builds.** A diagnostic arm of B at `724aaca`, not kept (a worktree): the
+mutator makes no offer sooner than `LL_AGE_FLOOR_MS` after its own last
+(a thread-local instant, read at the offer's reading; the accepted rule
+has no floor). Against B at `724aaca`. `web-heap` by the protocol's cell on
+this box as in the entries below: B and the 10 ms floor three repeats
+alternated, the 3 and 5 ms floors two repeats each after them; no cell void.
+
+| floor | collector CPU, s | mutator CPU, s | garbage mean, MB | garbage peak, MB | offers | Δ-tests touched / proved | second refusals |
+|---|---|---|---|---|---|---|---|
+| none (B) | 63.9–64.8 | 48.7–49.9 | 30.6–35.6 | 164–179 | 15,260–15,642 | 8,130–8,637 / 4,086–4,148 | 4,534–4,887 |
+| 3 ms | 56.5–58.8 | 48.6–49.4 | 32.4–33.3 | 197–218 | 11,437–12,265 | 5,501–6,080 / 3,948–4,041 | 2,613–2,941 |
+| 5 ms | 50.2–50.9 | 46.7–48.0 | 31.3–36.1 | 247–254 | 10,377–10,505 | 4,801–4,910 / 3,899–3,943 | 1,927–2,011 |
+| 10 ms | 45.1–48.9 | 47.2–49.3 | 37.7–43.9 | 285–394 | 7,370–7,541 | 2,311–2,383 / 3,769–3,882 | 560–601 |
+
+At 10 ms, batches by the span from the last offer (three repeats): 10–100
+ms 21,083 batches of 880 roots, 71.0 % dead, 15.6 % read live, 13.4 %
+refused; against B's 37.8 % dead in its 24,935 batches of 1–10 ms.
+
+**Reading.** Waiting lets the transient roots die by counting: the
+collector's CPU falls with the floor (−10 %, −21 %, −26 %) and the touched
+sets with it (−32 %, −43 %, −72 %), the mutator's CPU unchanged. The cost is
+held garbage: the mean stays within B's spread to 5 ms and rises at 10 ms;
+the peak rises at every floor (+20 %, +45 %, +60–130 %). The floor changes
+the accepted offer rule (§5f), so it goes to Edmond.
+
 ## 2026-10-06 — the second chance kept for refusals alone: right in the code, no change on `web-heap`, whose batches are never cut
 
 **Builds.** B with the repair of `dev/design/the-general-algorithm.md`,
