@@ -1048,3 +1048,37 @@ tests pinning 64 and 4 s at the offer move with it.
 **Gate, if taken.** Both builds green; `web-heap` and the six loads by the
 probes' cells, three repeats: collector CPU and mean garbage on `web-heap`
 not above the probe's S50, time to free on `garbage-25` under 100 ms.
+
+### The Critic on the offer at the bound (2026-10-07)
+
+The Critic (opus) read the proposal and the code, running nothing. The
+proposal as written is not to be taken; Edmond is told so.
+1. **Below the bound nothing starts the collector.** The standing check
+   waits on the round clock, which reads 0 until a round runs, and today
+   the offer at 64 is what starts the elder thread; a process that builds
+   500 garbage rings and keeps polling would hold them until pressure or
+   exit. The probes' loads all reach 1,024 and could not show it.
+2. **The 50 ms runs on the round clock**, which ticks only when a round
+   starts, with gaps doubling to 1 s when idle: the measured wait is about
+   63 ms after a busy stretch and up to a second after a quiet one. The
+   83 ms on `garbage-25` fits that.
+3. **A thread that blocks between requests holds up to 1,023 roots**
+   instead of 63: offers happen only at a poll.
+4. **Any non-empty R is offered every interval**: with many lightly busy
+   threads, offers rise by about 80 times; every cell had two mutators.
+5. **The text disagrees with the code**: K still starts at 64; the retire
+   pass and the rig (`ROOTS = SOFT_THRESHOLD - 1` makes `garbage-25`)
+   read `SOFT_THRESHOLD` too.
+6. **The readings understate a regression**: `garbage-25` frees 3.7 times
+   slower under S50, which the gate's "under 100 ms" accepts; "pays on
+   every load but one" is false.
+7. **1,024 is the workspace's limit, not a measured optimum** (T2k was
+   cheaper still), and tying the offer to the bound ties it to P2.
+
+**A repair to measure** (Claude): keep today's rule as the floor of the
+behaviour and add the bound above it: offer at R ≥ the bound; or at
+R ≥ 64 once R has stood a short interval on the mutator's own clock; or
+any R after 4 s; the elder started at R ≥ 64 as today; and an offer at an
+embedder's "about to block" point. Measured against B in the same rotation,
+with many mutators and a load that blocks between requests, before it goes
+back to Edmond.
