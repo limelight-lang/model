@@ -1820,8 +1820,13 @@ impl Heap {
 // `rfc/model/memory/heap-slot-allocation.md`, "Fix 3 — Fast TLS
 // (Windows)".
 //
-// Elsewhere the portable `thread_local!` stays: ELF `__thread` is already
-// a single `%fs`-relative load with no module table.
+// Elsewhere the portable `thread_local!` stays. ELF `__thread` is a single
+// `%fs`-relative load with no module table when the final code generation
+// targets an executable (`-C relocation-model=pie`, or the merged bitcode
+// compiled for one); compiled position-independent for a shared object, as
+// rustc builds an rlib or the staticlib by default, every read is a
+// `__tls_get_addr` call and the frame it needs
+// (`dev/design/the-general-algorithm.md`, "the Critic on P6").
 
 #[cfg(windows)]
 mod tls {

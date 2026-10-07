@@ -862,14 +862,38 @@ difference between 1M and 2M pairs on one entity in R:
 | `ll_retain` | 13 / 26 | 13 / 18 |
 | `ll_release` | 22 / 36 | 22 / 25 |
 
-**Revised P6: no change to the runtime.** The frame came from building
-the rlib position-independent for a shared library it never goes into; the
-tag's price where the code ships is 5 instructions on a +1 and 3 on a −1.
-The asm byte, its cfg, the Miri gap and the dlopen question fall away
-with it (findings 2–5, 7). What changes is the rig: its arms are built as
-code for an executable is, so B is not charged a frame the shipped code
-does not have (`dev/tools/arms.sh`, its build line). Every A-against-B
-figure measured before carries that frame on B's side: B's mutator CPU on
-`web-heap` (48.7–49.2 s against A's 71–72 s) is a bound from above. The
-heap's `THREAD_HEAP` comment holds for the shipped build and now for the
-rig's too. Windows stays open until the crate builds there.
+**Revised P6: no change to the runtime.** The TLS model is chosen by the
+compile that produces the final code, not by the crate. Where that is the
+merged bitcode compiled into an executable, the path `README.md` names,
+the window is an initial-exec read and the tag costs, in the test binary
+built that way, 5 instructions on a +1 and 3 on a −1 (an inference for the
+merged build after `opt -O2`, not measured on it). The frame comes back
+wherever the final compile is position-independent for a shared object:
+the staticlib as rustc builds it by default, and merged bitcode compiled
+`-fPIC` into a loadable module; if such a consumer appears, the merge step
+can mark the window `thread_local(initialexec)` or the staticlib be built
+for an executable. Windows stays open until the crate builds there
+(`README.md`'s msvc check is of 2026-07, before `hash/process_key.rs`
+stopped the build). The asm byte, its cfg, the Miri gap and the dlopen
+question fall away (findings 2–5, 7).
+
+What changes is the rig: its arms are built as code for an executable is
+(`dev/tools/arms.sh`, its build line), so neither arm pays frames the
+merged executable does not. A reads thread-locals on its hot paths too
+(the heap's, the queue's state), so every A-against-B figure measured
+before moves on both sides, in a direction not known until measured: the
+`web-heap` row of A against B is to be measured again with the new build.
+B-relative tables, such as the offer floor's, stand. The heap's
+`THREAD_HEAP` comment is corrected to the same scope (the Sage, below).
+
+### Wave 3: the Sage on the revised P6 (2026-10-07)
+
+The Sage (Fable), reading the revision and the code: the conclusion holds
+for the executable path only, and the text overstated it; the corrections
+above are its: the TLS model as a property of the consumer's compile, the
+staticlib and a `-fPIC` module named as carrying the frame, the shift of
+A's figures as well as B's, the 5 and 3 instructions as an inference, and
+the build line by `--config` rather than an environment variable (no
+`.cargo/config.toml`, which would change Miri's build and the README's
+bitcode path). Re-measure the A-against-B `web-heap` row with the new
+build.

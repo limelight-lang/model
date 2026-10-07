@@ -20,9 +20,10 @@
 # Build each arm as code bound for an executable is compiled, so that no arm
 # pays a TLS call frame the shipped code does not have
 # (`dev/design/the-general-algorithm.md`, "the Critic on P6"):
-# `RUSTFLAGS="-C relocation-model=pie" cargo test --release --lib --no-run
-# --target x86_64-unknown-linux-gnu [--features …]`, and copy the binary into
-# ARMS_DIR under the arm's name.
+# `cargo test --release --lib --no-run --target x86_64-unknown-linux-gnu
+# --config 'target.x86_64-unknown-linux-gnu.rustflags=["-C","relocation-model=pie"]' [--features …]`,
+# and copy the binary, under target/x86_64-unknown-linux-gnu/release/deps/,
+# into ARMS_DIR under the arm's name.
 set -u
 OUT=$1
 REPEATS=$2

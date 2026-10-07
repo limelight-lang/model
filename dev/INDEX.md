@@ -428,8 +428,8 @@ Build the driver with `--features bench-loads` first.
 (`dev/BENCHMARKS.md`, "S64.5 what a take costs by the shape of its roots"):
 each arm of `cycle::worker::tests::what_a_take_costs` in a process of its own,
 pinned to one CPU under `perf stat --control`, the probe opening the counting
-interval around its timed collection alone. Build the test binary with
-`cargo test --release --lib --no-run` first.
+interval around its timed collection alone. Build the test binary first as
+`dev/tools/arms.sh` says.
 
 `dev/tools/rig.sh` — the rig's driver: every cell of
 `cycle::worker::tests::the_rig`, a placement and a load, in a process of its
@@ -437,9 +437,9 @@ own, one CSV line each. It reads the physical cores and their SMT siblings from
 `/sys/devices/system/cpu`; the probe pins each mutator itself and each
 collector through `worker::testing::pin_collectors_to`, which
 `begin_the_thread` reads. Build the test binary first as `dev/tools/arms.sh`
-says, position-independent for an executable (`-C relocation-model=pie`):
-built as a plain rlib, every thread-local read on a hot path pays a call
-frame the shipped code does not.
+says, for an executable (`-C relocation-model=pie`): built as a plain rlib,
+every thread-local read on a hot path is a `__tls_get_addr` call with its
+frame, which the merged build compiled into an executable does not have.
 
 `cycle::worker::tests::the_web_loads` — the web loads' request
 (`dev/design/the-web-loads.md`): the seeded draws by purpose, the plan of one
