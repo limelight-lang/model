@@ -183,6 +183,10 @@ pub(crate) mod mutator_record;
 pub(crate) mod worker;
 // The two phases of one trace, in the order the rows require.
 pub(crate) mod trace;
+// The backup trace's measuring arm: the owner's trace of its whole entity heap
+// at a poll, in place of candidate registration, under `trace-backup-rig`.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) mod trace_backup;
 // The row readers and the ring fixtures the collector's tests share. Test
 // builds only.
 #[cfg(test)]

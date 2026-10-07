@@ -745,7 +745,16 @@ pub(crate) fn ensure_thread() {
 /// birth was refused inside the interval; true when this call spawned it. A
 /// call that spawns waits for the slot's last thread, as [`ensure_thread`]
 /// says.
+#[cfg_attr(
+    feature = "trace-backup-rig",
+    allow(unreachable_code, unused_variables)
+)]
 fn ensure_collector(index: usize) -> bool {
+    // The backup trace's arm runs no collector thread: nothing registers, so
+    // a round would read empty rings (`crate::cycle::trace_backup`).
+    #[cfg(feature = "trace-backup-rig")]
+    return false;
+
     #[cfg(test)]
     if !testing::births_permitted() {
         return false;

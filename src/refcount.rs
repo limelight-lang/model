@@ -999,7 +999,10 @@ unsafe fn release_word(entity: *mut RcHeader) -> bool {
 
     // A decrement that does not reach zero is the one event that can
     // leave a garbage ring behind, so it is where a candidate is
-    // registered (`rfc/model/gc/rc-cycle.md`).
+    // registered (`rfc/model/gc/rc-cycle.md`). Under `trace-backup-rig` no
+    // decrement registers: the backup trace walks the thread's whole heap
+    // and reads no candidate (`crate::cycle::trace_backup`).
+    #[cfg(not(feature = "trace-backup-rig"))]
     if refcount != 0 && may_become_a_candidate(flags) {
         note_admission();
 
@@ -1053,6 +1056,7 @@ thread_local! {
 /// at once — it sees an entity registered or not — and can never show that
 /// a clause it did not vary rejects on its own. The counter is what sees
 /// a condition that never fires.
+#[cfg(not(feature = "trace-backup-rig"))]
 #[inline]
 fn note_admission() {
     #[cfg(test)]
@@ -1230,6 +1234,52 @@ unsafe fn header_byte_store(header: *mut RcHeader, at: usize, byte: u8) {
             .store(byte, core::sync::atomic::Ordering::Relaxed)
     };
 }
+
+/// Bytes 6-7 of a published header read as one `u16`: the backup trace's
+/// field under `trace-backup-rig` — its side count, walked bit and mark during
+/// a trace, zero outside one (`crate::cycle::trace_backup`, "The field"). The
+/// maturation stamp and the window tag those bytes carry in the other builds
+/// have no writer in this one, the collector thread never being started and the
+/// stamp's commit writes configured out.
+///
+/// Two bytes wide at `+6`, beside the mutator's two at `+4` and overlapping
+/// neither them nor the counter: the same width rule [`flags_load`] states.
+///
+/// # Safety
+/// `header` points at a live published entity; the field is read and written
+/// by the thread whose trace walks it alone.
+#[cfg(feature = "trace-backup-rig")]
+#[inline]
+pub(crate) unsafe fn trace_field_load(header: *const RcHeader) -> u16 {
+    unsafe {
+        (*((header as *const u8).add(6) as *const core::sync::atomic::AtomicU16))
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// The store twin of [`trace_field_load`].
+///
+/// # Safety
+/// As [`trace_field_load`], and the calling thread owns the entity's block.
+#[cfg(feature = "trace-backup-rig")]
+#[inline]
+pub(crate) unsafe fn trace_field_store(header: *mut RcHeader, field: u16) {
+    unsafe {
+        (*((header as *mut u8).add(6) as *const core::sync::atomic::AtomicU16))
+            .store(field, core::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+/// The clauses of [`CANDIDATE_GATE_MASK`] that say whether a ring can pass
+/// through an entity at all — the category is `GcHeap`, the kind is below
+/// eight, the class is not proven acyclic — as one mask, each clause "this
+/// bit is zero". What the backup trace walks (`crate::cycle::trace_backup`):
+/// the owner's proof and the candidate bit, the gate's other two clauses, say
+/// whether a decrement registers, and a trace that registers nothing reads
+/// neither.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) const RING_GATE_MASK: u32 =
+    MEMORY_CATEGORY_MASK | KIND_ABOVE_THE_RING_RESERVE | ACYCLIC_GATE;
 
 /// Read the refcount of a **published** header, same dispatch rule and
 /// the same width rule — the counter twin of [`mutator_flags`].

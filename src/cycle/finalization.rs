@@ -913,7 +913,17 @@ pub(crate) unsafe fn release_guards(members: &Membership<'_>) {
 /// # Safety
 /// Every member is a live entity of this thread's GC heap whose slot is still
 /// its own, named once, and the call runs on the owning thread.
+#[cfg_attr(
+    feature = "trace-backup-rig",
+    allow(unreachable_code, unused_variables)
+)]
 unsafe fn stamp_component(members: &Membership<'_>, epoch: u32) {
+    // Bytes 6-7 are the backup trace's field under `trace-backup-rig`, and a
+    // component it finalizes is read while that field stands
+    // (`crate::cycle::trace_backup`, "The field").
+    #[cfg(feature = "trace-backup-rig")]
+    return;
+
     let mut youngest: Option<u32> = None;
     unsafe {
         members.for_each(|member| {

@@ -81,6 +81,15 @@ hash-folding = []
 # is measured against, and the tag is a store on every count write.
 recycler-over-counts = []
 
+# The backup trace's measuring arm (`dev/design/the-general-algorithm.md`, "The
+# Sage on the revised build"): no candidate is registered and no collector
+# thread is started; at an open poll, once the thread's slot bytes pass a
+# ratio of what the last trace left (`LL_TB_RATIO`, 2.0, never under 4 MB), the
+# owner traces its whole entity heap and frees the garbage cycles it finds
+# (`src/cycle/trace_backup/`). A diagnostic arm for the rig, kept out of
+# `main`; exclusive with `recycler-over-counts`.
+trace-backup-rig = []
+
 [lints.rust]
 # `loom` is a build-time selector rather than a feature: the model it gates
 # (`src/array/version_bracket_model.rs`) replaces the standard atomics with

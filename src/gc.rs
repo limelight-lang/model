@@ -343,6 +343,14 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
+    // The backup trace's arm collects here and at no other point: at an open
+    // poll, where every reference the thread holds is counted, once its
+    // threshold reads due (`crate::cycle::trace_backup::threshold`).
+    #[cfg(feature = "trace-backup-rig")]
+    let freed_by_the_trace = unsafe { crate::cycle::trace_backup::trace_if_due() };
+    #[cfg(not(feature = "trace-backup-rig"))]
+    let freed_by_the_trace = 0;
+
     // What a collector freed on this thread's behalf: its chains spliced, a
     // slice of its drops applied, where the destructors they reach may run
     // (`crate::cycle::collector_frees`). While drops stand the poll reads no
@@ -382,6 +390,7 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
     crate::cycle::queue::take_retired_by_the_close();
     let arming = take_arming();
     let freed = freed_by_the_collector
+        + freed_by_the_trace
         + if arming == Arming::None {
             0
         } else {

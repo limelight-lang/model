@@ -628,8 +628,9 @@ pub struct Heap {
     /// `used × size` summed over the owned blocks, by size class, an adopted
     /// block's slots included: every change of a block's `used` is mirrored
     /// here at its class's size. Test-only, the web loads' garbage figure
-    /// (`cycle::worker::tests::the_web_loads`).
-    #[cfg(test)]
+    /// (`cycle::worker::tests::the_web_loads`), and under `trace-backup-rig`
+    /// the bytes the backup trace's threshold reads (`crate::cycle::trace_backup`).
+    #[cfg(any(test, feature = "trace-backup-rig"))]
     bytes_in_owned_blocks: [usize; NUM_CLASSES],
     /// Of `bytes_in_owned_blocks`, what adopted blocks brought live: slots of
     /// a thread that exited, which are no garbage of this thread's. Test-only,
@@ -637,6 +638,11 @@ pub struct Heap {
     /// inherited slot lowers the other figure alone.
     #[cfg(test)]
     bytes_adopted: [usize; NUM_CLASSES],
+    /// The slot bytes the last backup trace on this heap's thread left live,
+    /// zero before the first: the baseline its threshold reads
+    /// (`crate::cycle::trace_backup::threshold`).
+    #[cfg(feature = "trace-backup-rig")]
+    left_live_after_a_trace: usize,
     /// The block kind this heap stamps at refill and adopts by:
     /// `BLOCK_KIND_HEAP` for raw C-ABI allocations, `BLOCK_KIND_ENTITY`
     /// for GC entities. Two populations of the same allocator, never
@@ -675,10 +681,12 @@ impl Heap {
             sweeps: [0; NUM_CLASSES],
             #[cfg(test)]
             adopted_live: 0,
-            #[cfg(test)]
+            #[cfg(any(test, feature = "trace-backup-rig"))]
             bytes_in_owned_blocks: [0; NUM_CLASSES],
             #[cfg(test)]
             bytes_adopted: [0; NUM_CLASSES],
+            #[cfg(feature = "trace-backup-rig")]
+            left_live_after_a_trace: 0,
             block_kind,
         }
     }
@@ -748,7 +756,7 @@ impl Heap {
         }
 
         b.used += 1;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "trace-backup-rig"))]
         {
             self.bytes_in_owned_blocks[ci] += SIZE_CLASSES[ci];
         }
@@ -833,7 +841,7 @@ impl Heap {
                 let base = (block as *mut u8).wrapping_add(LINE_SIZE);
                 out[n] = base.wrapping_add(idx * class_size);
                 b.used += 1;
-                #[cfg(test)]
+                #[cfg(any(test, feature = "trace-backup-rig"))]
                 {
                     self.bytes_in_owned_blocks[ci] += class_size;
                 }
@@ -851,7 +859,7 @@ impl Heap {
                 b.free = unsafe { (*slot).next };
                 out[n] = slot as *mut u8;
                 b.used += 1;
-                #[cfg(test)]
+                #[cfg(any(test, feature = "trace-backup-rig"))]
                 {
                     self.bytes_in_owned_blocks[ci] += class_size;
                 }
@@ -1062,7 +1070,7 @@ impl Heap {
         // The block's slots come with it; a collect lowers the figure by those
         // freed while it was ownerless, the one below or, where a foreign
         // trace withholds the returns, a later one.
-        #[cfg(test)]
+        #[cfg(any(test, feature = "trace-backup-rig"))]
         {
             self.bytes_in_owned_blocks[ci] +=
                 unsafe { (*block).private.used } as usize * SIZE_CLASSES[ci];
@@ -1196,9 +1204,12 @@ impl Heap {
         self.sweep_again = [false; NUM_CLASSES];
         self.available = [std::ptr::null_mut(); NUM_CLASSES];
         self.empty_reserve = [std::ptr::null_mut(); NUM_CLASSES];
-        #[cfg(test)]
+        #[cfg(any(test, feature = "trace-backup-rig"))]
         {
             self.bytes_in_owned_blocks = [0; NUM_CLASSES];
+        }
+        #[cfg(test)]
+        {
             self.bytes_adopted = [0; NUM_CLASSES];
         }
     }
@@ -1299,7 +1310,7 @@ impl Heap {
         b.used -= 1;
 
         let ci = unsafe { (*block).size_class.load(Ordering::Relaxed) } as usize;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "trace-backup-rig"))]
         {
             self.bytes_in_owned_blocks[ci] -= SIZE_CLASSES[ci];
         }
@@ -1425,7 +1436,7 @@ impl Heap {
 
         b.free = head;
         b.used -= n;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "trace-backup-rig"))]
         {
             let ci = unsafe { (*block).size_class.load(Ordering::Relaxed) } as usize;
             self.bytes_in_owned_blocks[ci] -= n as usize * SIZE_CLASSES[ci];
@@ -1487,7 +1498,7 @@ impl Heap {
         unsafe { (*(tail as *mut FreeSlot)).next = b.free };
         b.free = head as *mut FreeSlot;
         b.used -= n;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "trace-backup-rig"))]
         {
             self.bytes_in_owned_blocks[ci] -= n as usize * SIZE_CLASSES[ci];
         }
@@ -3263,15 +3274,16 @@ pub(crate) unsafe fn block_hold_count(block: *mut u8) -> *const AtomicU64 {
 /// never allocated owns nothing, and the null it reads answers the same way.
 ///
 /// Read by the cases that stage a block of another thread, and by no path of
-/// the crate: a withheld return is held in the dying entity itself and its
-/// return goes through `ll_free`, which posts a cross-thread free onto the
-/// block rather than onto this thread's free list
+/// the crate but the backup trace's ownership test under `trace-backup-rig`
+/// ([`entity_is_in_a_block_of_this_thread`]): a withheld return is held in the
+/// dying entity itself and its return goes through `ll_free`, which posts a
+/// cross-thread free onto the block rather than onto this thread's free list
 /// (`crate::cycle::deferred_slot_reuse`). It stays because those cases would
 /// otherwise assert nothing about the block they staged.
 ///
 /// # Safety
 /// `block` is the header of a commissioned block.
-#[cfg(test)]
+#[cfg(any(test, feature = "trace-backup-rig"))]
 pub(crate) unsafe fn block_is_owned_by_this_thread(block: *mut u8) -> bool {
     let owner = unsafe {
         (*(block as *mut HeapBlockHeader))
@@ -3280,6 +3292,100 @@ pub(crate) unsafe fn block_is_owned_by_this_thread(block: *mut u8) -> bool {
             .load(Ordering::Relaxed)
     };
     !owner.is_null() && owner == thread_entity_heap()
+}
+
+/// Whether `entity` stands in a size-class entity block this thread's entity
+/// heap owns: the backup trace's ownership test, made before every write it
+/// makes into a header it reached by an edge (`crate::cycle::trace_backup`,
+/// "Whose headers a trace writes"). A retained block, a large entity and a
+/// block of another thread or of none answer false, the block's kind being
+/// read before any other header word, as `crate::cycle::row::resolve_edge_target`
+/// reads it.
+///
+/// # Safety
+/// `entity` is a live entity of the GC heap category, so its block is a
+/// commissioned one of the pool or a large entity's own allocation.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) unsafe fn entity_is_in_a_block_of_this_thread(
+    entity: *const crate::refcount::RcHeader,
+) -> bool {
+    let block = HeapBlockHeader::of_ptr(entity as *mut u8);
+    let kind = unsafe { crate::memory::block_pool::load_block_kind(&raw const (*block).kind) };
+    kind == BLOCK_KIND_ENTITY && unsafe { block_is_owned_by_this_thread(block as *mut u8) }
+}
+
+/// Visit every live slot of the size-class entity blocks this thread's entity
+/// heap owns, with the stride of its block: the backup trace's index of what
+/// it walks (`crate::cycle::trace_backup`). The owned lists are read whole,
+/// adopted blocks among them; retained blocks and large entities stand on no
+/// such list and are not visited.
+///
+/// `visit` must neither allocate nor free: a free can return a block to the
+/// pool under the walk. A heapless thread visits nothing.
+///
+/// # Safety
+/// Called on the owning thread, which is the one writer of the lists and of
+/// every cursor read here.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) unsafe fn for_each_owned_entity_slot(
+    mut visit: impl FnMut(*mut crate::refcount::RcHeader, usize),
+) {
+    let heap = thread_entity_heap();
+    if heap.is_null() {
+        return;
+    }
+
+    for ci in 0..NUM_CLASSES {
+        let mut block = unsafe { (*heap).owned[ci] };
+        while !block.is_null() {
+            let (base, class_size, bump) = unsafe { entity_block_slot_bounds(block as *mut u8) };
+            for s in 0..bump {
+                let slot = unsafe { base.add(s * class_size) } as *mut crate::refcount::RcHeader;
+                if unsafe { crate::refcount::slot_state(slot) } == crate::refcount::SlotState::Live
+                {
+                    visit(slot, class_size);
+                }
+            }
+
+            block = unsafe { (*block).links.owned_next };
+        }
+    }
+}
+
+/// The bytes of the slots in use in this thread's entity blocks, adopted ones
+/// included: `Heap::bytes_in_owned_blocks` summed over the size classes, which
+/// is what the backup trace's threshold compares
+/// (`crate::cycle::trace_backup::threshold`). Zero on a heapless thread.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) fn entity_bytes_in_owned_blocks() -> usize {
+    let heap = thread_entity_heap();
+    if heap.is_null() {
+        return 0;
+    }
+
+    unsafe { &*heap }.bytes_in_owned_blocks.iter().sum()
+}
+
+/// The slot bytes the last backup trace on this thread left live
+/// (`Heap::left_live_after_a_trace`); zero on a heapless thread.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) fn entity_heap_left_live() -> usize {
+    let heap = thread_entity_heap();
+    if heap.is_null() {
+        return 0;
+    }
+
+    unsafe { (*heap).left_live_after_a_trace }
+}
+
+/// Record `bytes` as what this thread's backup trace left live; a heapless
+/// thread records nothing.
+#[cfg(feature = "trace-backup-rig")]
+pub(crate) fn set_entity_heap_left_live(bytes: usize) {
+    let heap = thread_entity_heap();
+    if !heap.is_null() {
+        unsafe { (*heap).left_live_after_a_trace = bytes };
+    }
 }
 
 /// The shadow-row pointer of a block, null when no collection holds rows

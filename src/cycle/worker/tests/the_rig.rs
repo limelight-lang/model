@@ -3889,6 +3889,20 @@ impl CellReading {
                 "frees_longest_application_us",
                 frees_counts()[11].to_string(),
             ),
+            // The backup trace's arm the same way, zeros without
+            // `trace-backup-rig` (`crate::cycle::trace_backup::counts`): the
+            // traces; their nanoseconds in all, in the fill and subtract, the
+            // mark, the harvest and split, and finalization with reclamation;
+            // the longest trace's; the entities walked and the members freed.
+            ("tb_traces", trace_backup_counts()[0].to_string()),
+            ("tb_trace_ns", trace_backup_counts()[1].to_string()),
+            ("tb_fill_subtract_ns", trace_backup_counts()[2].to_string()),
+            ("tb_mark_ns", trace_backup_counts()[3].to_string()),
+            ("tb_components_ns", trace_backup_counts()[4].to_string()),
+            ("tb_finalization_ns", trace_backup_counts()[5].to_string()),
+            ("tb_longest_trace_ns", trace_backup_counts()[6].to_string()),
+            ("tb_walked", trace_backup_counts()[7].to_string()),
+            ("tb_freed", trace_backup_counts()[8].to_string()),
             ("split_sets", split_counts()[0].to_string()),
             ("split_requeued", split_counts()[1].to_string()),
             (
@@ -4692,6 +4706,17 @@ fn offer_counts() -> [u64; 5] {
     }
     #[cfg(not(feature = "recycler-over-counts"))]
     [0; 5]
+}
+
+/// [`crate::cycle::trace_backup::counts`], over the whole process as the
+/// collector's own frees are read; zeros without the feature.
+fn trace_backup_counts() -> [u64; 9] {
+    #[cfg(feature = "trace-backup-rig")]
+    {
+        crate::cycle::trace_backup::counts()
+    }
+    #[cfg(not(feature = "trace-backup-rig"))]
+    [0; 9]
 }
 
 /// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,
