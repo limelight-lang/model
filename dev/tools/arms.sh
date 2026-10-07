@@ -17,8 +17,12 @@
 # each cell's requests beside OUT for dev/tools/paired_excess.py; a cell whose
 # line reads void is run again once after the last repeat, and a second void
 # is reported, not run again.
-# Build each arm with `cargo test --release --lib --no-run [--features …]` and
-# copy the binary into ARMS_DIR under the arm's name.
+# Build each arm as code bound for an executable is compiled, so that no arm
+# pays a TLS call frame the shipped code does not have
+# (`dev/design/the-general-algorithm.md`, "the Critic on P6"):
+# `RUSTFLAGS="-C relocation-model=pie" cargo test --release --lib --no-run
+# --target x86_64-unknown-linux-gnu [--features …]`, and copy the binary into
+# ARMS_DIR under the arm's name.
 set -u
 OUT=$1
 REPEATS=$2

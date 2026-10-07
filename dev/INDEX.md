@@ -436,8 +436,10 @@ interval around its timed collection alone. Build the test binary with
 own, one CSV line each. It reads the physical cores and their SMT siblings from
 `/sys/devices/system/cpu`; the probe pins each mutator itself and each
 collector through `worker::testing::pin_collectors_to`, which
-`begin_the_thread` reads. Build the test binary with
-`cargo test --release --lib --no-run` first.
+`begin_the_thread` reads. Build the test binary first as `dev/tools/arms.sh`
+says, position-independent for an executable (`-C relocation-model=pie`):
+built as a plain rlib, every thread-local read on a hot path pays a call
+frame the shipped code does not.
 
 `cycle::worker::tests::the_web_loads` — the web loads' request
 (`dev/design/the-web-loads.md`): the seeded draws by purpose, the plan of one

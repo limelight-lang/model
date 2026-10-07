@@ -826,3 +826,50 @@ fallback form). The linked `ll_retain` of the feature build has no push;
 callgrind self cost of `ll_retain` and `ll_release` in B falls from 26 and
 36, the target being A's 13 and 22 plus the tag's 3. On `web-heap`, three
 repeats: mutator CPU not above the 48.7–49.2 s of 2026-10-06.
+
+### Wave 3: the Critic on P6, and what the build showed (2026-10-07)
+
+The Critic (opus) read the draft against the code, running nothing. Seven
+findings; the sixth decides the rest.
+1. The gate measured self cost, so moving `register_candidate` out of line
+   would lower `ll_release`'s figure by construction.
+2. Miri runs the x86_64 Linux target and cannot execute inline `asm!`.
+3. "x86_64 ELF" also reads as macOS or Android, where `@GOTTPOFF` fails.
+4. False claim: one initial-exec relocation marks the whole module for
+   static TLS, so a library opened later needs all of the crate's TLS in
+   glibc's surplus, and musl refuses it outright.
+5. The write's asm options were left open; `nomem` on it would let the
+   compiler reuse a read across `set_window`.
+6. **The frame may not exist where the code ships.** The hot paths reach
+   compiled PHP code as the crate's bitcode merged into the program's IR
+   (`Cargo.toml`, `[lib]`; `README.md`, "LLVM IR export"), and the TLS
+   model is chosen when that is compiled, not when the rlib is.
+7. The thread-local inventory test scans `thread_local!` alone and would
+   not see a `.tbss` symbol.
+
+**Checked, on 2026-10-07.** The IR declares the window
+`thread_local global` with no model. Compiled with
+`-C relocation-model=pie`, as code bound for an executable is, `ll_retain`
+reads it with `movq …@GOTTPOFF(%rip); movzbl %fs:(…)` and pushes nothing,
+and `ll_release` keeps one `push %rax`, as A's does. The test binary built
+that way (`RUSTFLAGS="-C relocation-model=pie"` with an explicit
+`--target`, so build scripts and proc macros keep their own) links the
+read to `movzbl %fs:imm`. Callgrind, instructions per call, by the
+difference between 1M and 2M pairs on one entity in R:
+
+| | rlib as built today, A / B | built as for an executable, A / B |
+|---|---|---|
+| `ll_retain` | 13 / 26 | 13 / 18 |
+| `ll_release` | 22 / 36 | 22 / 25 |
+
+**Revised P6: no change to the runtime.** The frame came from building
+the rlib position-independent for a shared library it never goes into; the
+tag's price where the code ships is 5 instructions on a +1 and 3 on a −1.
+The asm byte, its cfg, the Miri gap and the dlopen question fall away
+with it (findings 2–5, 7). What changes is the rig: its arms are built as
+code for an executable is, so B is not charged a frame the shipped code
+does not have (`dev/tools/arms.sh`, its build line). Every A-against-B
+figure measured before carries that frame on B's side: B's mutator CPU on
+`web-heap` (48.7–49.2 s against A's 71–72 s) is a bound from above. The
+heap's `THREAD_HEAP` comment holds for the shipped build and now for the
+rig's too. Windows stays open until the crate builds there.
