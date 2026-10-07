@@ -1022,3 +1022,29 @@ in three places, and not worth the full build before a one-constant probe.
 
 Taken whole (settled by Claude on the Sage's advice, open to Edmond's
 overturning): the probe runs first, as a diagnostic arm not pushed.
+
+## Wave 3: the offer at the bound (Claude's proposal, awaiting Edmond, 2026-10-07)
+
+**What the probes showed** (`dev/BENCHMARKS.md`, the three entries of
+2026-10-07 on the bound and the offer). A bound of 2,048 with the offer at
+64 moves the roots a batch and nothing else: the offers still come at 64.
+Offering when R reaches the bound pays, as PHP's buffer does, on every load
+but one, and a short standing interval bounds the wait it costs a slow
+trickle.
+
+**The proposal** (a change to §5f's accepted offer rule, Edmond's to
+take): at its poll, with the gate open and the token `FREE`, the mutator
+offers when R reaches `BATCH_BOUND` (1,024), or R has stood under it for
+50 ms, or a lane merged into it. In place of: R reaches 64, or stands 4 s.
+Unchanged: the window, the take, the split, K's adaptation (a first batch
+then starts at the bound, not at 64), the withdrawal at a mark.
+
+**What it would change in the code.** `SOFT_THRESHOLD` for offers becomes
+the bound, separated from `INITIAL_BATCH` (the rounds' threshold and the
+first K); `STANDING_INTERVAL` for the offer becomes 50 ms, measured on the
+mutator's own clock if the round clock is too coarse at that scale; the
+tests pinning 64 and 4 s at the offer move with it.
+
+**Gate, if taken.** Both builds green; `web-heap` and the six loads by the
+probes' cells, three repeats: collector CPU and mean garbage on `web-heap`
+not above the probe's S50, time to free on `garbage-25` under 100 ms.
