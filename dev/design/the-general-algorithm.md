@@ -1343,3 +1343,59 @@ For the build's design, to go to the Critic: the side count in header bytes
 root, which only keeps it), in place of the 64 MB hash table, since T writes
 neither the window tag nor the maturation stamp; the Critic's findings 1–4 and
 6 as the build's scope.
+
+## The backup trace: the build (Claude's draft, 2026-10-07)
+
+**Selection.** Cargo feature `trace-backup`; with `recycler-over-counts` a
+`compile_error!`. Its code in `src/cycle/trace_backup/` (`mod.rs`, `trigger.rs`,
+`census.rs`, `mark.rs`, `sweep.rs`, `tests/`).
+
+**The header under T.** Bytes 6–7, the maturation stamp and the window tag in
+the other builds, are T's: during a trace, the side count, a `u16`
+saturating at `u16::MAX` (an entity whose count or side count reaches it is a
+root, which keeps it and anything it reaches: sound, and only conservative);
+bit 15 of the pair is the mark once the census is done. Outside a trace both
+bytes are 0. The mutator never writes them (`flags_store` writes bits 0–15),
+and a trace runs on the owner's thread only, so no other writer exists.
+
+**The mutator.** `release_word` under T sets no candidate bit and registers
+nothing; nothing else in +1/−1 changes.
+
+**What T walks: the thread's index.** Per thread: its owned entity blocks
+(the private `owned` lists, read through a new `Heap` walk), its large
+entities (a per-thread list kept at their allocation and free), and its
+retained former-arena blocks (a per-thread list kept at promotion). Only
+slots that are live, of the GC-heap category, and not acyclic by
+`ACYCLIC_GATE` or kind take part; every other slot's references into the
+walked set are counted references from outside, so they pin: conservative.
+
+**The trigger.** A per-thread counter of bytes held, at block grain: entity
+blocks drawn or adopted, large entities, retained blocks, and buffer-arena
+bytes; a trace when it passes twice what the last trace left, 4 MB floor;
+checked at the poll with the gate open.
+
+**The trace**, all on the owner at that poll:
+1. Fill: each walked entity's side count from its count (saturated).
+2. Subtract: each edge between walked entities, one from the target's side
+   count (`cells::trace_cells`).
+3. Mark from every walked entity whose side count stays above 0.
+4. The unmarked are garbage: their destructors by the existing finalization
+   path, re-marking from anything a destructor resurrects and keeping only
+   that; then reclamation, weak cells cleared there.
+5. Clear bytes 6–7 of every walked survivor.
+
+**Seams outside the module.** `release_word` (no registration); the poll
+(the trigger); `gc_collect_cycles()` (a trace at once); thread exit (a trace
+before the heap is abandoned, so adopted leftovers never reach another
+thread's trace); allocation under pressure (a trace, its scratch nil since
+the counts live in the headers). The off-thread worker, the token and the
+lanes are not started under T.
+
+**Tests.** T's own suite under `--features trace-backup`, the suites of the
+other builds unchanged; a check that T's verdict equals A's trial deletion
+over every entity as a candidate on the same heap.
+
+**Measured against B (main) and A**: `web-heap`, the six deciding loads, the
+400k-ring probe, a large live heap with rare cycles, a long live list;
+trigger ratios 1.5, 2 and 4; mutator CPU, trace CPU, the longest owner pause,
+mean and peak garbage.
