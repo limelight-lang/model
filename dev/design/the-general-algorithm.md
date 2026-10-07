@@ -1156,3 +1156,71 @@ still stored before the count's release store. `ll_retain` folds into
 `incl (%rdi)`; callgrind, instructions a call (1M against 2M pairs, built
 for an executable): `ll_retain` 18 → 16 (A 13), `ll_release` 25 → 25 (A
 22; the release needs the new count, so it cannot fold).
+
+## A third collector: the backup trace (Claude's draft, 2026-10-07)
+
+**Asked.** Edmond, 2026-10-07: evaluate a hybrid of counting and tracing,
+then build the experiment «отдельным модулем, чтобы можно выбрать тип GC»
+(decision card: «Строить»). Background: the research note
+`/mnt/project-files/research/rc-tracing-hybrids-2026-10-07.md` and
+`dev/RESEARCH.md`, "The minimal experiment it proposes". The figures it rests
+on are estimates: trial deletion 1.69 times the cost of a backup trace
+(Frampton); 0.03–0.14 of a core on `web-heap-150k` against about 0.4; an owner
+pause of 25–70 ms a trace.
+
+**The proposal.** A cargo feature `trace-backup`, exclusive with
+`recycler-over-counts` (a `compile_error!` on both), selecting a third cycle
+collector, T, beside A (trial deletion on the mutator) and B (windows and an
+off-thread collector). Its code is one module, `src/cycle/trace_backup/`;
+outside it, only `cfg` seams at the registration and at the poll.
+
+- **The mutator.** Counts stay immediate: +1 and −1 as A's, COW and
+  `__destruct` timing untouched. The −1 that leaves a count above zero
+  registers nothing: under `trace-backup` `release_word` skips the candidate
+  bit and `register_candidate` (`src/refcount.rs`, the call after the
+  `may_become_a_candidate` test). No window tags, no R.
+- **The trigger.** At the owner's poll with the gate open (every reference
+  the thread holds is counted, §4.7): the bytes of this thread's entity
+  blocks have grown past twice what the last trace left live, with a 4 MB
+  floor. The counter is per thread and kept at block grain (a block drawn or
+  adopted adds its size, a block returned subtracts it), so the allocation
+  fast path is not touched; today's `bytes_in_owned_blocks` is test-only and
+  per slot.
+- **The trace, at the poll, on the owner's thread.**
+  1. Census: every live slot of the thread's owned entity blocks that cycle
+     collection tracks (GC heap category, not acyclic by `ACYCLIC_GATE` or
+     kind) gets a side count equal to its count (scratch from
+     `TraceScratchArena`, keyed by slot).
+  2. Subtract: for each such entity, each edge to another tracked entity of
+     this thread's heap subtracts 1 from the target's side count
+     (`cells::trace_cells`, the edge walker the trial deletion uses).
+  3. Mark: entities whose side count stays above 0 are referenced from
+     outside the heap (the stack, globals, another thread, the arena); mark
+     everything reachable from them.
+  4. The unmarked are garbage at this poll: the destructor phase as the
+     existing path runs it (`finalization`: begin, the destructors,
+     revalidate for resurrection), then `reclamation`, weak cells cleared
+     there.
+- **What is reused, what is new.** Reused: the edge walker, the scratch
+  arena, finalization and reclamation, the heap's slot states. New: the
+  per-thread walk over owned entity blocks (only a process-wide
+  `for_each_entity_slot` exists, for a quiescent mutator), the side counts,
+  the mark, the trigger.
+- **A check in tests.** On the same heap, T's verdict equals A's trial
+  deletion run over every entity as a candidate.
+
+**What it is to answer**, measured against A and B (main) on `web-heap`, the
+six deciding loads, the 400k-ring probe, and two loads where tracing should
+lose (a large live heap with rare cycles; a long live list): mutator CPU,
+trace CPU, the longest owner pause, mean and peak garbage held. The 5 ms
+owner-pause gate of B is not expected to hold: a stop-the-owner trace grows
+with the live heap. If T wins on CPU, the pause is the next design question
+(a concurrent mark, which needs a mutation detector again); that is not part
+of this experiment.
+
+**Open for the Critic.** Whether the census is sound at the poll (no
+ARC-elided borrow is an entity's sole reference there; references from other
+threads or from adopted blocks); entities in owned blocks but of another
+category; what else reads the candidate bit or R (weak tables, pressure
+collections, teardown) and breaks with registration off; whether the 4 MB /
+twice trigger can starve a thread that frees little.
