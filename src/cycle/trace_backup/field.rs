@@ -77,6 +77,22 @@ pub(crate) unsafe fn walked_here(child: *mut RcHeader) -> bool {
     read & WALKED != 0
 }
 
+/// Whether the census walks the edge target `child`: a GC-heap entity a ring
+/// can pass through, in a block this thread owns, which is what the owned
+/// lists hold. The gate is read first, from the child's own header, because
+/// only a GC-heap entity stands in a block whose header the ownership test may
+/// read.
+///
+/// # Safety
+/// `child` is null or a live entity header, read on the owning thread of the
+/// trace.
+#[inline]
+pub(crate) unsafe fn walkable_here(child: *mut RcHeader) -> bool {
+    !child.is_null()
+        && unsafe { mutator_flags(child) } & RING_GATE_MASK == 0
+        && unsafe { entity_is_in_a_block_of_this_thread(child) }
+}
+
 /// Subtract one counted edge from `child`'s side count, a saturated count
 /// standing.
 ///

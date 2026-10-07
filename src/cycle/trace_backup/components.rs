@@ -111,7 +111,8 @@ fn union(parent: &mut [u32], a: u32, b: u32) {
 ///
 /// # Safety
 /// Every member is a garbage entity of this thread's trace, named once, each
-/// range a component closed under its in-edges; the call runs on the owning
+/// range a component closed under its in-edges but for the references the
+/// sweep's drops hold; the call runs on the owning
 /// thread, its collecting word raised, and `arena` is this thread's.
 pub(crate) unsafe fn finalize_and_reclaim(
     members: &[*mut RcHeader],
@@ -124,10 +125,13 @@ pub(crate) unsafe fn finalize_and_reclaim(
         .iter()
         .map(|range| {
             let result = unsafe { finalization.confirm(&membership(range), None, 0) };
-            debug_assert_eq!(
+            // A component the swept part holds an edge into reads as
+            // externally referenced until the sweep's drain lets go of it
+            // (`super::sweep`); every other one is closed under its in-edges.
+            debug_assert_ne!(
                 result,
-                ValidationResult::Unreachable,
-                "a component the mark left is closed under its in-edges"
+                ValidationResult::ZeroCountMember,
+                "no member of the finalized part reads zero"
             );
             result == ValidationResult::Unreachable
         })

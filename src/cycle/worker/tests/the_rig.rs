@@ -3903,6 +3903,8 @@ impl CellReading {
             ("tb_longest_trace_ns", trace_backup_counts()[6].to_string()),
             ("tb_walked", trace_backup_counts()[7].to_string()),
             ("tb_freed", trace_backup_counts()[8].to_string()),
+            ("tb_sweep_ns", trace_backup_counts()[9].to_string()),
+            ("tb_swept", trace_backup_counts()[10].to_string()),
             ("split_sets", split_counts()[0].to_string()),
             ("split_requeued", split_counts()[1].to_string()),
             (
@@ -4710,13 +4712,13 @@ fn offer_counts() -> [u64; 5] {
 
 /// [`crate::cycle::trace_backup::counts`], over the whole process as the
 /// collector's own frees are read; zeros without the feature.
-fn trace_backup_counts() -> [u64; 9] {
+fn trace_backup_counts() -> [u64; 11] {
     #[cfg(feature = "trace-backup-rig")]
     {
         crate::cycle::trace_backup::counts()
     }
     #[cfg(not(feature = "trace-backup-rig"))]
-    [0; 9]
+    [0; 11]
 }
 
 /// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,

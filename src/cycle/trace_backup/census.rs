@@ -1,5 +1,6 @@
-//! The passes over the thread's owned entity blocks: the fill, the subtract,
-//! the mark, the harvest of the garbage, and the clear
+//! The passes over the thread's owned entity blocks: the census (the fill
+//! and the subtract in one walk), the mark, and the harvest of the garbage,
+//! which clears the live
 //! (`dev/design/the-general-algorithm.md`, "The backup trace: the build",
 //! "The trace", steps 1-3 and 5).
 //!
@@ -69,13 +70,17 @@ unsafe fn for_each_child(entity: *mut RcHeader, mut visit: impl FnMut(*mut RcHea
     unsafe { trace_cells::<PlainCells>(entity, kind, |cell| visit(cell.child)) };
 }
 
-/// Step 1: give every live entity a ring can pass through its side count, the
-/// walked bit beside it, and answer how many it walked. An entity the gate
-/// refuses keeps its field as it stands, which is zero outside a trace.
+/// Steps 1 and 2 in one walk: every live entity a ring can pass through takes
+/// its count as a side count, the walked bit beside it, and every edge from a
+/// walked entity to a walked entity of this thread takes one off the target's.
+/// An edge target the walk has not reached yet is filled where the edge meets
+/// it, which needs the field zero outside a trace ([`harvest`]). Answers how
+/// many entities it filled.
 ///
 /// # Safety
-/// On the owning thread, at a poll, its collecting word raised.
-pub(crate) unsafe fn fill() -> usize {
+/// On the owning thread, at a poll, its collecting word raised, every field
+/// zero.
+pub(crate) unsafe fn census() -> usize {
     let mut walked = 0;
     unsafe {
         for_each_owned_entity_slot(|entity, _| {
@@ -83,32 +88,26 @@ pub(crate) unsafe fn fill() -> usize {
                 return;
             }
 
-            trace_field_store(entity, field::filled(header_refcount(entity)));
-            walked += 1;
-        })
-    };
-    walked
-}
-
-/// Step 2: for every edge from a walked entity to a walked entity of this
-/// thread, one off the target's side count.
-///
-/// # Safety
-/// As [`fill`], which ran.
-pub(crate) unsafe fn subtract() {
-    unsafe {
-        for_each_owned_entity_slot(|entity, _| {
             if trace_field_load(entity) & WALKED == 0 {
-                return;
+                trace_field_store(entity, field::filled(header_refcount(entity)));
+                walked += 1;
             }
 
             for_each_child(entity, |child| {
-                if field::walked_here(child) {
-                    field::subtract_one(child);
+                if !field::walkable_here(child) {
+                    return;
                 }
+
+                if trace_field_load(child) & WALKED == 0 {
+                    trace_field_store(child, field::filled(header_refcount(child)));
+                    walked += 1;
+                }
+
+                field::subtract_one(child);
             });
         })
     };
+    walked
 }
 
 /// Step 3: mark every walked entity a root reaches, a root being a walked
@@ -121,7 +120,7 @@ pub(crate) unsafe fn subtract() {
 /// children of every marked entity again, until a round overflows no more.
 ///
 /// # Safety
-/// As [`fill`], [`subtract`] having run.
+/// As [`census`], which ran.
 pub(crate) unsafe fn mark() {
     let capacity = mark_stack_entries();
     let mut stack: Vec<*mut RcHeader> = Vec::with_capacity(capacity.min(1 << 16));
@@ -201,37 +200,30 @@ unsafe fn drain(stack: &mut Vec<*mut RcHeader>, capacity: usize, overflowed: &mu
 }
 
 /// The garbage: every walked entity the mark did not reach, in no order, and
-/// the bytes of the slots they stand in.
+/// the bytes of the slots they stand in. The same walk clears the field of
+/// every marked entity, so no pass after the trace clears the live; the
+/// garbage keeps the walked bit alone, its side count zero.
 ///
 /// # Safety
-/// As [`fill`], [`mark`] having run.
+/// As [`census`], [`mark`] having run.
 pub(crate) unsafe fn harvest() -> (Vec<*mut RcHeader>, usize) {
     let mut garbage = Vec::new();
     let mut bytes = 0;
     unsafe {
         for_each_owned_entity_slot(|entity, slot_bytes| {
-            if trace_field_load(entity) & (WALKED | MARKED) == WALKED {
+            let read = trace_field_load(entity);
+            if read & WALKED == 0 {
+                return;
+            }
+
+            if read & MARKED != 0 {
+                trace_field_store(entity, 0);
+            } else {
+                trace_field_store(entity, WALKED);
                 garbage.push(entity);
                 bytes += slot_bytes;
             }
         })
     };
     (garbage, bytes)
-}
-
-/// Step 5: zero the field of every walked entity standing, by a walk of the
-/// owned lists as they stand after the frees — not of a snapshot, so a block
-/// the frees gave back is not written. An entity born during the trace is
-/// never walked, and is passed over.
-///
-/// # Safety
-/// On the owning thread, its collecting word still raised.
-pub(crate) unsafe fn clear() {
-    unsafe {
-        for_each_owned_entity_slot(|entity, _| {
-            if trace_field_load(entity) & WALKED != 0 {
-                trace_field_store(entity, 0);
-            }
-        })
-    };
 }

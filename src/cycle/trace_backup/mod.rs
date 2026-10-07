@@ -19,21 +19,24 @@
 //!
 //! On the owner, at a poll whose gate is open, so every reference the thread
 //! holds is counted (`crate::cycle::collect::may_collect`). This thread's
-//! collecting word stands raised from the fill to the clear, which closes the
+//! collecting word stands raised from the census to the last drop, which closes the
 //! gate: a destructor's poll, allocation failure or explicit collection inside
 //! the trace collects nothing, and no trace nests (the Critic's finding 1).
 //!
-//! 1. Fill, subtract, mark and harvest ([`census`]): every live entity a ring
-//!    can pass through, of this thread's owned entity blocks, takes its count
-//!    as a side count in header bytes 6-7 ([`field`]); each edge from a walked
-//!    entity to a walked entity of this thread takes one off the target's;
-//!    whatever stays above zero is a root, and the mark reaches out from the
-//!    roots; the walked entities left unmarked are the garbage.
+//! 1. Census, mark and harvest ([`census`]): every live entity a ring can pass
+//!    through, of this thread's owned entity blocks, takes its count as a side
+//!    count in header bytes 6-7 ([`field`]), and each edge from a walked
+//!    entity to a walked entity of this thread takes one off the target's, in
+//!    one walk; whatever stays above zero is a root, and the mark reaches out
+//!    from the roots; the walked entities left unmarked are the garbage, and
+//!    the harvest clears the field of the rest.
 //! 2. The threshold's baseline is reset ([`threshold`]), before any user code
 //!    runs.
-//! 3. The garbage is split into connected components, and each is finalized
-//!    and reclaimed by the crate's own chain ([`components`]).
-//! 4. The field of every walked entity still standing is cleared ([`census`]).
+//! 3. The garbage no destructor and no weak cell reaches is severed and freed
+//!    directly ([`sweep`]).
+//! 4. The rest is split into connected components, and each is finalized and
+//!    reclaimed by the crate's own chain ([`components`]).
+//! 5. The children the sweep let go of are dropped.
 //!
 //! The verdict is trial deletion's with every entity a candidate: the same
 //! edges subtracted from the same counts, and what the subtraction leaves above
@@ -57,6 +60,7 @@ use crate::refcount::RcHeader;
 pub(crate) mod census;
 pub(crate) mod components;
 pub(crate) mod field;
+pub(crate) mod sweep;
 pub(crate) mod threshold;
 
 /// What one trace read and freed.
@@ -66,11 +70,14 @@ pub(crate) struct Trace {
     pub(crate) walked: usize,
     /// Walked entities the mark did not reach.
     pub(crate) garbage: usize,
-    /// Connected components the garbage split into.
+    /// Connected components the finalized part of the garbage split into.
     pub(crate) components: usize,
-    /// Members the reclamation freed: the garbage less every component a
-    /// destructor resurrected or whose teardown the arena refused.
+    /// Members freed, by the sweep and by the reclamation: the garbage less
+    /// every component a destructor resurrected or whose teardown the arena
+    /// refused.
     pub(crate) freed: usize,
+    /// Members the direct sweep freed, outside the finalization chain.
+    pub(crate) swept: usize,
 }
 
 /// The poll's seam: run a trace where this thread's bytes call for one, and
@@ -98,26 +105,34 @@ pub(crate) unsafe fn trace() -> Option<Trace> {
     let held = crate::memory::heap::entity_bytes_in_owned_blocks();
     let start = Instant::now();
 
-    let walked = unsafe { census::fill() };
-    unsafe { census::subtract() };
-    let subtracted = Instant::now();
+    let walked = unsafe { census::census() };
+    let censused = Instant::now();
     unsafe { census::mark() };
     let marked = Instant::now();
 
-    let (mut garbage, garbage_bytes) = unsafe { census::harvest() };
+    let (garbage, garbage_bytes) = unsafe { census::harvest() };
     threshold::reset_baseline(held.saturating_sub(garbage_bytes));
-    let components = unsafe { components::split(&mut garbage) };
+    let garbage_found = garbage.len();
+    let (swept, mut finalized) = unsafe { sweep::partition(garbage) };
+    let partitioned = Instant::now();
+
+    let drops = unsafe { sweep::sweep(&swept) };
+    unsafe { sweep::clear(&finalized) };
+    let swept_at = Instant::now();
+
+    let components = unsafe { components::split(&mut finalized) };
     let split = Instant::now();
 
-    let freed = if garbage.is_empty() {
+    let freed = if finalized.is_empty() {
         0
     } else {
         // The workspace is the thread's, drawn at its first collection and
         // held until it exits; refused, the garbage stands for the next trace.
         match TraceScratchArena::open() {
             Some(mut arena) => {
-                let freed =
-                    unsafe { components::finalize_and_reclaim(&garbage, &components, &mut arena) };
+                let freed = unsafe {
+                    components::finalize_and_reclaim(&finalized, &components, &mut arena)
+                };
                 arena.reset();
                 freed
             }
@@ -126,23 +141,26 @@ pub(crate) unsafe fn trace() -> Option<Trace> {
     };
     let reclaimed = Instant::now();
 
-    unsafe { census::clear() };
+    drops.drain();
     let end = Instant::now();
 
     note(Spent {
-        field: subtracted - start,
-        mark: marked - subtracted,
-        components: split - marked,
+        field: censused - start,
+        mark: marked - censused,
+        components: (partitioned - marked) + (split - swept_at),
         reclamation: reclaimed - split,
+        sweep: (swept_at - partitioned) + (end - reclaimed),
         total: end - start,
         walked,
-        freed,
+        freed: freed + swept.len(),
+        swept: swept.len(),
     });
     Some(Trace {
         walked,
-        garbage: garbage.len(),
+        garbage: garbage_found,
         components: components.len(),
-        freed,
+        freed: freed + swept.len(),
+        swept: swept.len(),
     })
 }
 
@@ -156,12 +174,11 @@ pub(crate) unsafe fn trace() -> Option<Trace> {
 pub(crate) unsafe fn verdict() -> Option<Vec<*mut RcHeader>> {
     let _collecting = CollectingWord::raise()?;
     unsafe {
-        census::fill();
-        census::subtract();
+        census::census();
         census::mark();
     }
     let (garbage, _) = unsafe { census::harvest() };
-    unsafe { census::clear() };
+    unsafe { sweep::clear(&garbage) };
     Some(garbage)
 }
 
@@ -195,17 +212,21 @@ impl Drop for CollectingWord {
 
 /// One trace's cost and yield, for the counters.
 struct Spent {
-    /// The fill and the subtract.
+    /// The census.
     field: std::time::Duration,
     mark: std::time::Duration,
-    /// The harvest and the split.
+    /// The harvest, the partition and the split.
     components: std::time::Duration,
     /// Finalization and reclamation, the destructors among them.
     reclamation: std::time::Duration,
-    /// The whole trace, the clear included, which no part above holds.
+    /// The direct sweep and the drops it held, the drops' destructors among
+    /// them.
+    sweep: std::time::Duration,
+    /// The whole trace.
     total: std::time::Duration,
     walked: usize,
     freed: usize,
+    swept: usize,
 }
 
 /// The process's counters, every thread's traces summed, in [`counts`]'s
@@ -213,7 +234,7 @@ struct Spent {
 static COUNTERS: [AtomicU64; COUNTS] = [const { AtomicU64::new(0) }; COUNTS];
 
 /// The figures [`counts`] answers.
-pub(crate) const COUNTS: usize = 9;
+pub(crate) const COUNTS: usize = 11;
 
 /// Where each figure stands in [`COUNTERS`] and in [`counts`]'s answer.
 const AT_TRACES: usize = 0;
@@ -225,6 +246,8 @@ const AT_RECLAMATION_NS: usize = 5;
 const AT_LONGEST_NS: usize = 6;
 const AT_WALKED: usize = 7;
 const AT_FREED: usize = 8;
+const AT_SWEEP_NS: usize = 9;
+const AT_SWEPT: usize = 10;
 
 fn note(spent: Spent) {
     let nanos = |duration: std::time::Duration| duration.as_nanos() as u64;
@@ -238,12 +261,15 @@ fn note(spent: Spent) {
     COUNTERS[AT_LONGEST_NS].fetch_max(nanos(spent.total), Ordering::Relaxed);
     add(AT_WALKED, spent.walked as u64);
     add(AT_FREED, spent.freed as u64);
+    add(AT_SWEEP_NS, nanos(spent.sweep));
+    add(AT_SWEPT, spent.swept as u64);
 }
 
 /// Every thread's traces since the process began: traces; nanoseconds in all,
-/// then in the fill and subtract, the mark, the harvest and split, and
-/// finalization with reclamation; the longest trace's nanoseconds; entities
-/// walked; members freed. The clear's time is the total less the four parts.
+/// then in the census, the mark, the harvest with the partition and the split,
+/// and finalization with reclamation; the longest trace's nanoseconds; entities
+/// walked; members freed; nanoseconds in the sweep with its drops; members the
+/// sweep freed. The five parts add up to the total.
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "read by the rig, which is a test build")

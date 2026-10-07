@@ -48,4 +48,5 @@ fn one_trace() -> Trace {
 mod the_verdict_against_trial_deletion;
 mod what_a_trace_keeps;
 mod what_one_trace_frees;
+mod what_the_sweep_frees;
 mod when_the_poll_traces;
