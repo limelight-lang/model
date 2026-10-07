@@ -8,6 +8,38 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-07 — the offer at 1,024 or after R has stood 50 ms: the collector's saving kept, a slow trickle freed in 83 ms rather than half a second
+
+**Builds.** The T1k arm of the entry below with the standing interval read
+from `LL_STANDING_MS` (the accepted interval is 4 s): **S50** and
+**S200**, the offer at R = 1,024 or once R has stood under it 50 or 200 ms.
+Not kept (a worktree); built for an executable. The six deciding loads at
+both placements, then `web-heap` by the protocol's cell; three repeats,
+against B in the same rotation, no cell void.
+
+| | B | S50 | S200 |
+|---|---|---|---|
+| `web-heap` collector CPU, s | 61.5–64.1 | 53.5–55.0 | 53.8–56.5 |
+| `web-heap` mutator CPU, s | 44.5–46.5 | 44.0–45.4 | 44.4–45.9 |
+| `web-heap` garbage mean, MB | 32.6–33.8 | 21.4–27.8 | 21.5–22.3 |
+| `web-heap` garbage peak, MB | 160–180 | 154–188 | 116–177 |
+| `live-churn` collector, s (spare / shared) | 0.79–0.81 / 0.69–0.79 | 0.54–0.62 / 0.54–0.55 | 0.53–0.61 / 0.54–0.59 |
+| `live-churn-dies-by-count` collector, s | 0.57–0.60 / 0.47–0.50 | 0.33–0.34 / 0.33–0.34 | 0.32–0.34 / 0.32–0.34 |
+| `garbage-25` time to free, ms | 22.5–22.9 | 83.2–84.1 | 197–199 |
+| `deferred-live-large` time to free, ms | 32.3–32.5 | 33.9–34.2 | 131–131 |
+| `deferred-then-dead` time to free, ms | 1,377–1,380 | 1,371–1,385 | 1,430–1,442 |
+
+`registered-ring-live`, and the collector on `garbage-25`,
+`deferred-live-large` and `deferred-then-dead` under S50, stay within B's
+spread; mutator CPU stays within it everywhere.
+
+**Reading.** The short interval bounds the wait the bound alone caused:
+under S50 a slow trickle waits 50 ms and its offer, 83 ms on `garbage-25`
+against T1k's 500, and the loads that fill R keep the offer at the bound
+and its saving (collector −13 % on `web-heap`, −25 to −43 % on the two
+churn loads, mean garbage a sixth to a third lower). The offer at 64 and
+the 4 s interval are accepted rules (§5f); the choice is Edmond's.
+
 ## 2026-10-07 — the offer at the bound: the collector a sixth to a half cheaper everywhere, `web-heap`'s garbage a third lower, but a slow trickle of garbage waits up to 46 times longer
 
 **Builds.** Diagnostic arms of B at `35bd45a`, not kept (worktrees), all
