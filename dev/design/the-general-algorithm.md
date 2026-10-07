@@ -918,35 +918,73 @@ build.
   first mark winds the trace down, the second cuts it.
 - K doubles from 64 to the bound by the batch's outcome (`worker.rs:2813`).
 
-**The change, in three steps, each measured before the next.**
-1. **P2a, the marks in bytes** (Q5, settled on the Sage's advice): one
-   count of the bytes withheld under a foreign holder, a death by its size
-   class, a block and a run by the blocks they span, a chunk by its bytes;
-   one mark M with the stop at 2M. M starts at 1 MiB, what `BLOCKS_MARK`
-   is today, and is measured with the batch sizes below (1, 4, 16 MiB).
-   The three marks' recall and stop semantics are unchanged.
-2. **P2b, 4,096 roots.** P holds it (8,135). The copy, 32 KiB, is under a
-   block and fits the bump; the quarter-of-the-bump assert becomes "the
-   copy fits one block", and the rows grow into the arena's next block
-   when they need to (`grow`, the path every large trace takes). The
-   second-chance bits stay in the record, sized by the bound: 512 bytes,
-   the record 768 bytes, 85 records a block; their `Default` written out.
-   Measure 1k against 4k on `web-heap` and the six loads: collector CPU,
-   refusals, held garbage, offer-to-take, the marks reached.
-3. **P2c, 16,384 roots**, built only if 4k beats 1k on the collector's
-   work per root without the held garbage leaving §9. P becomes two blocks
-   (16,270 verdicts), the peek spans up to three blocks of R, the copy
-   spans arena blocks (or the trace reads the roots from R in place, the
-   cheaper of the two, chosen when built), and the bits move out of the
-   record into the collector's workspace beside P (2 KiB a record otherwise,
-   28 records a block). Then 16k is measured as 4k was.
+**The change** (revised after the Critic, below).
+1. **The bound made general once**, then measured, rather than 4k built
+   and 16k left to a gate on it:
+   - the trace reads its roots from R in place, with a side bitmap of a
+     bit a root for what the copy's mark records today, so no copy grows
+     with the batch and the bump keeps its three row arrays;
+   - P can take a second block: the mutator draws it at its offer when the
+     ceiling exceeds P's room, never the collector, and links it from the
+     first; the disposition walks both;
+   - the second-chance bits live in P's block, beside the verdicts they
+     describe, not in the record (the collector's workspace is dropped
+     before the disposition reads them);
+   - `BATCH_BOUND` becomes a rig setting with the default 1,024 until the
+     measurements choose, the asserts restated per block.
+2. **The marks in bytes** (Q5, settled on the Sage's advice): one count of
+   bytes withheld under a foreign holder, a death by its size class, a
+   block and a run by the blocks they span, a chunk by its bytes, with an
+   item cap beside it so that the drain's walk stays bounded; M starts at
+   512 KiB, the deaths mark's bytes today, and is swept on its own
+   (256 KiB, 512 KiB, 1 MiB, 2 MiB) at the default bound, not scaled with
+   the batch.
+3. **Measured**: bounds 1k, 4k, 10k (PHP's buffer) and 16k, each with the
+   offer at 64 (the accepted rule) and at the bound (PHP's way, an arm),
+   on `web-heap` and the six loads: mutator CPU, windows a second,
+   collector CPU, refusals, held garbage, offer-to-take, marks reached,
+   and the poll's pause disposing of P (`disposal_longest_us`). The offer
+   threshold is an accepted rule; a change to it goes to Edmond with the
+   figures.
 
-**What does not change.** The offer at 64, the window, the split, every
-accepted rule. K's adaptation keeps its rule; only its ceiling moves.
+**What does not change.** The window, the split, every accepted rule; the
+offer stays at 64 in the build. K's adaptation keeps its rule; only its
+ceiling moves.
 
-**Gate of each step.** Both builds green; the tests pinning the sizes
-(`mutator_record/tests.rs`, `worker/tests/the_batch.rs`,
-`verdicts/tests.rs`) changed by the step that changes the size, with a
-case that a take of the new bound is posted whole. For P2a, a case per
-unit that its bytes reach the mark; `web-heap` and the six loads not worse
-than B at M = 1 MiB. Arms built as for an executable.
+**Gate.** Both builds green; the tests pinning the sizes changed with the
+step that changes them, with cases that a take of the bound is posted
+whole, that P's second block is drawn by the mutator and disposed of, and
+that a death, a block and a chunk each reach the byte mark; the rig's
+`DEFERRED_LARGE` scaled with the bound so that it stays past 64 batches,
+and `what_a_grown_k_costs` read against the byte mark. At the default
+bound and M = 512 KiB, `web-heap` and the six loads not worse than B.
+Arms built as for an executable.
+
+### Wave 3: the Critic on P2, and Claude's answers (2026-10-07)
+
+The Critic (opus) read the draft against the code, running nothing.
+1. **"With the offer at 64 the bound changes nothing."** Not on
+   `web-heap`: R at an offer averages 1,613–1,730 and reaches 9,154, and
+   38–41 % of offers find R at the bound (`dev/BENCHMARKS.md`, "S68.14's
+   measurements before code"), since R grows while the token is not free.
+   Taken in part: the offer at the bound is measured as an arm, as wave 2
+   planned.
+2. **1 MiB is not today's marks**: twice looser for 64-byte deaths, 256
+   times looser for 16-byte chunks, and a combined count fires on mixed
+   stacks where none does today. Taken: M starts at 512 KiB, an item cap
+   keeps the drain's walk bounded, and M is swept on its own.
+3. **Gating 16k on 4k's collector work per root** measures what P2 is not
+   about and assumes a monotone curve. Taken: the bound is made general
+   once and 1k, 4k, 10k and 16k measured on the mutator's side as well.
+4. **The marks decide whether a long batch survives**, so a step fixing M
+   before the bound measured M, not the batch. Taken: M swept at the
+   default bound first, then the bounds at the M chosen.
+5. **The poll's pause disposing of a 4k P** was not measured. Taken.
+6. **A 4k copy leaves the bump one row array**, and under pool pressure
+   the second's `grow` refuses and the whole batch is posted unwalked.
+   Taken: the roots are read in place.
+7. **Two readings in P2c**: the workspace is dropped before the
+   disposition, and P "never grows". Taken: the bits in P's block, the
+   second block drawn by the mutator at the offer.
+8. **Tests the gate missed**: `DEFERRED_LARGE` and
+   `what_a_grown_k_costs`. Taken.
