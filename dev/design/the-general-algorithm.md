@@ -1224,3 +1224,75 @@ threads or from adopted blocks); entities in owned blocks but of another
 category; what else reads the candidate bit or R (weak tables, pressure
 collections, teardown) and breaks with registration off; whether the 4 MB /
 twice trigger can starve a thread that frees little.
+
+### The Critic on the backup trace (2026-10-07)
+
+The Critic (opus) read the draft and the code, running nothing. Checked by
+Claude: `collect_before_exit` collects over R (`src/cycle/collect.rs:790`);
+retained blocks are on no table (`src/memory/retained.rs:18`); the 202 ms a
+whole walk of `web-heap-150k` is `dev/RESEARCH.md:1014`. The census rule holds
+on its own terms (counts and edges consistent at the poll, as A relies on);
+its coverage and its cost do not.
+1. **R empty breaks four paths, not two seams.** Thread exit, allocation
+   under pressure and `gc_collect_cycles()` all collect over R: a two-member
+   ring with destructors never reaches the 4 MB floor, and at exit its
+   destructors never run; under pressure the caller gets memory exhausted
+   with garbage on the heap.
+2. **The census misses retained former-arena blocks and large entities**
+   (on no per-thread list): a ring through a promoted arena object pins its
+   heap member for good, which A frees. Adopted blocks hold an exited
+   thread's leftovers; freeing them on the adopter runs their destructors on
+   the wrong thread and meets a thread-local weak table.
+3. **The trigger is ambiguous, and both readings break**: by live slot bytes,
+   fragmentation keeps it true and a whole-heap trace runs at every poll; by
+   block bytes, array storage in the buffer arena is not counted, so hundreds
+   of MB of it can pile up under the 4 MB floor.
+4. **Not one module with two seams**: a block-grain counter at every block
+   draw, adoption, return and abandonment; a walk over the private `owned`
+   lists; a `Membership` for finalization whose driver state is private to
+   `collect.rs`; the worker, token and lanes left running idle; much of the
+   test suite assumes registration.
+5. **The comparison cannot decide the question as framed.** The 1.69 times
+   (Frampton) compares trial deletion with a trace from real roots. T's
+   CPython rule subtracts every edge of every tracked object, then marks: in
+   kind a trial deletion over the whole heap; only the roots and the
+   frequency change. T reuses A's rows, about 202 ms a walk on
+   `web-heap-150k`, so expect about 200–400 ms a trace, not 25–70 ms (that
+   figure assumes an 8 ns mark on a header bit). At 2 times, held garbage is
+   about the live heap by construction; a sweep of ratios is needed, and the
+   price of registration alone, which the research named, was dropped.
+6. **Resurrection holds the whole unmarked set**: finalization validates it
+   as one union; one pooled object whose destructor stores `$this` keeps every
+   trace from freeing anything until the next doubling.
+
+### Claude's answer to the Critic (2026-10-07)
+
+Finding 5 falsifies the draft's premise: the estimate it was built on
+(0.03–0.14 of a core, 25–70 ms) assumed a mark from real roots on a header
+bit, and the draft is neither. Brought to Edmond with the repairs; the choice
+is his.
+
+Repairs, each answering a finding:
+- **Real roots, not the census** (5): a mark from roots the thread holds.
+  Without stack maps, either a conservative scan of the owner's stack with an
+  "is this an allocated entity start" lookup (entity blocks are aligned and
+  carry slot bounds), or a trace only at a request boundary, where the stack
+  is empty and the roots are globals and Rust-side holders. Both untested.
+- **A mark byte, not rows** (5): under `trace-backup` byte 7, the window tag,
+  is unused; the mark is a byte store per visit, the sweep a walk of slot
+  states.
+- **A per-thread index of everything it sweeps** (2): owned blocks, retained
+  blocks and large entities of this thread; adopted leftovers swept only by a
+  trace their own thread ran at its exit.
+- **Seams at exit, at `gc_collect_cycles()` and under pressure** (1), the
+  pressure path bounded by the critical reserve; the idle worker not started
+  (4); a test suite of its own for T (4).
+- **The trigger by block bytes plus buffer-arena and large bytes** (3), with a
+  sweep of ratios (1.25, 1.5, 2, 4) compared at equal garbage held (5).
+- **Re-mark from the resurrected, free the rest** (6).
+
+Before any of it, two measurements that cost no new collector: the price of
+registration alone (A with registration off and the collector off, mutator
+CPU on `web-heap`), and the cost of one mark visit over the existing rows
+against a header byte, on `web-heap-150k`. If registration is cheap and the
+visit is not several times cheaper, T has nothing to win.
