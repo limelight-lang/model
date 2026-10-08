@@ -175,6 +175,7 @@
 
 use std::marker::PhantomData;
 
+use crate::cycle::arena::EdgesRead;
 use crate::cycle::membership::Membership;
 #[cfg(doc)]
 use crate::cycle::validation::validate_component;
@@ -182,7 +183,7 @@ use crate::cycle::validation::{ValidationResult, validate_component_holding};
 use crate::object::{Object, ll_entity_die, run_user_destructor};
 use crate::refcount::{
     MATURATION_AGE_MAX, MaturationStamp, carries_a_class_word, ll_release, mutator_flags,
-    mutator_guard_retain, read_maturation_stamp, write_maturation_stamp,
+    mutator_guard_retain, mutator_unguard_release, read_maturation_stamp, write_maturation_stamp,
 };
 use crate::weak;
 
@@ -263,7 +264,8 @@ impl Finalization {
     /// [`release_guards`] over a component the revalidation reads as
     /// externally referenced. An unwind out of this call reaches neither and
     /// strands the guards it has already written. Two debug assertions stand inside it: the exact
-    /// validation's own, which raise before the first guard, and
+    /// validation's own, which raise before the first guard on the walk and
+    /// after the last where the counts' sum confirms, and
     /// `weak::notify_death`'s, on a member whose gate bit stands with no table
     /// row, which raises after all of them.
     ///
@@ -273,28 +275,79 @@ impl Finalization {
     /// owning thread with no mutator beside it. The invalidation reads the
     /// same headers under the same rule. With `internal_edges`, no count and no
     /// counted cell of a member changed since the trace that read them
-    /// (`counts_sum_to`).
+    /// (`counts_sum_to`): the guards add the counts up, and a sum that differs
+    /// takes them back by the narrow release, which queues nothing. Edges the
+    /// collector recorded for a set it proved by its tags are not summed in a
+    /// release build: the window's proof stands for the sum.
     pub(crate) unsafe fn confirm(
         &mut self,
         members: &Membership<'_>,
-        internal_edges: Option<usize>,
+        internal_edges: Option<EdgesRead>,
         held_from_outside: usize,
     ) -> ValidationResult {
         self.held_from_outside = held_from_outside as u64;
         let held = self.held_from_outside;
-        let result = match internal_edges {
-            Some(edges) if unsafe { counts_sum_to(members, edges) } => {
-                #[cfg(test)]
-                CONFIRMED_BY_THE_SUM.with(|count| count.set(count.get() + 1));
-                debug_assert_eq!(
-                    unsafe { validate_component_holding(members, 0, held) },
-                    ValidationResult::Unreachable,
-                    "the counts that sum to the internal edges validate"
-                );
-                ValidationResult::Unreachable
+        match internal_edges {
+            // A set the collector proved by its tags is garbage by the
+            // window's proof (`crate::cycle::delta_test`): nothing after the
+            // frame can name a member, so the commit guards it unread, and
+            // only a debug build checks the counts and walks it (Edmond,
+            // 2026-10-08; `dev/design/the-general-algorithm.md`, "Wave 3:
+            // P10").
+            #[cfg(feature = "gc-window")]
+            Some(EdgesRead::Recorded(edges)) => {
+                #[cfg(debug_assertions)]
+                let mut sum = 0usize;
+                unsafe {
+                    members.for_each(|member| {
+                        let _read = mutator_guard_retain(member);
+                        #[cfg(debug_assertions)]
+                        {
+                            sum += _read as usize;
+                        }
+                    })
+                };
+                #[cfg(debug_assertions)]
+                {
+                    assert_eq!(sum, edges, "a set proved by its tags sums to its edges");
+                    assert_eq!(
+                        unsafe { validate_component_holding(members, 1, held) },
+                        ValidationResult::Unreachable,
+                        "a set proved by its tags validates"
+                    );
+                }
+                #[cfg(not(debug_assertions))]
+                let _ = edges;
+                return unsafe { self.hold_the_guarded(members) };
             }
-            _ => unsafe { validate_component_holding(members, 0, held) },
-        };
+            // The sum rides on the guards: each guard reads the count it
+            // raises, so the counts' sum takes no walk of its own, and a sum
+            // that differs takes its guards back before the exact validation
+            // answers.
+            Some(EdgesRead::Drained(edges)) => {
+                let mut sum = 0usize;
+                unsafe { members.for_each(|member| sum += mutator_guard_retain(member) as usize) };
+                if sum == edges {
+                    #[cfg(test)]
+                    CONFIRMED_BY_THE_SUM.with(|count| count.set(count.get() + 1));
+                    debug_assert_eq!(
+                        unsafe { validate_component_holding(members, 1, held) },
+                        ValidationResult::Unreachable,
+                        "the counts that sum to the internal edges validate"
+                    );
+                    return unsafe { self.hold_the_guarded(members) };
+                }
+
+                unsafe {
+                    members.for_each(|member| {
+                        mutator_unguard_release(member);
+                    })
+                };
+            }
+            None => {}
+        }
+
+        let result = unsafe { validate_component_holding(members, 0, held) };
         if result != ValidationResult::Unreachable {
             if result == ValidationResult::ExternallyReferenced {
                 unsafe { stamp_component(members, self.epoch) };
@@ -303,19 +356,24 @@ impl Finalization {
             return result;
         }
 
-        unsafe {
-            members.for_each(|member| {
-                mutator_guard_retain(member);
-                self.members += 1;
-            })
-        };
+        unsafe { members.for_each(|member| _ = mutator_guard_retain(member)) };
+        unsafe { self.hold_the_guarded(members) }
+    }
 
+    /// Take `members`, each carrying its guard, into this finalization and
+    /// null every weak cell naming one: the confirmed component's
+    /// [`ValidationResult::Unreachable`].
+    ///
+    /// # Safety
+    /// As [`Finalization::confirm`], every member guarded once.
+    unsafe fn hold_the_guarded(&mut self, members: &Membership<'_>) -> ValidationResult {
+        self.members += members.len();
         // A second walk rather than one loop, which is step 3's own shape: the
         // guards of the whole component stand before the first cell naming any
         // of its members is nulled (`rfc/model/gc/rc-cycle.md`, "Cycle
         // finalization and reclamation", steps 2 and 3).
         unsafe { members.for_each(|member| weak::notify_member(member)) };
-        result
+        ValidationResult::Unreachable
     }
 
     /// The epoch every stamp of this commit carries, which the live

@@ -127,6 +127,19 @@ use crate::memory::block_pool::{BLOCK_PAYLOAD, BLOCK_SIZE, BlockHeader};
 use crate::memory::{gc_metadata, os};
 use crate::refcount::RcHeader;
 
+/// The internal edges of a set a collection read, by who counted them: the
+/// commit treats the two apart (`crate::cycle::finalization::Finalization::confirm`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum EdgesRead {
+    /// Counted by this thread's own drain over the set, which found it
+    /// garbage whole.
+    Drained(usize),
+    /// Recorded by the collector that proved the set by its tags
+    /// (`crate::cycle::delta_test`).
+    #[cfg(feature = "gc-window")]
+    Recorded(usize),
+}
+
 /// What one meeting of an entity answers: its row, or the two reasons
 /// there is none.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -544,11 +557,11 @@ pub(crate) struct TraceScratchArena {
     /// in one pass (`crate::cycle::reclamation::the_owner_may_free_whole`).
     expanded_freeable: bool,
     /// The internal edges a trace within a set read off its drain where it
-    /// found the set garbage whole, for the commit to check the members'
-    /// counts against in place of the exact validation
-    /// (`crate::cycle::finalization::Finalization::confirm`); `None` where no
-    /// such trace ran.
-    internal_edges_read: Option<usize>,
+    /// found the set garbage whole, or the collector's record for a set it
+    /// proved by its tags, for the commit to read in place of the exact
+    /// validation (`crate::cycle::finalization::Finalization::confirm`);
+    /// `None` where no such trace ran.
+    internal_edges_read: Option<EdgesRead>,
     /// The references held from outside a set proved by its tags
     /// (`take_the_references_held_from_outside`).
     held_from_outside_read: usize,
@@ -1433,6 +1446,14 @@ impl TraceScratchArena {
         self.final_drain_at = (self.positions_inspected(), self.rows_met);
     }
 
+    /// Rows this arena's traces met for the first time since the open: a
+    /// set proved by its tags whose batch roots meet one more stands with a
+    /// root outside it (`crate::cycle::trace::trace_within_the_set`).
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn rows_met(&self) -> usize {
+        self.rows_met
+    }
+
     /// The positions read and the rows met since the final drain began: what
     /// the walk of the live core cost, read at the mark's end, which prices
     /// the stamps the batch writes on it (`crate::cycle::epoch`, "The turn").
@@ -1910,12 +1931,12 @@ impl TraceScratchArena {
     /// the drain subtracted from no row.
     /// Take `edges`, the edges the collector recorded between the members of
     /// a set it proved by its tags, as the internal edges this collection
-    /// read, for the commit's sum to confirm against
+    /// read, which the commit trusts and a debug build checks
     /// (`crate::cycle::finalization`); the external children stay unread, for
     /// the teardown's own walk to count.
     #[cfg(feature = "gc-window")]
     pub(crate) fn take_the_internal_edges_the_collector_recorded(&mut self, edges: usize) {
-        self.internal_edges_read = Some(edges);
+        self.internal_edges_read = Some(EdgesRead::Recorded(edges));
         self.external_children_read = None;
     }
 
@@ -1936,11 +1957,11 @@ impl TraceScratchArena {
 
     pub(crate) fn keep_the_cells_left_out_as_external_children(&mut self) {
         self.external_children_read = Some(self.cells_left_out);
-        self.internal_edges_read = Some(self.cells_subtracted);
+        self.internal_edges_read = Some(EdgesRead::Drained(self.cells_subtracted));
     }
 
     /// The internal edges a trace kept, which it forgets.
-    pub(crate) fn take_internal_edges_read(&mut self) -> Option<usize> {
+    pub(crate) fn take_internal_edges_read(&mut self) -> Option<EdgesRead> {
         self.internal_edges_read.take()
     }
 
@@ -1955,7 +1976,9 @@ impl TraceScratchArena {
     /// external children no drain counted.
     pub(crate) fn garbage_whole_reading(&self) -> Option<(usize, usize)> {
         match (self.internal_edges_read, self.external_children_read) {
-            (Some(edges), Some(children)) if self.held_from_outside_read == 0 => {
+            (Some(EdgesRead::Drained(edges)), Some(children))
+                if self.held_from_outside_read == 0 =>
+            {
                 Some((edges, children))
             }
             _ => None,

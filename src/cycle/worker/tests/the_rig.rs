@@ -76,6 +76,11 @@
 //! - `LL_RIG_STANDINGS` — set to 1, the tokens' byte states are timed
 //!   (`worker::testing::record_standings`), whose table's lock the handshake
 //!   then takes on both sides; the standing figures read zero when unset;
+//! - `LL_RIG_ROOT_AGES` — set to 1, the feature build times each
+//!   registration (`worker::testing::wave_three::record_root_ages`), a lock
+//!   on the mutator's own map a registration, and buckets the batches by
+//!   their oldest root's age and the roots by their own; the columns read
+//!   empty when unset;
 //! - `LL_RIG_DRAIN_MS` — how long, in milliseconds, each mutator polls with
 //!   no registration after its loop, the drain; no drain when unset;
 //! - `LL_RIG_CHURN_GRAPHS`, `LL_RIG_CHURN_WINDOW` — a churn load's rings an
@@ -3674,6 +3679,7 @@ impl CellReading {
         let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
         let offers = offer_counts();
         let (wave, by_span) = wave_three();
+        let (by_oldest_age, by_own_age) = root_ages();
         let (live_sites, live_survived, stale_ages) = testing::read_live::take();
         #[cfg(feature = "gc-window")]
         let written_back =
@@ -3947,6 +3953,13 @@ impl CellReading {
             ("expansions_at_the_frame", wave[7].to_string()),
             ("expansions_at_the_frame_at_zero", wave[8].to_string()),
             ("batches_by_span", by_span),
+            // Under `LL_RIG_ROOT_AGES`, by the age at the take
+            // (`testing::wave_three::AGES`): the batches by their oldest
+            // root's, as `batches_by_span`; the roots by their own, each
+            // bucket's roots, dead, read live, unwalked, and those read live
+            // by an earlier batch.
+            ("batches_by_oldest_age", by_oldest_age),
+            ("roots_by_own_age", by_own_age),
             // The unwalked entries written back into R, unmarked and marked.
             ("unwalked_written_back", written_back),
             // Roots a collector read live (`testing::read_live`): by site
@@ -4451,6 +4464,8 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     let _ = testing::take_disposals();
     let _ = testing::take_scheme_figures();
     testing::record_standings(switch_from_env("LL_RIG_STANDINGS"));
+    #[cfg(feature = "gc-window")]
+    testing::wave_three::record_root_ages(switch_from_env("LL_RIG_ROOT_AGES"));
     testing::permit_births(true);
 
     // The marks' switches before any mutator starts, so that every mark of the
@@ -4810,6 +4825,31 @@ fn wave_three() -> ([u64; 9], String) {
     }
     #[cfg(feature = "gc-checkpoint")]
     ([0; 9], String::new())
+}
+
+/// [`testing::wave_three::take_ages`], each table as one column of
+/// `;`-joined buckets split by `/`; empty without the feature.
+fn root_ages() -> (String, String) {
+    #[cfg(feature = "gc-window")]
+    {
+        let column = |table: &[[u64; 5]]| {
+            table
+                .iter()
+                .map(|bucket| {
+                    bucket
+                        .iter()
+                        .map(u64::to_string)
+                        .collect::<Vec<_>>()
+                        .join(";")
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        };
+        let (oldest, own) = testing::wave_three::take_ages();
+        (column(&oldest), column(&own))
+    }
+    #[cfg(feature = "gc-checkpoint")]
+    (String::new(), String::new())
 }
 
 /// [`crate::cycle::split::split_counts`], zeros without the feature.

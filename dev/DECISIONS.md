@@ -9,6 +9,26 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-08 — a set the window collector proved is summed in the debug build only
+
+**Decided (Edmond, 2026-10-08 19:44: "I propose keeping it for the debug
+mode only", after "if this is for the window's algorithm, in theory it is
+not needed").**
+The owner takes a set `gc-window`'s collector proved by its tags without
+summing its members' counts against the recorded edges: the guards go on
+unread, and only the debug build sums them and walks the set by the exact
+validation. A set the owner traced itself keeps the sum, folded into the
+guard loop and taken back by the narrow release where it differs. A batch
+root outside a proved set refuses the proof, and the set is walked.
+
+Why: the proof covers the set (every count store is tagged, §5f; a weakly
+held set is never proved), so the sum catches only a bug in the window's
+own code. The Critic and the Sage found it not redundant against such a
+bug and nearly free; Edmond answered that Claude had not measured the case
+and that a check theory does not need belongs to the debug build. P10's
+first clause (2026-10-06) in this form; `dev/design/the-general-algorithm.md`,
+"Wave 3: P10".
+
 ## 2026-10-08 — a small optimisation stays when it is no slower than main
 
 A change made for speed that the Critic finds sound, that both suites pass,

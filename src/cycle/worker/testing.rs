@@ -2602,7 +2602,7 @@ pub(crate) mod wave_three {
     use std::cell::Cell;
     use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     use std::time::{Duration, Instant};
 
     use super::lock;
@@ -2678,11 +2678,19 @@ pub(crate) mod wave_three {
             .and_then(|map| map.get(&token))
             .and_then(|(_, span)| *span);
         BATCH.with(|b| b.set((span, [0; 4])));
+        note_an_aged_take(token);
     }
 
-    /// A root's verdict posted under the batch.
-    pub(crate) fn note_a_verdict(verdict: crate::cycle::queue::verdicts::Verdict) {
+    /// `root`'s verdict posted under the batch.
+    ///
+    /// # Safety
+    /// `root` is a header the collector may read under the batch's grant.
+    pub(crate) unsafe fn note_a_verdict(
+        root: *mut crate::refcount::RcHeader,
+        verdict: crate::cycle::queue::verdicts::Verdict,
+    ) {
         use crate::cycle::queue::verdicts::Verdict;
+        unsafe { note_an_aged_verdict(root, verdict) };
         BATCH.with(|b| {
             let (span, mut counts) = b.get();
             counts[0] += 1;
@@ -2698,6 +2706,7 @@ pub(crate) mod wave_three {
     /// The batch this collector served is released: its tallies go to their
     /// span's bucket, a batch with no previous offer to its mutator to none.
     pub(crate) fn note_a_release() {
+        note_an_aged_release();
         FRAME.with(|f| f.set(0));
         let (span, counts) = BATCH.with(|b| b.replace((None, [0; 4])));
         let Some(span) = span else { return };
@@ -2731,6 +2740,161 @@ pub(crate) mod wave_three {
                 EXPANSIONS[2].fetch_add(1, Ordering::Relaxed);
             }
         }
+    }
+
+    /// The buckets of a root's age, from its registration to the take of
+    /// the batch that posts it; past the last, its own bucket.
+    pub(crate) const AGES: [Duration; 5] = [
+        Duration::from_millis(1),
+        Duration::from_millis(10),
+        Duration::from_millis(100),
+        Duration::from_secs(1),
+        Duration::from_secs(10),
+    ];
+
+    /// The bucket of `age` among [`AGES`].
+    fn age_bucket(age: Duration) -> usize {
+        AGES.iter()
+            .position(|bound| age < *bound)
+            .unwrap_or(AGES.len())
+    }
+
+    /// Whether registrations are timed (the rig's `LL_RIG_ROOT_AGES`): each
+    /// takes its mutator's map's lock, so the switch stays off elsewhere.
+    static AGES_ON: AtomicBool = AtomicBool::new(false);
+
+    /// By an entity's address, when its mutator last registered it: one map
+    /// a mutator, leaked, so that no thread-local carries drop glue.
+    type Registered = &'static Mutex<HashMap<usize, Instant>>;
+
+    /// Each mutator's registrations, by its token's address.
+    static REGISTRIES: Mutex<Option<HashMap<usize, Registered>>> = Mutex::new(None);
+
+    /// The batches by their oldest root's age at the take ([`AGES`]): each
+    /// bucket's batches, roots posted, dead, read live and unwalked.
+    static BY_OLDEST_AGE: Mutex<[[u64; 5]; AGES.len() + 1]> = Mutex::new([[0; 5]; AGES.len() + 1]);
+
+    /// The roots by their own age at the take: each bucket's roots, dead,
+    /// read live, unwalked, and those read live by an earlier batch.
+    static BY_OWN_AGE: Mutex<[[u64; 5]; AGES.len() + 1]> = Mutex::new([[0; 5]; AGES.len() + 1]);
+
+    thread_local! {
+        /// This mutator's registrations, once timed.
+        static MINE: Cell<Option<Registered>> = const { Cell::new(None) };
+        /// The batch this collector serves: its mutator's registrations, the
+        /// take's instant, the oldest root's age, and its roots posted, dead,
+        /// read live and unwalked.
+        static AGED: Cell<Option<AgedBatch>> = const { Cell::new(None) };
+    }
+
+    /// What [`AGED`] holds for a batch whose mutator's registrations are
+    /// timed.
+    #[derive(Clone, Copy)]
+    struct AgedBatch {
+        registered: Registered,
+        taken_at: Instant,
+        oldest: Option<Duration>,
+        counts: [u64; 4],
+    }
+
+    /// Time registrations from here (`on`), or stop.
+    pub(crate) fn record_root_ages(on: bool) {
+        AGES_ON.store(on, Ordering::Relaxed);
+    }
+
+    /// This mutator, whose token is at `token()`, registered `entity`.
+    pub(crate) fn note_a_registration(token: impl FnOnce() -> usize, entity: usize) {
+        if !AGES_ON.load(Ordering::Relaxed) {
+            return;
+        }
+        let now = Instant::now();
+        let registered = MINE.with(Cell::get).unwrap_or_else(|| {
+            let registered: Registered = Box::leak(Box::default());
+            lock(&REGISTRIES)
+                .get_or_insert_with(HashMap::new)
+                .insert(token(), registered);
+            MINE.with(|mine| mine.set(Some(registered)));
+            registered
+        });
+        lock(registered).insert(entity, now);
+    }
+
+    /// The take of a batch on the token at `token`: its roots' ages are read
+    /// against this instant.
+    fn note_an_aged_take(token: usize) {
+        let registered = lock(&REGISTRIES)
+            .as_ref()
+            .and_then(|map| map.get(&token).copied());
+        AGED.with(|aged| {
+            aged.set(registered.map(|registered| AgedBatch {
+                registered,
+                taken_at: Instant::now(),
+                oldest: None,
+                counts: [0; 4],
+            }));
+        });
+    }
+
+    /// `root`'s verdict under an aged batch: its age's bucket, and the
+    /// batch's oldest.
+    ///
+    /// # Safety
+    /// `root` is a header the collector may read under the batch's grant.
+    unsafe fn note_an_aged_verdict(
+        root: *mut crate::refcount::RcHeader,
+        verdict: crate::cycle::queue::verdicts::Verdict,
+    ) {
+        use crate::cycle::queue::verdicts::Verdict;
+        AGED.with(|aged| {
+            let Some(mut batch) = aged.get() else { return };
+            let column = match verdict {
+                Verdict::Proposed | Verdict::ZeroCount => 1,
+                Verdict::ReadLive => 2,
+                Verdict::Unwalked => 3,
+            };
+            batch.counts[0] += 1;
+            batch.counts[column] += 1;
+            let at = lock(batch.registered).get(&(root as usize)).copied();
+            let age = at.map(|at| batch.taken_at.saturating_duration_since(at));
+            if let Some(age) = age {
+                batch.oldest = Some(batch.oldest.map_or(age, |oldest| oldest.max(age)));
+            }
+            aged.set(Some(batch));
+            let Some(age) = age else { return };
+            // A dead root's slot may be the collector's own free's by now,
+            // so only a live or unwalked one's header is read.
+            let read_before = matches!(verdict, Verdict::ReadLive | Verdict::Unwalked)
+                && unsafe { crate::refcount::survived_readings(root) } > 0;
+            let mut by_own = lock(&BY_OWN_AGE);
+            let bucket = &mut by_own[age_bucket(age)];
+            bucket[0] += 1;
+            bucket[column] += 1;
+            bucket[4] += u64::from(read_before);
+        });
+    }
+
+    /// The aged batch this collector served is released: its tallies go to
+    /// its oldest root's bucket.
+    fn note_an_aged_release() {
+        let Some(batch) = AGED.with(Cell::take) else {
+            return;
+        };
+        let Some(oldest) = batch.oldest else { return };
+        let mut by_oldest = lock(&BY_OLDEST_AGE);
+        let bucket = &mut by_oldest[age_bucket(oldest)];
+        bucket[0] += 1;
+        for (into, count) in bucket[1..].iter_mut().zip(batch.counts) {
+            *into += count;
+        }
+    }
+
+    /// The batches by their oldest root's age and the roots by their own,
+    /// since the last call; zeroed.
+    pub(crate) fn take_ages() -> ([[u64; 5]; AGES.len() + 1], [[u64; 5]; AGES.len() + 1]) {
+        (
+            std::mem::take(&mut *lock(&BY_OLDEST_AGE)),
+            std::mem::take(&mut *lock(&BY_OWN_AGE)),
+        )
     }
 
     /// The unwalked entries P's dispositions wrote back into R: marked, and

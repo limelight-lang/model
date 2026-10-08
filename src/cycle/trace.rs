@@ -183,14 +183,16 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
     let mut refused = members().any(|member| !unsafe { schedule_root_if_unvisited(arena, member) });
     // A set the collector proved by its tags is garbage whole: its members
     // are met and coloured so, and none of their cells is read here. The
-    // commit confirms it by the counts' sum against the edges the collector
-    // recorded between them, and falls back to the walk where they differ
-    // (`crate::cycle::finalization`; `dev/design/recycler-over-counts.md`).
+    // commit takes the proof; a debug build checks the counts' sum against
+    // the edges the collector recorded between them and walks the set
+    // (`crate::cycle::finalization`; `dev/design/the-general-algorithm.md`,
+    // "Wave 3: P10").
     #[cfg(feature = "gc-window")]
     if let Some(set) = set
         && set.proved_by_its_tags()
         && !refused
     {
+        let met_by_the_set = arena.rows_met();
         let mut traced = 0;
         batch.walk_roots(|root| {
             traced += 1;
@@ -201,14 +203,15 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
             return (TraceOutcome::AllocationFailed, traced);
         }
 
-        arena.drop_the_work();
-        unsafe { crate::cycle::row::colour_every_met_row_unreachable(arena.touched_head()) };
-        arena.take_the_internal_edges_the_collector_recorded(set.internal_edges());
-        arena.take_the_references_held_from_outside(set.held_from_outside());
+        // A root the set does not hold would join the membership coloured
+        // garbage with no proof behind it, so the set takes the walk below,
+        // which reads every met cell (`dev/design/the-general-algorithm.md`,
+        // "Wave 3: P10").
+        if arena.rows_met() == met_by_the_set {
+            return unsafe { take_the_proof(arena, set, traced) };
+        }
         #[cfg(test)]
-        SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.set(count.get() + 1));
-        crate::cycle::token::note_last_row_read();
-        return (TraceOutcome::Complete, traced);
+        PROVED_SETS_WITH_A_ROOT_OUTSIDE.with(|count| count.set(count.get() + 1));
     }
     let mut traced = 0;
     if !refused {
@@ -252,12 +255,45 @@ pub(crate) unsafe fn trace_within_the_set<R: CellReader>(
     (TraceOutcome::Complete, traced)
 }
 
+/// Colour the met rows of a set proved by its tags garbage, its batch roots
+/// among its members, and take the edges and the held references the
+/// collector recorded for the commit: the proved arm of
+/// [`trace_within_the_set`], which reads no cell.
+///
+/// # Safety
+/// As [`trace_within_the_set`], with every member and root of the batch met.
+#[cfg(feature = "gc-window")]
+unsafe fn take_the_proof(
+    arena: &mut TraceScratchArena,
+    set: &PostedSet,
+    traced: usize,
+) -> (TraceOutcome, usize) {
+    arena.drop_the_work();
+    unsafe { crate::cycle::row::colour_every_met_row_unreachable(arena.touched_head()) };
+    arena.take_the_internal_edges_the_collector_recorded(set.internal_edges());
+    arena.take_the_references_held_from_outside(set.held_from_outside());
+    #[cfg(test)]
+    SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.set(count.get() + 1));
+    crate::cycle::token::note_last_row_read();
+    (TraceOutcome::Complete, traced)
+}
+
 #[cfg(all(test, feature = "gc-window"))]
 thread_local! {
     /// Sets the collector proved garbage by their tags whose members this
     /// thread met with no trace of their cells, since this last answered,
     /// which it leaves at zero.
     static SETS_PROVED_BY_TAGS_VALIDATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Sets proved by their tags whose batch held a root outside the set,
+    /// walked in place of the proof, since this last answered.
+    static PROVED_SETS_WITH_A_ROOT_OUTSIDE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The sets proved by their tags whose batch held a root outside the set,
+/// on this thread since this last answered.
+#[cfg(all(test, feature = "gc-window"))]
+pub(crate) fn take_proved_sets_with_a_root_outside() -> usize {
+    PROVED_SETS_WITH_A_ROOT_OUTSIDE.with(|count| count.replace(0))
 }
 
 /// The sets proved by their tags [`trace_within_the_set`] took on this thread

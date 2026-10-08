@@ -122,8 +122,9 @@ fn the_explicit_fire_applies_the_collectors_frees() {
 
 /// A proved ring the collector does not free itself — a member with a
 /// destructor — reaches the owner marked: the owner meets its members with no
-/// trace of their cells, confirms the set by the counts' sum against the edges
-/// the collector recorded between them, and frees the ring (S68.6a).
+/// trace of their cells, takes the proof with no sum of their counts (a debug
+/// build asserts it against the edges the collector recorded), and frees the
+/// ring (S68.6a; P10).
 #[test]
 fn a_proved_ring_the_collector_keeps_from_is_taken_by_the_owner_without_a_trace() {
     let _g = test_guard();
@@ -155,8 +156,9 @@ fn a_proved_ring_the_collector_keeps_from_is_taken_by_the_owner_without_a_trace(
     );
     assert_eq!(
         crate::cycle::finalization::take_confirmed_by_the_sum(),
-        1,
-        "the commit confirmed it by the counts' sum against the recorded edges"
+        0,
+        "the commit takes the proof: the counts' sum against the recorded \
+         edges is a debug build's assertion, not a confirmation"
     );
     reset_lanes();
 }
@@ -508,8 +510,9 @@ unsafe fn a_clean_ring_over_a_destructed_one_registered(
 
 /// The split: the collector frees the clean ring, and the destructed ring it
 /// holds reaches the owner marked proved, C's edge into it held — the owner
-/// confirms it by the sum with that edge counted, before any drop into it has
-/// run, and frees it, its destructors run once each.
+/// takes the proof (a debug build asserts the sum with that edge counted),
+/// before any drop into it has run, and frees it, its destructors run once
+/// each.
 #[test]
 fn a_clean_ring_is_freed_by_the_collector_and_the_ring_it_holds_by_the_owner() {
     let _g = test_guard();
@@ -538,8 +541,9 @@ fn a_clean_ring_is_freed_by_the_collector_and_the_ring_it_holds_by_the_owner() {
     assert_eq!(crate::cycle::trace::take_sets_proved_by_tags_validated(), 1);
     assert_eq!(
         crate::cycle::finalization::take_confirmed_by_the_sum(),
-        1,
-        "confirmed by the sum, C's edge counted"
+        0,
+        "taken by the proof: the debug build's sum, C's edge counted, is an \
+         assertion"
     );
     assert_eq!(
         DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
@@ -802,5 +806,53 @@ fn an_s_no_root_lands_in_gets_its_drops_at_the_poll() {
         DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
         2
     );
+    reset_lanes();
+}
+
+/// The owner's take of proved rings with destructors, which the collector
+/// leaves to it: `LL_MEASURE_ROUNDS` rings (200 unset) of
+/// `LL_MEASURE_MEMBERS` members (512 unset), each served by a collector and
+/// freed by the owner's poll. Prints `proved-owner,rounds,members,` then the
+/// polls' time in nanoseconds, summed (P10's measurement, `dev/BENCHMARKS.md`;
+/// the confirm's own share is read under callgrind).
+#[test]
+#[ignore = "a measurement, run by hand"]
+fn measure_the_owner_on_proved_rings_with_destructors() {
+    let _g = test_guard();
+    reset_lanes();
+    let read = |name: &str, unset: usize| {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(unset)
+    };
+    let rounds = read("LL_MEASURE_ROUNDS", 200);
+    let members = read("LL_MEASURE_MEMBERS", 512);
+    let kept = ClassBuilder::new("DeltaTestMeasuredNode")
+        .prop("next", true)
+        .destructor(no_destructor_body as *const ())
+        .build();
+    let mut arena = Arena::new();
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    let mut polls = std::time::Duration::ZERO;
+    let mut freed = 0;
+    for _ in 0..rounds {
+        let _ = unsafe { crate::cycle::testing::long_ring(&mut arena, kept, members) };
+        unsafe { &*record() }.set_batch_size(members);
+        assert!(matches!(
+            served_by_a_collector(),
+            Served::Batch { complete: true, .. }
+        ));
+        let from = std::time::Instant::now();
+        freed += unsafe { ll_gc_maybe_collect() };
+        polls += from.elapsed();
+    }
+    assert_eq!(freed, rounds * members, "every ring was freed");
+    assert_eq!(
+        crate::cycle::trace::take_sets_proved_by_tags_validated(),
+        rounds,
+        "every ring reached the owner proved"
+    );
+    println!("proved-owner,{rounds},{members},{}", polls.as_nanos());
     reset_lanes();
 }

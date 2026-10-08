@@ -652,6 +652,18 @@ pub(crate) mod testing {
     /// a case standing in for the collector whose stand-in posted no set.
     /// After the stand-in's release, so that the record reads `POSTED`.
     pub(crate) fn post_for_test(members: &[*mut RcHeader]) {
+        post_marked_for_test(members, None);
+    }
+
+    /// [`post_for_test`], the set marked proved by its tags with
+    /// `internal_edges` between its members, as the collector's Δ-test marks
+    /// it (`crate::cycle::delta_test`).
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn post_proved_for_test(members: &[*mut RcHeader], internal_edges: usize) {
+        post_marked_for_test(members, Some(internal_edges));
+    }
+
+    fn post_marked_for_test(members: &[*mut RcHeader], proved: Option<usize>) {
         let record = crate::cycle::mutator_record::this_thread_record();
         assert!(!record.is_null(), "this thread has a record");
         let mut set = Writer::new();
@@ -667,6 +679,12 @@ pub(crate) mod testing {
         for block in blocks {
             assert!(set.blocks.push(block), "the pool served the set");
         }
+        #[cfg(feature = "gc-window")]
+        if let Some(edges) = proved {
+            set.mark_proved_by_its_tags(edges);
+        }
+        #[cfg(not(feature = "gc-window"))]
+        let _ = proved;
         set.publish(unsafe { &*record });
     }
 

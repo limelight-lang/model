@@ -8,6 +8,45 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — `gc-window`'s owner on proved sets with destructors: the sum in the debug build only is the fastest of three
+
+P10 as Edmond ruled it (`dev/DECISIONS.md`, "a set the window collector
+proved is summed in the debug build only"), measured on the case no rig
+load reaches: on `web-heap` B's owner collects no set over P. The case
+`measure_the_owner_on_proved_rings_with_destructors`
+(`cycle/worker/tests/the_delta_test.rs`): rings of 512 members, each with
+a destructor, so the collector proves them and leaves them to the owner;
+each served by a collector and freed by the owner's poll. Three arms,
+built as for an executable, release with line tables:
+- S: main at `5e78a49`, the sum a pass of its own before the guards;
+- F: the sum folded into the guard loop, in the release build too;
+- N: the sum in the debug build only (the change).
+
+Wall of the owner's polls, 2,000 rings (1,024,000 members), five rounds
+interleaved S, F, N, mutator and collector on CPUs 1–3:
+
+| arm | ms, five rounds | median | ns a member |
+|---|---|---|---|
+| S | 127.3, 113.7, 136.1, 127.6, 126.9 | 127.3 | 124 |
+| F | 125.4, 129.7, 131.5, 128.0, 135.9 | 129.7 | 127 |
+| N | 114.5, 112.9, 111.3, 114.2, 118.4 | 114.2 | 112 |
+
+Callgrind, the owner's thread, 200 rings (102,400 members), instructions
+of `ll_gc_maybe_collect` inclusive:
+
+| arm | instructions | a member | `counts_sum_to` |
+|---|---|---|---|
+| S | 130,517,008 | 1,275 | 2,477,000 (24 a member) |
+| F | 128,162,808 | 1,252 | folded |
+| N | 127,866,408 | 1,249 | none |
+
+**Reading.** N is the lowest in every round, by 10 % at the median
+against S; it runs 2 % fewer instructions. F saves S's separate pass in
+instructions (23 a member) but not in time: it reads no faster than S in
+these rounds, which the three instructions a member it keeps over N do not
+explain (not investigated). The sum costs more than the "near zero"
+Claude claimed unmeasured; N goes to main.
+
 ## 2026-10-08 — S68.14's measurements, third reading: the calls of `ll_retain` and `ll_release`, the owner's time, the slow paths, the withheld returns
 
 **The calls.** Callgrind, `web-heap`, 30 s, both kinds built with

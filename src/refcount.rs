@@ -1543,11 +1543,13 @@ pub(crate) unsafe fn clear_candidate_bit(header: *mut RcHeader) {
 /// The teardown guard's `+1`, as a narrow counter store: byte 6 and the
 /// mutator's flags are not read and not written (byte 7's tag aside, as
 /// [`refcount_store`] says), so nothing the collector puts there can be
-/// buried by it.
+/// buried by it. Returns the refcount it read, before the guard, which the
+/// commit's counts' sum adds up (`crate::cycle::finalization`).
 #[inline]
-pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) {
+pub(crate) unsafe fn mutator_guard_retain(header: *mut RcHeader) -> u32 {
     let refcount = unsafe { refcount_load_to_write(header) };
     unsafe { refcount_store(header, refcount + 1) };
+    refcount
 }
 
 /// The `-1` of an internal edge a cycle teardown severed, as a narrow counter

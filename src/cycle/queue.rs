@@ -509,6 +509,11 @@ pub(crate) unsafe fn register_candidate(entity: *mut RcHeader) {
         crate::memory::heap::abort_outside_thread_life("register_candidate");
     }
 
+    #[cfg(all(test, feature = "gc-window"))]
+    crate::cycle::worker::testing::wave_three::note_a_registration(
+        || this_thread_record_ref().token.address(),
+        entity as usize,
+    );
     unsafe { append_entry(state, entity) };
 }
 

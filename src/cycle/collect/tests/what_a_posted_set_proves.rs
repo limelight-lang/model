@@ -85,6 +85,51 @@ fn a_set_frees_its_garbage_and_leaves_a_live_member_unstamped() {
     unsafe { let_go(live) };
 }
 
+/// A set proved by its tags whose batch holds a root outside it — a live
+/// object the case holds — takes the walk in place of the proof: the ring is
+/// freed and the root stands, read live by the owner's own scan. Red on a
+/// proved arm that colours the root garbage with the set, whose commit the
+/// counts' sum then refuses whole (`dev/design/the-general-algorithm.md`,
+/// "Wave 3: P10").
+#[cfg(feature = "gc-window")]
+#[test]
+fn a_proved_set_with_a_root_outside_it_takes_the_walk() {
+    let _g = test_guard();
+    let node = node_class("PostedSetProvedRingNode", nothing_to_dispose as *const ());
+    let mut arena = Arena::new();
+    let ring = unsafe { long_ring(&mut arena, node, 3) };
+    let stray = unsafe { held(&mut arena, keeper_class("PostedSetStrayRoot")) };
+    unsafe {
+        ll_retain(stray as *mut RcHeader);
+        assert!(
+            !ll_release(stray as *mut RcHeader),
+            "the case holds the root"
+        );
+    }
+    assert_eq!(stand_in_posts(4, Verdict::Proposed), Posted::Batch(4));
+    crate::cycle::posted_set::testing::post_proved_for_test(&headers(&ring), 3);
+
+    let _ = crate::cycle::trace::take_proved_sets_with_a_root_outside();
+    let _ = crate::cycle::trace::take_sets_proved_by_tags_validated();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 3, "the ring is freed");
+    assert_eq!(
+        crate::cycle::trace::take_proved_sets_with_a_root_outside(),
+        1,
+        "the root outside the set was met"
+    );
+    assert_eq!(
+        crate::cycle::trace::take_sets_proved_by_tags_validated(),
+        0,
+        "the proof was not taken"
+    );
+    assert_eq!(
+        unsafe { slot_state(stray as *const RcHeader) },
+        SlotState::Live
+    );
+
+    unsafe { let_go(stray) };
+}
+
 /// A set that is garbage whole — a ring of three — reads every met row at zero
 /// after the mark and skips the scan, and the ring is freed as the scan would
 /// have had it (`dev/DECISIONS.md`, "rulings the S65 and S67 stage notes held,

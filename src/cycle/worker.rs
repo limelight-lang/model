@@ -2842,7 +2842,9 @@ impl FinishThePosts<'_> {
         let _ = refused;
         journal_verdict(self.root(index), verdict);
         #[cfg(all(test, feature = "gc-window"))]
-        testing::wave_three::note_a_verdict(verdict);
+        unsafe {
+            testing::wave_three::note_a_verdict(self.root(index), verdict)
+        };
         // Every `ReadLive` posted here is deferred.
         let posted = self.verdicts.post(self.root(index), verdict);
         posted.expect("the batch was clamped to P's room");

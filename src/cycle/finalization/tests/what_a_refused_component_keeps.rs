@@ -103,6 +103,91 @@ fn an_externally_referenced_component_takes_no_guard_and_keeps_its_cell() {
     }
 }
 
+/// The counts' sum rides on the guards (`Finalization::confirm`): a sum that
+/// differs from the internal edges takes every guard back before the exact
+/// validation answers, so the component refused that way keeps its counts,
+/// its flags and its cell exactly as one refused without a sum does. Red on a
+/// fold that leaves the guards standing, or that skips the walk.
+#[test]
+fn a_sum_that_differs_takes_its_guards_back() {
+    let _g = test_guard();
+    let node = ClassBuilder::new("FinalizationSumRefusedNode")
+        .prop("next", true)
+        .build();
+    let holder = ClassBuilder::new("FinalizationSumRefusedHolder")
+        .prop("held", true)
+        .build();
+
+    let mut arena = Arena::new();
+    let [first, second] = unsafe { traced_unreachable_ring(&mut arena, [node, node]) };
+    let mut context = LLContext { arena: &mut arena };
+    let keeper = unsafe { new_constructed(&mut context, holder, MemoryCategory::GcHeap) };
+    let cell = unsafe { ll_weakref_create(&mut context, first as *mut RcHeader) };
+    assert!(!cell.is_null(), "the fixture's weak cell");
+
+    // The store the exact validation exists to absorb: a reference taken after the
+    // trace read the counts.
+    unsafe { store_prop(&mut arena, keeper, prop_offset(0), first) };
+
+    let before = unsafe { counts_and_flags(&[first, second]) };
+    let mut finalization = Finalization::begin_at_this_threads_epoch();
+    let mut members = [first as *mut RcHeader, second as *mut RcHeader];
+    assert_eq!(
+        unsafe {
+            finalization.confirm(
+                &Membership::listed(&mut members),
+                Some(crate::cycle::arena::EdgesRead::Drained(2)),
+                0,
+            )
+        },
+        ValidationResult::ExternallyReferenced,
+        "the counts sum to three against the ring's two edges, and the walk \
+         reads the keeper's reference"
+    );
+    assert_eq!(
+        finalization.seal().members(),
+        0,
+        "a refused component joins no finalization"
+    );
+    assert_eq!(
+        unsafe { counts_and_flags(&[first, second]) },
+        before,
+        "a refused component keeps its counts and its flags: a guard left \
+         standing is never released, and a cleared gate bit is a cell nobody \
+         nulls"
+    );
+    assert_eq!(
+        unsafe { ll_weakref_get(cell) },
+        first as *mut RcHeader,
+        "the cell still resolves"
+    );
+    for member in [first, second] {
+        assert_eq!(
+            unsafe { read_maturation_stamp(member as *mut RcHeader) }.age,
+            1,
+            "the one write a component read live does take: its stamp"
+        );
+    }
+
+    unsafe {
+        // `get` retained above.
+        assert!(!ll_release(first as *mut RcHeader));
+        assert!(ll_release(keeper as *mut RcHeader));
+        ll_object_die(keeper);
+        ll_retain(first as *mut RcHeader);
+        ll_retain(second as *mut RcHeader);
+        store_prop(&mut arena, first, prop_offset(0), std::ptr::null_mut());
+        store_prop(&mut arena, second, prop_offset(0), std::ptr::null_mut());
+        for entity in [first, second] {
+            assert!(ll_release(entity as *mut RcHeader));
+            ll_object_die(entity);
+        }
+
+        assert!(ll_release(cell as *mut RcHeader));
+        ll_entity_die(cell as *mut RcHeader);
+    }
+}
+
 /// A member at count zero drops its component before any field is read, so
 /// neither member takes a guard and the cell naming the second one still
 /// resolves.

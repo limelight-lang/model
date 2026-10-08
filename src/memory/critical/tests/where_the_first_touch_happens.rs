@@ -83,6 +83,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
     const DECLARED: &[(&str, bool)] = &[
         ("ABANDON_NEXT_PUSH", false), // test-only const Cell, no drop glue
         ("ADMITTED", false),
+        ("AGED", false), // test-only const Cell of a Copy struct, no drop glue (`gc-window`)
         ("ALLOCATING", false),
         ("ARMED", false),                  // test-only const Cell, no drop glue
         ("AT_THE_SURPLUS_UNLINK", false),  // test-only const Cell of an fn pointer, no drop glue
@@ -132,6 +133,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("MARK_ENDED_AT", false), // test-only const Cell, no drop glue
         ("MEMBER_LIST", false),
         ("MEMBER_LIST_HELD", false),
+        ("MINE", false), // test-only const Cell of a leaked reference, no drop glue (`gc-window`)
         ("MUTATOR_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue
         ("MUTATOR_STATE", false),
         ("OWNER_POSITIONS", false), // test-only const Cell, no drop glue
@@ -147,19 +149,20 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PREMISE_CELL_WALKS", false),
         ("PRESSURE_COLLECTIONS", false),
         ("PRESSURE_ROOTS_TRACED", false), // test-only const Cell, no drop glue
-        ("QUEUED_BY_THE_DRAIN", false),   // test-only const Cell, no drop glue
-        ("QUEUE_WORK", false),            // test-only const Cell, no destructor registration
-        ("RECORDS_CARVED", false),        // test-only const Cell, no drop glue
-        ("RECORDS_TAKEN", false),         // test-only const Cell, no drop glue
+        ("PROVED_SETS_WITH_A_ROOT_OUTSIDE", false), // test-only const Cell, no drop glue (`gc-window`)
+        ("QUEUED_BY_THE_DRAIN", false),             // test-only const Cell, no drop glue
+        ("QUEUE_WORK", false), // test-only const Cell, no destructor registration
+        ("RECORDS_CARVED", false), // test-only const Cell, no drop glue
+        ("RECORDS_TAKEN", false), // test-only const Cell, no drop glue
         ("REFUSED_ENTITY_REFILLS", false), // test-only const Cell of an array, no drop glue
-        ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
-        ("REFUSE_DRAWS", false),          // test-only const Cell, no drop glue
+        ("REFUSE_AT_VERTEX", false), // test-only const Cell, no drop glue
+        ("REFUSE_DRAWS", false), // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
         ("REFUSE_LEFT_OUT_SEGMENT", false), // test-only const Cell, no drop glue
         ("REFUSE_LIST_PLACEMENT", false), // test-only const Cell, no drop glue
-        ("REFUSE_THREAD_HEAP", false),    // test-only const Cell, no drop glue
-        ("REFUSING", false),              // test-only const Cell, no drop glue
-        ("REPORT", false), // test-only const RefCell over a Copy report, no drop glue
+        ("REFUSE_THREAD_HEAP", false), // test-only const Cell, no drop glue
+        ("REFUSING", false),   // test-only const Cell, no drop glue
+        ("REPORT", false),     // test-only const RefCell over a Copy report, no drop glue
         ("RESERVE", true),
         ("RESERVED_BY_THE_DRAIN", false), // test-only const Cell, no drop glue
         ("RING", false),

@@ -1603,3 +1603,24 @@ Recommended: fold the sum into the guard loop. Edmond's answer to Q4
 removed the check as redundant; it is redundant against the proof, not
 against a stray root, so the fold goes to him as a fork, built meanwhile
 and not pushed until he answers.
+
+### Taken (Edmond, 2026-10-08 19:44), and the Critic on it
+
+Edmond: the sum stays in the debug build only ("I propose keeping it for
+the debug mode only"; `dev/DECISIONS.md`). Built: the arena's reading is
+one typed value (`EdgesRead::Drained` from the owner's drain,
+`EdgesRead::Recorded` from the collector's record); `confirm` guards a
+recorded set unread and only a debug build sums and walks it; a drained
+set keeps the sum, folded into the guard loop and taken back by
+`mutator_unguard_release` where it differs; a batch root outside a proved
+set (`rows_met` grew under the roots' walk) refuses the proof.
+
+The Critic (opus), on the built diff: no way for a release build without
+the sum to free or destruct a live entity or read freed memory under the
+accepted rules; the one real case the sum caught, a batch root C freed
+and the mutator reused under `POSTED`, meets a fresh row and is walked by
+the stray-root check. Residuals, liveness only: the walk after a stray
+root validates without the held drops, so such a set with C non-empty
+reads live once and is freed by the next collection; a drained set whose
+sum is taken back carries the guards' tag F into the next window and is
+refused once.
