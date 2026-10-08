@@ -8,6 +8,45 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — the memory misses of both kinds' collections: the passes callgrind blames are worth a few percent at most; nothing taken
+
+**Profiles.** Callgrind with its cache model (LL 8 MB, no hardware
+prefetcher, so shares are upper bounds), `web-heap`, 30 s, at `2ce55cd`.
+`gc-checkpoint`, the owner's collections: last-level read misses in the
+drain's cell reads 36 %, the pass that meets the set's members 17 %, the
+counts' sum before the one pass 16 %, the one pass's free 9 %, the
+header reads inside the trace 9 %. `gc-window`, the collector's thread:
+the expansion 32 %, the prune's stamp read 23 %, the stamping walk 17 %,
+the scan of the recorded edges 13 %, the free 10 %.
+
+**The counts' sum, a ceiling.** A bench-only build without the counts' sum
+on the one pass (**S**; not sound: the Critic showed it is the release
+build's only catch of a count below its edges, a use-after-free) against
+**M** at `2ce55cd`, `gc-checkpoint`, `web-heap` with two mutators, cap 1,
+three repeats, one session.
+
+| arm | owner's collections | reclaim | mark | longest collection |
+|---|---|---|---|---|
+| M | 19.3–20.3 s (20.0) | 3.33–3.52 s (3.51) | 9.19–9.65 s | 75–97 ms |
+| S | 19.9–20.0 s (20.0) | 2.87–3.00 s (2.98) | 9.47–9.63 s | 70–110 ms |
+
+The teardown loses 0.5 s with the pass, the owner's collections nothing
+past the spread. The Critic's sound form (an underflow flag set in the
+drain, the sum kept as a debug assertion) would change the 2026-10-08
+condition of the one pass for at most that half second; not pursued. The
+pass that meets the members, of the same share, is not pursued for the
+same reason.
+
+**The stamping walk.** The rig's own clock of `gc-window`'s walks at
+`0a6b75d` (six runs, `web-heap`): 2.5–2.6 s of 57.6–60.0 s of collector
+CPU, 4.3 %. Stamping in the drain with an undo for white rows and cut
+batches (the Critic's sound form) can save part of that; not pursued.
+
+**Reading.** Callgrind's miss shares overstate the passes that walk rows
+or members in address order: the hardware prefetcher covers them. What
+the time follows is the pointer chase of the drain and the prune's read
+of each child's header, which no pass ordering removes.
+
 ## 2026-10-08 — `gc-window`'s collector: the record's append by cursor and one dispatch per met mature edge; inside the spread, taken
 
 **Build.** `gc-window`, built for an executable: **M** at `a9a8a78`;
