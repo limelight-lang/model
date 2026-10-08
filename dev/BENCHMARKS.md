@@ -8,6 +8,52 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — S68.14's last reading: corpses and read-live against the roots' age
+
+The rig's `LL_RIG_ROOT_AGES` (`6c78ad6`) times each registration on the
+mutator's own map and reads each posted root's age at its batch's take;
+batches are bucketed by their oldest root, roots by their own age. The
+span since the previous offer (the earlier tables) is not that age: R
+carries a backlog past one batch, and lanes and write-backs return old
+roots (the Critic, 2026-10-08). `gc-window`, `web-heap`, cap 1, mutators
+on CPUs 1–2, collector on 3, 116 s, three runs at `6c78ad6`; each
+registration takes a lock, so the timing columns of these runs are not
+compared with others. Middle figures of the three, percent of the
+bucket's roots:
+
+**Roots by their own age at the take** (7.6–7.7 M roots a run):
+
+| age | roots | dead | read live | unwalked | read live before |
+|---|---|---|---|---|---|
+| under 1 ms | 0.23–0.25 M | 0.4–0.5 % | 7–8 % | 91–92 % | 0 |
+| 1–10 ms | 1.16–1.18 M | 16–19 % | 11–13 % | 70–71 % | 0 |
+| 10–100 ms | 3.24–3.27 M | 73–74 % | 8–9 % | 17–18 % | 0 |
+| 100 ms–1 s | 1.84–1.90 M | 98–99 % | 0.6–1.6 % | 0.2–0.4 % | 0 |
+| 1–10 s | 0.64–0.70 M | 54–58 % | 42–46 % | 0 | 22–24 % |
+| 10 s and over | 0.44–0.52 M | 0.8–0.9 % | 99 % | 0 | 99 % |
+
+**Batches by their oldest root's age:**
+
+| oldest | batches | roots | dead | read live | unwalked |
+|---|---|---|---|---|---|
+| under 1 ms | 1 | 64 | 0 | 100 % | 0 |
+| 1–10 ms | 373–402 | 0.38–0.41 M | 8 % | 11–13 % | 79–81 % |
+| 10–100 ms | 3,954–4,008 | 3.98–4.03 M | 60 % | 9–10 % | 31 % |
+| 100 ms–1 s | 2,076–2,112 | 2.06–2.10 M | 94–95 % | 1–2 % | 3–4 % |
+| 1–10 s | 658–714 | 0.67–0.73 M | 55–59 % | 41–44 % | 0.2–0.5 % |
+| 10 s and over | 451–527 | 0.46–0.54 M | 4–5 % | 95–96 % | 0 |
+
+**Reading.** A root's fate follows its age. Under 10 ms, a fifth of the
+roots, few are dead (under a fifth) and most go back unwalked, their sets
+touched in the window; from 100 ms to 1 s nearly all are dead. Past 1 s
+the roots are those back from the lanes, read live before, and stay
+live. The Recycler's deferral (wave 2's finding 6: offer roots once
+transient ones died by counting) would find its ground here: a root
+offered at 100 ms or older is dead 98 % of the time against 74 % at
+10–100 ms; the cost is the garbage the wait holds. Not built: it changes
+the accepted offer rule, so it goes to Edmond with these figures.
+S68.14's measurements are all read.
+
 ## 2026-10-08 — `gc-window`'s owner on proved sets with destructors: the sum in the debug build only is the fastest of three
 
 P10 as Edmond ruled it (`dev/DECISIONS.md`, "a set the window collector

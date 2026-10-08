@@ -328,8 +328,12 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       tag coincidences about 20 a run, under 1 % of refusals; a retain
       13 / 15 instructions and a release 26 / 30 in A / B, the count
       writes 1–1.5 % of the mutator's; B's owner collects no set; no
-      slow-path wait; nothing withheld under a foreign holder. Still to
-      read: the oldest root's age per batch.
+      slow-path wait; nothing withheld under a foreign holder. Read
+      2026-10-08 (`dev/BENCHMARKS.md`, "S68.14's last reading"): roots
+      under 10 ms old are dead under a fifth of the time and mostly go back
+      unwalked, from 100 ms to 1 s 98 % dead, past 1 s the lanes' returns,
+      live. Every measurement of the step is read; the code pieces left
+      are P8 and P2 (waiting on its bound's value).
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
