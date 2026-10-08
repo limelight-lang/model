@@ -1615,12 +1615,20 @@ fn reoffer_the_lanes_due(mutator_state: &MutatorCycleState, byte: u8) -> bool {
     moved
 }
 
-/// Whether `record`'s R holds fewer than the soft threshold's entries, read
-/// off the front block by loads as the collector reads it: the collector has
-/// caught up with this thread.
+/// The entries below which R reads as caught up with at an X turn, where
+/// every lane goes back ([`collector_caught_up`]): a constant of its own,
+/// so that the offer's threshold, which equals it today by value only, can
+/// move without moving when lanes are released (Q6, settled on the Sage's
+/// advice, `dev/design/the-general-algorithm.md`, "Wave 3: P8").
+const CAUGHT_UP_ENTRIES: usize = 64;
+const _: () = assert!(CAUGHT_UP_ENTRIES <= crate::cycle::worker::BATCH_BOUND);
+
+/// Whether `record`'s R holds fewer than [`CAUGHT_UP_ENTRIES`], read off the
+/// front block by loads as the collector reads it: the collector has caught
+/// up with this thread.
 fn collector_caught_up(record: &crate::cycle::mutator_record::MutatorRecord) -> bool {
     let reader = unsafe { crate::ring::Reader::new(record.candidate_ring()) };
-    !reader.has_at_least(crate::cycle::worker::SOFT_THRESHOLD)
+    !reader.has_at_least(CAUGHT_UP_ENTRIES)
 }
 
 /// Splice `lane` whole behind R's tail; answers whether it held a block.

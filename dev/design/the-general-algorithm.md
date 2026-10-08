@@ -1624,3 +1624,68 @@ root validates without the held drops, so such a set with C non-empty
 reads live once and is freed by the next collection; a drained set whose
 sum is taken back carries the guards' tag F into the next window and is
 refused once.
+
+## Wave 3: P8, the lanes' clock (Claude's draft, 2026-10-08, revised after the Critic)
+
+**What is owed.** Accepted with the algorithm (`dev/DECISIONS.md`,
+2026-10-06, settled on the Sage's advice, open to Edmond): the lanes keep
+the epoch as their clock, the epoch turning on the thread's taken batches
+as a second trigger beside the proofs' price, X the floor; and the
+caught-up rule (`queue.rs`, `collector_caught_up`) decoupled from the
+offer's threshold. Neither is built.
+
+**What the rig reads** (B at `6c78ad6`, `web-heap`, cap 1, three runs of
+116 s; process-wide journal totals, two mutators): 28–29 turns by proofs
+and 12–14 by X, 20–21 a mutator, one every 5.4–5.8 s. Proof turns alone
+come every 8.0–8.3 s, no faster than X: the clock is bimodal, gaps of
+about 4.5 s where the collector proves and 8 s where it does not. A
+lane's first entry waits up to about 6, 18 and 42 s; later entries wait
+less (the whole lane is spliced back), and an X turn with the collector
+caught up releases every lane. The age table of the same day was taken on
+runs that lock at each registration, so it is read beside these counts,
+not with them.
+
+**The change.**
+1. **Taken batches as the second trigger**: the collector advances a
+   mutator's epoch once K of its batches were taken since the last
+   advance, beside the proofs' price and X. K is to be set so that the
+   trigger fires where neither proofs nor X do soon enough, and measured:
+   at 150 (about the batches a mutator makes between two turns on
+   `web-heap` today) the clock on `web-heap` keeps its rate, and a load
+   that proves nothing turns by its own work, not by X alone.
+2. **The caught-up rule's own constant**: `collector_caught_up` reads
+   `SOFT_THRESHOLD` (64), equal today to the short offers' threshold by
+   value only; it gets a constant of its own, so that a later change of
+   the offer threshold does not change when lanes are released.
+3. **A test-only reading before K is chosen**: each verdict by the lane a
+   root came back from, which `survived_readings` already counts (0, 1, 2,
+   3 for none and lanes 1, 3, 7), read in `verdict_for` for dead roots
+   too, Proposed apart from ZeroCount, with the time since the splice.
+
+**Gate.** Both builds green; a case that K taken batches turn the epoch
+with no proof and before X; the lanes' release unchanged where the offer
+threshold changes. On `web-heap` and the six loads, three repeats: turns
+by trigger, garbage held, collector CPU, re-reads, not worse than B.
+
+### The Sage on P8 (2026-10-08)
+
+The Sage (Fable): build it, measured first. Taken (settled by Claude on
+the Sage's advice, open to Edmond's overturning):
+- **The guard**: the second trigger turns no epoch before
+  `SPENT_PER_PROOF` times the proving wall, as X (`dev/DECISIONS.md`,
+  2026-10-03's amendment); an epoch that proved nothing meets it at once.
+- **Counted in taken roots, not batches**: a batch is 64 or 1,024 roots
+  under the offer rule; the start is the roots a mutator takes between
+  two turns on `web-heap` today, which by construction changes that clock
+  nothing; the loads that read it are those with no proof turns and lanes
+  standing.
+- **A turn by taken roots is not an X turn**: it releases no lane
+  wholesale (the Sage of 2026-10-05: nothing hands every lane back
+  oftener than X); its own journal code.
+- **Order**: the test-only reading by lane of origin (`survived_readings`
+  read in `verdict_for`, Proposed apart from ZeroCount, an instant a lane
+  at its splice) with the turns by trigger per load; the caught-up rule's
+  own constant (`CAUGHT_UP_ENTRIES`, 64) as a commit of its own; then the
+  trigger with its case; then a sweep on the loads that show it.
+- For Edmond, as a note: the second trigger reinstates a count the
+  2026-10-03 ruling removed, kept honest by the wall guard.
