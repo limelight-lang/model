@@ -31,6 +31,18 @@ ran only on edges into a mature target the trace had met. Taken under the
 rule that a change no slower than main stays (`dev/DECISIONS.md`,
 2026-10-08), as code no harder to read.
 
+**Instructions.** The machine exposes no hardware counters (the kernel:
+"no PMU driver, software events only"), so callgrind counted them: both
+arms, `web-heap`, 30 s, the collector's thread alone. The runs are timed,
+so each did its own amount of work (M 54.8 M expansions, W 56.2 M), and
+the counts are read per expansion. The mark's functions (the worklist's
+expansion, the cell visit, the record's append, the prune test,
+`ensure_row`, `push_onto`, the leaf test) take 568 instructions an
+expansion in M and 512 in W, −10 %; the record's append alone 65 in M,
+its fast path inlined into the cell visit in W, which grew by 17. The
+scan reads alike (117 against 119). The time moves 1.6 %: the
+instructions saved ran beside the heap's misses, as the Critic expected.
+
 ## 2026-10-08 — the drain loads the entities ahead of it: inside the spread at every distance; not taken
 
 **Profile.** Callgrind with its cache model over the owner's fires on
