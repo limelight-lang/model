@@ -233,9 +233,14 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       `dev/design/gc-kinds.md`. Next: the tag's price counted in
       instructions and count writes a request before "no tag on +1".
 - [x] `gc-checkpoint`'s rounds at the batch's bound or 50 ms standing
-      (Edmond, 2026-10-08; A1k). Next for A: its collector thread is born
-      only at a filled block of R, about 7.6 s on `garbage-25` (asked of
-      Edmond); the owner's pause under the larger batches to be read.
+      (Edmond, 2026-10-08; A1k). The owner's pause under the larger
+      batches to be read.
+- [x] The collector thread born at the first thread's start, roots or
+      none (Edmond, 2026-10-08). To read: `garbage-25`'s time to free under
+      `gc-checkpoint` against the 2.9 s of 2026-10-07.
+- [x] Young objects measured in both kinds: none never stored into the
+      heap, a cut by age not worth it; neither taken (`dev/DECISIONS.md`,
+      2026-10-08).
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9; the probe read again 2026-10-05 at `e1e74bc`, the owner's first poll 0.05–0.13 ms in every shape): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the

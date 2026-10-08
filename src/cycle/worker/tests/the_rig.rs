@@ -663,9 +663,9 @@ const _: () = {
 
 /// Garbage members a mutator may have built and not yet seen freed before
 /// its loop ends early: 512 MiB of members of [`MEMBER_CLASS_BYTES`]. A load
-/// whose registrations never fill a block of R signals no collector, and its
-/// garbage stands until the loop ends; the ceiling keeps such a cell off the
-/// box's swap, and the line counts the mutators that reached it.
+/// whose garbage outruns its collector would stand until the loop ends; the
+/// ceiling keeps such a cell off the box's swap, and the line counts the
+/// mutators that reached it.
 const OUTSTANDING_CEILING: usize = 1 << 22;
 
 /// The wall past which an iteration counts as long: the tail reading of the

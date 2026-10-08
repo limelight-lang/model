@@ -325,6 +325,38 @@ fn node_class(name: &str) -> *const crate::class::Class {
 }
 
 #[test]
+fn a_threads_start_births_the_elder_with_no_root_registered() {
+    let _g = test_guard();
+    let _end = ready_for_a_birth();
+    let other = Mutator::start();
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "a thread's start birthed the elder, its ring empty"
+    );
+    let second = Mutator::start();
+    assert_eq!(
+        testing::take_spawns(),
+        1,
+        "a second start finds the elder standing and births nothing"
+    );
+    drop(second);
+    drop(other);
+}
+
+#[test]
+fn a_poll_births_an_unborn_elder_with_no_root_registered() {
+    let _g = test_guard();
+    let _end = ready_for_a_birth();
+    reset_lanes();
+    let _ = unsafe { crate::gc::ll_gc_maybe_collect() };
+    assert!(
+        wait_until(|| testing::thread_state() == ThreadState::Alive, A_BIRTH),
+        "the poll birthed the elder, the ring empty"
+    );
+    assert_eq!(testing::take_spawns(), 1);
+}
+
+#[test]
 fn the_first_pressure_collection_births_one_thread_whose_rounds_claim_and_release_the_record() {
     let _g = test_guard();
     let _end = ready_for_a_birth();

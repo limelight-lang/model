@@ -166,12 +166,15 @@
 //!
 //! # The thread, and the round over the records
 //!
-//! The elder collector thread is born by [`ensure_thread`] and never at
-//! startup: at the first wake a mutator's poll would send it — a block of R
-//! filled (`crate::cycle::queue::signal_the_collector_if_due`) — and at each
-//! ending of a pressure collection
-//! (`crate::cycle::collect::collect_under_pressure`), so that a process
-//! that never fills a block and never runs short holds no thread. It starts
+//! The elder collector thread is born by [`ensure_thread`] at the start of
+//! the process's first registered thread, roots or none (Edmond,
+//! 2026-10-08): every `ll_thread_init` asks for it, and so does every open
+//! poll while it is unborn ([`ensure_the_elder_stands`]), so that a birth the
+//! operating system refused at the start is retried without a root. The
+//! wakes of a filled block of R
+//! (`crate::cycle::queue::signal_the_collector_if_due`) and the ending of a
+//! pressure collection (`crate::cycle::collect::collect_under_pressure`)
+//! still birth it where it is unborn. It starts
 //! as any registered thread does, through `ll_thread_init`, whose base block
 //! draw can be refused; a refused base block is a thread that never started,
 //! and a call [`BIRTH_RETRY_INTERVAL`] or more after the refusal births
@@ -249,7 +252,7 @@
 //! # Cap zero
 //!
 //! A cap of zero removes the takes and keeps the thread: the elder is born
-//! by the poll's signal as under any cap, and its rounds visit every record,
+//! at the first thread's start as under any cap, and its rounds visit every record,
 //! advance each epoch that is due, and request no token; no sibling is born
 //! under it, and every sibling standing ends at the elder's next round without
 //! a backlog. The collections the takes would have made are the mutator's own,
@@ -463,8 +466,22 @@ static SERVE_CLOCK_BASE: OnceLock<Instant> = OnceLock::new();
 const BIRTH_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
 /// When the last birth was refused — a spawn the operating system refused,
-/// or a base block the pool refused — or `None`. Shared by every slot.
-static REFUSED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// or a base block the pool refused — in nanoseconds past
+/// [`refusal_clock_base`], or 0 for none. Shared by every slot, and an atomic
+/// rather than a lock because every poll reads it while the elder is unborn
+/// ([`ensure_the_elder_stands`]).
+static REFUSED_AT_NANOS: AtomicU64 = AtomicU64::new(0);
+
+/// The instant [`REFUSED_AT_NANOS`] counts from.
+fn refusal_clock_base() -> Instant {
+    static BASE: OnceLock<Instant> = OnceLock::new();
+    *BASE.get_or_init(Instant::now)
+}
+
+/// Nanoseconds past [`refusal_clock_base`] at this call, never 0.
+fn refusal_clock_now() -> u64 {
+    (refusal_clock_base().elapsed().as_nanos() as u64).max(1)
+}
 
 /// Collector threads the process can hold at once; the embedder's cap is at
 /// most this. The slot index is what a mutator's record names its collector
@@ -790,34 +807,60 @@ fn ensure_collector(index: usize) -> bool {
         return false;
     }
 
+    if index == ELDER {
+        ELDER_BORN_IN.store(std::process::id(), Ordering::Relaxed);
+    }
     #[cfg(test)]
     testing::note_spawn();
     true
 }
 
+/// The process holding the elder's latest birth, or 0. A `fork` without `exec`
+/// after the first thread's start is unsupported: the child inherits the
+/// elder's state with no thread behind it (Claude, 2026-10-08, on the
+/// Sage's advice; open to Edmond's overturning).
+static ELDER_BORN_IN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A debug build's check, at a thread's start, that this process is the one
+/// holding the elder's birth.
+pub(crate) fn debug_assert_not_a_forked_child() {
+    let born_in = ELDER_BORN_IN.load(Ordering::Relaxed);
+    debug_assert!(
+        born_in == 0 || born_in == std::process::id(),
+        "a fork without exec after the elder's birth is unsupported"
+    );
+}
+
 /// Whether a birth was refused less than [`BIRTH_RETRY_INTERVAL`] ago.
 fn birth_refused_recently() -> bool {
-    let refused_at = REFUSED_AT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    refused_at.is_some_and(|at| at.elapsed() < BIRTH_RETRY_INTERVAL)
+    match REFUSED_AT_NANOS.load(Ordering::Relaxed) {
+        0 => false,
+        at => refusal_clock_now().saturating_sub(at) < BIRTH_RETRY_INTERVAL.as_nanos() as u64,
+    }
 }
 
 /// How long ago the last birth was refused, or `None` for none since the
 /// last case's retire.
 #[cfg(test)]
 fn refused_birth_age() -> Option<Duration> {
-    REFUSED_AT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .map(|at| at.elapsed())
+    match REFUSED_AT_NANOS.load(Ordering::Relaxed) {
+        0 => None,
+        at => Some(Duration::from_nanos(refusal_clock_now().saturating_sub(at))),
+    }
 }
 
 fn note_refused_birth() {
-    let mut refused_at = REFUSED_AT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *refused_at = Some(Instant::now());
+    REFUSED_AT_NANOS.store(refusal_clock_now(), Ordering::Relaxed);
+}
+
+/// Birth the elder where none stands, roots or none: a birth refused at a
+/// thread's start, or an elder that ended, is asked for again at the next
+/// poll (Edmond, 2026-10-08). One relaxed load while it stands.
+#[inline]
+pub(crate) fn ensure_the_elder_stands() {
+    if COLLECTORS[ELDER].state.load(Ordering::Relaxed) == UNBORN {
+        ensure_thread();
+    }
 }
 
 /// Wake the collector of slot `index` out of its wait, and answer whether
@@ -1179,10 +1222,7 @@ fn threshold_for_rounds() -> usize {
 /// refusal of the case before it.
 #[cfg(test)]
 fn forget_refused_birth() {
-    let mut refused_at = REFUSED_AT
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    *refused_at = None;
+    REFUSED_AT_NANOS.store(0, Ordering::Relaxed);
 }
 
 /// Whether a test asked the thread to end; false in every other build.

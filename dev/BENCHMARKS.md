@@ -8,6 +8,36 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — young roots: every one had been stored into the heap, and a cut by age saves nothing on `web-heap` while delaying the young garbage of three loads
+
+**Build.** A diagnostic probe over `44c39dc`, not on `main`: a set of the
+entities any heap slot was written with (pointer and value slots, entries,
+vector elements), cleared at allocation; each root's latest registration
+time; each verdict counted by the root's age since it. Arms YA
+(`gc-checkpoint`) and YB (`gc-window`), `web-heap` with two mutators and the
+six deciding loads, one repeat. The probe's own check: of 345 million edges
+the marks met, none led to an entity the set lacked, so no store path was
+missed.
+
+| load | registrations never stored, A / B | verdicts on roots under 1 s old, A | B | of them dead, B |
+|---|---|---|---|---|
+| web-heap | 0 / 0 | 0 of 3.62 M | 85 k of 3.68 M | 70 k |
+| live-churn | 0 / 0 | 591 k of 1.25 M | 630 k of 1.27 M | 0 |
+| live-churn-dies-by-count | 0 / 0 | 702 k of 779 k | 700 k of 775 k | 0 |
+| deferred-live-large | 0 / 0 | 320 k of 880 k | 320 k of 880 k | 40 k |
+| deferred-then-dead | 0 / 0 | 73 k of 106 k | 73 k of 106 k | 40 k |
+| garbage-25 | 0 / 0 | 14 k of 43 k | 43 k of 43 k | 43 k |
+| registered-ring-live | 0 / 0 | 2.72 M of 2.72 M | 2.72 M of 2.72 M | 2.72 M |
+
+**Reading.** A bit for an entity never stored into the heap would spare no
+registration on any of these loads: every root had been stored first, as a
+ring needs. A cut that leaves roots under some age out of a batch would
+spare `web-heap` at most 2 % of B's verdicts and none of A's, while on
+`garbage-25`, `registered-ring-live` and `deferred-then-dead` it would hold
+back garbage that is young when its verdict comes. Only `live-churn` and
+its variant would gain: about half their verdicts read young roots live.
+Neither change is taken (settled by Claude, `dev/DECISIONS.md`).
+
 ## 2026-10-07 — the backup trace's second arm on the six deciding loads: the first arm's tails halved, still 4–35 times B's where a trace lands on a short request
 
 **Build.** The second arm (`07a32fe`) at ratio 2, against **M**; two

@@ -2373,6 +2373,22 @@ impl Drop for ExitGuard {
 #[unsafe(no_mangle)]
 #[must_use = "a thread whose base block was refused never started; run the work elsewhere"]
 pub extern "C" fn ll_thread_init() -> bool {
+    let started = init_this_thread();
+    // The elder collector is born at the first thread's start, roots or none
+    // (Edmond, 2026-10-08), and every later start asks again: one relaxed
+    // load once it stands, and a birth refused at the first start is retried
+    // at the next. The elder's own start finds its slot starting and births
+    // nothing (`crate::cycle::worker::ensure_thread`).
+    if started {
+        crate::cycle::worker::debug_assert_not_a_forked_child();
+        crate::cycle::worker::ensure_thread();
+    }
+    started
+}
+
+/// [`ll_thread_init`]'s body: the thread's own state, before any collector
+/// is asked for.
+fn init_this_thread() -> bool {
     // Must precede the first `tls::get()` anywhere: `get` deliberately does
     // not check whether the slot has been reserved (see its doc), so this
     // is the call that establishes that invariant.

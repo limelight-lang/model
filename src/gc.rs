@@ -382,6 +382,8 @@ pub unsafe extern "C" fn ll_gc_maybe_collect() -> usize {
         return 0;
     }
 
+    crate::cycle::worker::ensure_the_elder_stands();
+
     // The backup trace's arm collects here and at no other point: at an open
     // poll, where every reference the thread holds is counted, once its
     // threshold reads due (`crate::cycle::trace_backup::threshold`).

@@ -9,9 +9,51 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-08 — young objects keep their verdicts in both kinds
+
+Edmond, 2026-10-07, asked to optimise both kinds, for example so that
+first-generation objects are not judged. Leaving a young object out
+outright would never free a ring that dies young, such as an object whose
+field holds itself. Two sound forms were measured (`dev/BENCHMARKS.md`,
+2026-10-08, young roots) and neither is taken:
+
+- a bit for an entity never stored into the heap, sparing its
+  registration: no such registration on any load measured;
+- a cut leaving roots under some age out of a batch: at most 2 % of
+  `web-heap`'s verdicts, while three of the six loads would wait longer for
+  garbage that is young when it is read.
+
+Settled by Claude, open to Edmond's overturning. What already spares old
+survivors is unchanged: the mature-target prune and the deferred lanes by
+readings survived.
+
+## 2026-10-08 — the collector thread is born at the first thread's start, roots or none
+
+Edmond, 2026-10-08 06:53: «поток GC нужно создавать вообще почти сразу при
+старте и это не должно от корней зависеть». In both kinds every successful
+`ll_thread_init` asks for the elder, and every open poll asks while it is
+unborn, one relaxed load once it stands. Before, `gc-checkpoint` birthed it
+only at a filled block of R (about 8,100 entries) or a pressure collection:
+on `garbage-25` nothing was collected for about 7.6 s, which is the 2.9 s
+mean time to free of the 2026-10-07 entry (Claude's reading of the code and
+arithmetic, to be measured). Supersedes the 2026-09-15 entry's birth at the
+first pressure collection and its "never at startup".
+
+Settled by Claude on the Critic's and the Sage's advice, open to Edmond's
+overturning: the birth is asked at every start, not once, so a refused birth
+is retried at the next start or poll with no root; the refusal stamp is an
+atomic, since unborn polls read it; a `fork` without `exec` after the first
+start is unsupported (the child inherits the elder's state with no thread),
+checked in debug builds; `rfc/model/gc/strategies.md`'s one fire point is
+unchanged, a birth being no fire. Costs the ruling accepts: the elder never
+ends and holds its stack and blocks for the process's life, and its rounds
+run on an idle process too (a take of a standing R every 50 ms under
+`gc-checkpoint`).
+
 ## 2026-10-08 — `gc-checkpoint`'s rounds serve R at the batch's bound, or once it has stood 50 ms
 
-Edmond, 2026-10-08 06:19: «Да меняй порог», on A1k measured 2026-10-07: A's
+Edmond, 2026-10-08 06:19: «Да меняй порог», confirmed at 06:52 after the
+explanation («согласен»), on A1k measured 2026-10-07: A's
 rounds serve a mutator outright at 1,024 entries (`BATCH_BOUND`) instead of
 `SOFT_THRESHOLD` (64), and take a ring below that once it has stood 50 ms
 instead of 4 s. `gc-window` keeps 64 and 4 s for its rounds; its offer is
