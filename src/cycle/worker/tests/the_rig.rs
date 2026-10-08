@@ -4983,7 +4983,10 @@ fn the_rigs_figures_read_their_known_answers() {
         );
     }
 
-    // No garbage frees nothing, withholds nothing and signals no collector.
+    // No garbage frees nothing, withholds nothing and posts no set. The
+    // collector is born at the first thread's start whatever the load
+    // (`dev/DECISIONS.md`, "the collector thread is born at the first thread's
+    // start, roots or none"), so its rounds take what R holds and find it live.
     let read = run(&cell, load_named("garbage-0"), class);
     assert_eq!(
         (
@@ -4994,10 +4997,9 @@ fn the_rigs_figures_read_their_known_answers() {
             read.sum(|reading| reading.withheld_peak),
             read.written_back,
             read.collectors_born,
-            (read.rounds, read.outcomes.batches),
             read.verdict_collections.collections,
         ),
-        (0, 0, 0, Duration::ZERO, 0, 0, 0, (0, 0), 0),
+        (0, 0, 0, Duration::ZERO, 0, 0, 1, 0),
         "no garbage"
     );
 
@@ -5069,22 +5071,24 @@ fn the_rigs_figures_read_their_known_answers() {
         read.collectors_born
     );
 
-    // A load whose registrations fill no block of R signals no collector,
-    // and under a cap above zero no poll traces R whole: what was built
-    // stands at the loop's end.
+    // A load whose registrations fill no block of R still has the collector
+    // born at the first thread's start (`dev/DECISIONS.md`, "the collector
+    // thread is born at the first thread's start, roots or none"), whose
+    // rounds take R as it stands: every member built is either freed by a
+    // poll or standing at the loop's end.
     let read = run(&cell, load_named("one-large-root"), class);
     let built = read.sum(|reading| reading.garbage_members);
+    let freed = read.sum(|reading| reading.freed_by_polls);
     assert_eq!(
         (
             read.collectors_born,
-            read.sum(|reading| reading.freed_by_polls),
-            read.standing_bytes()
+            freed * MEMBER_CLASS_BYTES + read.standing_bytes()
         ),
-        (0, 0, built * MEMBER_CLASS_BYTES),
-        "every garbage member built stood at the loop's end"
+        (1, built * MEMBER_CLASS_BYTES),
+        "every garbage member built was freed by a poll or stood at the loop's end"
     );
     println!(
-        "calibration: one-large-root built {built}, none freed by a poll, {} bytes standing",
+        "calibration: one-large-root built {built}, {freed} freed by polls, {} bytes standing",
         read.standing_bytes()
     );
 

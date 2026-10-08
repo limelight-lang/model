@@ -331,5 +331,206 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
     })
 }
 
+/// Whether the owner may free `member` in [`free_whole_before_drops`]'s one
+/// pass: an entity of the GC heap with no weak reference, whose death runs
+/// no user code and leaves nothing outside its counted cells and its kind's
+/// own storage — an object of a class with the default dispose, no destructor
+/// and no outside cells, a reference, a string or an array.
+///
+/// # Safety
+/// `member` is a live entity header this thread may read.
+unsafe fn the_owner_may_free_whole(member: *mut RcHeader, kind: u32) -> bool {
+    use crate::refcount::EntityKind;
+    let flags = unsafe { crate::refcount::mutator_flags(member) };
+    if flags & crate::refcount::HAS_WEAK_REFERENCES != 0
+        || MemoryCategory::from_flags(flags) != MemoryCategory::GcHeap
+    {
+        return false;
+    }
+
+    match kind {
+        k if k == EntityKind::Object as u32 => {
+            let class = unsafe { (*(member as *mut crate::object::Object)).class };
+            let class_ref = unsafe { &*class };
+            !class_ref.has_destructor()
+                && class_ref.dispose == crate::object::ll_default_dispose as *const ()
+                && unsafe { crate::class::Class::outside_cells(class) }.is_none()
+        }
+        k if k == EntityKind::Reference as u32
+            || k == EntityKind::String as u32
+            || k == EntityKind::StringDynamic as u32
+            || k == EntityKind::Array as u32 =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+// The sets on this thread freed in the owner's one pass (tests only).
+#[cfg(test)]
+thread_local! {
+    static FREED_WHOLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The sets on this thread [`free_whole_before_drops`] freed since this last
+/// answered, which it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_freed_whole() -> usize {
+    FREED_WHOLE.with(|count| count.replace(0))
+}
+
+/// Free a set the owner's own trace found garbage whole in one pass over its
+/// members, and hand back the children outside it, held for a drain the
+/// caller times as [`reclaim_before_drops`] does; or answer `None` with
+/// nothing written, for the commit's full chain to take the set.
+///
+/// The full chain guards every member, notifies its weak references, runs
+/// its destructors, reads it again, severs it and disposes of each member.
+/// For a set whose every member [`the_owner_may_free_whole`], each of those
+/// steps but the sever's drops does nothing: no user code runs until the drain, so nothing
+/// can read a member between the trace and the free. Each member's count is
+/// set to zero and its slot freed through the same `ll_free_entity` its
+/// death would reach, cells left as they stand; a registered member stays
+/// dead in place for the retirement pass, and a slot under this trace's window
+/// is withheld until the close (`crate::cycle::deferred_slot_reuse`).
+///
+/// `None` where the reading is not of a set found garbage whole, where the
+/// members' counts no longer sum to the internal edges the trace read
+/// (`crate::cycle::finalization::counts_sum_to`), where a member asks for its
+/// own death, or where the queue's room is refused. A child outside the set is
+/// queued whatever its marks, as the full chain's sever queues it.
+///
+/// # Safety
+/// As [`reclaim_before_drops`], save that no member carries a guard: the
+/// rows of a trace within the set stand, coloured, and nothing ran on this
+/// thread since that trace.
+pub(crate) unsafe fn free_whole_before_drops(
+    members: &Membership<'_>,
+    arena: &mut TraceScratchArena,
+) -> Option<usize> {
+    let (internal_edges, external_children) = arena.garbage_whole_reading()?;
+    if members.len() == 0
+        || !unsafe { crate::cycle::finalization::counts_sum_to(members, internal_edges) }
+    {
+        return None;
+    }
+
+    let mut eligible = true;
+    unsafe {
+        members.for_each(|member| {
+            eligible = eligible && the_owner_may_free_whole(member, entity_kind(member));
+        })
+    };
+    if !eligible || !arena.reserve_drops(external_children) {
+        return None;
+    }
+    #[cfg(test)]
+    {
+        crate::cycle::finalization::note_confirmed_by_the_sum();
+        RESERVED_BY_THE_DRAIN.with(|count| count.set(count.get() + 1));
+    }
+    debug_assert_eq!(
+        unsafe { crate::cycle::validation::validate_component_holding(members, 0, 0) },
+        crate::cycle::validation::ValidationResult::Unreachable,
+        "the counts that sum to the internal edges validate"
+    );
+
+    debug_assert!(
+        arena.deferred_drops_are_empty(),
+        "a component's teardown starts with the queue the last one drained"
+    );
+    let mut queued = 0;
+    unsafe {
+        members.for_each(|member| {
+            crate::cells::trace_cells::<crate::cells::PlainCells>(
+                member,
+                entity_kind(member),
+                |cell| {
+                    if members.contains(cell.child) {
+                        return;
+                    }
+                    queued += 1;
+                    let pushed = arena.push_drop(cell.child);
+                    assert!(pushed, "a reserved deferred drop is never refused");
+                },
+            );
+        })
+    };
+    assert_eq!(
+        queued, external_children,
+        "the one pass queues every child the drain left out"
+    );
+
+    #[cfg(feature = "debug-journal")]
+    let mut first_member: *mut RcHeader = std::ptr::null_mut();
+    unsafe {
+        members.for_each(|member| {
+            #[cfg(feature = "debug-journal")]
+            if first_member.is_null() {
+                first_member = member;
+            }
+            free_a_member_whole(member);
+        })
+    };
+    arena.forget_the_garbage_whole_reading();
+    let member_count = members.len();
+    #[cfg(test)]
+    {
+        FREED_WHOLE.with(|count| count.set(count.get() + 1));
+        crate::cycle::worker::testing::note_members_reclaimed(member_count);
+    }
+    crate::journal::kinds::journal_event!(
+        crate::journal::kinds::KIND_COMPONENT_RECLAIMED,
+        first_member as u64,
+        0,
+        member_count as u64,
+    );
+    Some(member_count)
+}
+
+/// The death of one member of a set freed whole, its counted cells already
+/// queued: the kind's own storage given back, the count at zero, the slot
+/// freed — what the kind's death does after its child releases.
+///
+/// # Safety
+/// `member` is a member [`the_owner_may_free_whole`], freed once.
+unsafe fn free_a_member_whole(member: *mut RcHeader) {
+    use crate::refcount::EntityKind;
+    let kind = unsafe { entity_kind(member) };
+    unsafe { crate::refcount::set_header_refcount(member, 0) };
+    if kind == EntityKind::String as u32 || kind == EntityKind::StringDynamic as u32 {
+        unsafe { crate::string::string_die(member as *mut crate::string::LLString) };
+        return;
+    }
+
+    crate::journal::kinds::journal_event!(
+        crate::journal::kinds::KIND_ENTITY_DEATH,
+        member as u64,
+        kind as u64,
+        0
+    );
+    if kind == EntityKind::Array as u32 {
+        unsafe {
+            crate::array::entity::dispose_storage(
+                member as *mut crate::array::entity::LLArray,
+                MemoryCategory::GcHeap,
+            )
+        };
+    }
+    unsafe { crate::memory::stdapi::ll_free_entity(member as *mut u8) };
+}
+
+impl<'a> DeferredReclamation<'a> {
+    /// The children [`free_whole_before_drops`] queued on `arena`, held for
+    /// the drain.
+    pub(crate) fn queued_on(arena: &'a mut TraceScratchArena) -> Self {
+        Self {
+            arena,
+            drained: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests;

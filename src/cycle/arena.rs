@@ -1845,6 +1845,26 @@ impl TraceScratchArena {
         self.external_children_read.take()
     }
 
+    /// The internal edges and the external children a trace within a set kept
+    /// where it found the set garbage whole, read without forgetting them;
+    /// `None` for any other trace, and for a set proved by its tags, whose
+    /// external children no drain counted.
+    pub(crate) fn garbage_whole_reading(&self) -> Option<(usize, usize)> {
+        match (self.internal_edges_read, self.external_children_read) {
+            (Some(edges), Some(children)) if self.held_from_outside_read == 0 => {
+                Some((edges, children))
+            }
+            _ => None,
+        }
+    }
+
+    /// Forget the internal edges and the external children a trace kept, the
+    /// commit that would read them having freed the set without them.
+    pub(crate) fn forget_the_garbage_whole_reading(&mut self) {
+        self.internal_edges_read = None;
+        self.external_children_read = None;
+    }
+
     /// Have the readings of the recall release the grants the collector
     /// holds behind this trace: `behind` names the slot's word a recalling
     /// mutator sets and what releases them.

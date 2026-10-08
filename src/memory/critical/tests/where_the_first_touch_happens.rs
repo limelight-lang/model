@@ -123,6 +123,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("FILLER", false),         // test-only const Cell of a raw pointer, no drop glue
         ("FRAME", false),          // test-only const Cell<u8>, no drop glue (`gc-window`)
         ("FREED", false),
+        ("FREED_WHOLE", false), // test-only const Cell, no drop glue
         ("HEAP", false),
         ("HELD_AT_LAST_ROW_READ", false), // test-only const Cell, no drop glue
         ("HELD_FIGURES", false),          // test-only const Cell of a Copy struct, no drop glue

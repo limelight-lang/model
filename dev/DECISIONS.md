@@ -9,6 +9,40 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-08 — a set the owner found garbage whole is freed in one pass when no member's death asks for more
+
+The owner's commit of a set its own trace within the set found garbage
+whole skips the guards, the weak notification, the destructor pass and the
+second reading when every member is an entity of the GC heap with no weak
+reference — an object with no destructor, the default dispose and no
+outside cells, a reference, a string or an array — and the members' counts
+still sum to the internal edges the trace read
+(`crate::cycle::reclamation::free_whole_before_drops`). Each member's
+children outside the set are queued and dropped after the frees as the
+sever queues them; each member's count is set to zero and its slot freed
+through the death's own free, cells left in place. Any other set takes the
+full chain.
+
+Why it holds: nothing runs on the owner between its trace and its commit,
+and with no destructor and no weak reference no step of the full chain but
+the drops does anything; no user code runs before the drain. Owner frees,
+at its poll, after its own walk: the `gc-checkpoint` rule is unchanged.
+
+The Critic's attack on wider forms (2026-10-08): a commit by the counts' sum
+without the owner's walk is unsound (a reference moved under the collector's
+trace passes the sum), and the collector freeing `gc-checkpoint`'s sets
+would change who frees; neither is taken. An external child carrying the
+ownership mark is queued and released as the full chain's sever queues it.
+
+Plan and gate agreed by Edmond (2026-10-08 09:36, «согласен»): the order of
+the outside children's releases may change; keep at 15 % or more off the
+owner's collections on `web-heap`, revert under 8 %. Measured 11 %, the six
+loads 13–29 %, nothing worse (`dev/BENCHMARKS.md`, 2026-10-08); kept, settled
+by Claude between the two marks, open to Edmond's overturning. Two figures of
+the rig's calibration case read the collector born at the start (the
+2026-10-08 entry below): `garbage-0` and `one-large-root` now count one
+collector born.
+
 ## 2026-10-08 — young objects keep their verdicts in both kinds
 
 Edmond, 2026-10-07, asked to optimise both kinds, for example so that

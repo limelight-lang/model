@@ -348,6 +348,13 @@ thread_local! {
     static CONFIRMED_BY_THE_SUM: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// Count one confirmation the counts' sum made on this thread, for a commit
+/// that confirms outside [`Finalization::confirm`].
+#[cfg(test)]
+pub(crate) fn note_confirmed_by_the_sum() {
+    CONFIRMED_BY_THE_SUM.with(|count| count.set(count.get() + 1));
+}
+
 /// The confirmations on this thread the counts' sum made since this last
 /// answered, which it leaves at zero.
 #[cfg(test)]
@@ -373,7 +380,7 @@ pub(crate) fn take_confirmed_by_the_sum() -> usize {
 /// # Safety
 /// As [`validate_component`], and no count or counted cell of a member changed
 /// since the trace that read `edges`.
-unsafe fn counts_sum_to(members: &Membership<'_>, edges: usize) -> bool {
+pub(crate) unsafe fn counts_sum_to(members: &Membership<'_>, edges: usize) -> bool {
     let mut sum = 0usize;
     unsafe { members.for_each(|member| sum += crate::refcount::header_refcount(member) as usize) };
     sum == edges

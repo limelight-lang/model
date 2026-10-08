@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — a set garbage whole freed in one pass by its owner: `web-heap`'s owner collections 11 % cheaper, the six loads' 13–29 %, the teardown itself no cheaper
+
+**Build.** `gc-checkpoint`, built for an executable: **M** at `f94838e`, **F**
+with `reclamation::free_whole_before_drops` (a set the owner's own trace
+found garbage whole, every member with no destructor and no weak
+reference, freed with no guard, destructor pass or second reading). Before
+building it, a probe over `e56fa01` found every member of every set found
+garbage whole on `web-heap` and the six loads eligible (`web-heap` 76.7 M
+members in 3,820 sets; the loads carry no destructor and no weak
+reference). `web-heap` with two mutators, cap 1, and the six deciding loads
+on mutators 1,2, spare and shared placements; three repeats each, one
+rotation.
+
+`web-heap`, seconds:
+
+| arm | owner's collections | of them confirm | destructors | reclaim | mutator CPU | collector CPU | longest collection |
+|---|---|---|---|---|---|---|---|
+| M | 25.5–26.9 | 3.4–3.5 | 0.7–0.8 | 6.9–7.3 | 76.0–77.5 | 47.4–49.3 | 129–173 ms |
+| F | 21.9–24.0 | 0.6 | 0.1 | 7.0–7.7 | 71.4–74.3 | 47.8–49.6 | 106–129 ms |
+
+Members freed by the collections 67.8–68.8 M in both; garbage mean
+25.5–28.5 MB in both.
+
+The six loads, both placements together:
+
+| load | owner's collections M | F | time to free M | F | p99 M | F |
+|---|---|---|---|---|---|---|
+| live-churn | 320–372 ms | 261–293 ms | 3.02–3.07 s | 3.02–3.04 s | 918–983 µs | 721–786 µs |
+| registered-ring-live | 418–462 ms | 340–398 ms | 0.14–0.24 ms | 0.13–0.16 ms | 295–524 µs | 246–328 µs |
+| deferred-live-large | 25–33 ms | 18–24 ms | 37–39 ms | 38–39 ms | 74–90 µs | 57–90 µs |
+| deferred-then-dead | 33–48 ms | 30–40 ms | 1.38–1.39 s | 1.37–1.39 s | 66–90 µs | 57–82 µs |
+| garbage-25 | 24–29 ms | 18–22 ms | 43–45 ms | 44–46 ms | 115–180 µs | 115–164 µs |
+| live-churn-dies-by-count | none | | none to free | | 164–180 µs | 147–164 µs |
+
+**Reading.** The owner's collections on `web-heap` fall by 11 % by the means
+(26.0 to 23.1 s) and its mutator CPU by 5 %, inside the band the plan set
+(keep at 15 % or more, revert under 8 %; `dev/DECISIONS.md`, 2026-10-08).
+What went is the confirmation's guards and the destructor pass: 3.6 s.
+The teardown itself (reclaim) costs what it did, 7 s: the one pass reads
+each member's cells and its rows again as the sever did, and the
+member's header as the death did. The six loads' collections fall 13–29 %,
+`live-churn`'s p99 by a fifth; no time to free, longest collection or
+collector CPU is worse.
+
 ## 2026-10-08 — `gc-checkpoint` with its collector born at the start: `garbage-25` freed in 42–48 ms rather than 2.9 s, the owner's longest pause on `web-heap` unchanged by the batches of 1,024
 
 **Build.** Three `gc-checkpoint` arms built for an executable: **O** at

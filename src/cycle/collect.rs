@@ -57,7 +57,9 @@ use crate::cycle::members::HarvestEnding;
 use crate::cycle::members::MEMBER_CAPACITY;
 use crate::cycle::membership::Membership;
 use crate::cycle::queue::BatchForm;
-use crate::cycle::reclamation::{DeferredReclamation, reclaim_before_drops};
+use crate::cycle::reclamation::{
+    DeferredReclamation, free_whole_before_drops, reclaim_before_drops,
+};
 use crate::cycle::token::HeldToken;
 use crate::cycle::trace::{ALL_ROOTS, TraceOutcome, trace_batch, trace_within_the_set};
 use crate::cycle::validation::ValidationResult;
@@ -1487,6 +1489,21 @@ unsafe fn commit_before_drops<'a>(
     initial_disposition: impl FnOnce(ValidationResult),
 ) -> Option<(usize, DeferredReclamation<'a>)> {
     fire_injected_verdict_race();
+
+    // A set this thread's own trace found garbage whole, which no member's
+    // death asks the full chain for, is freed in one pass: guards,
+    // destructors and the second reading have nothing to do there
+    // (`crate::cycle::reclamation::free_whole_before_drops`). A commit that
+    // stamps reads R whole and never such a set.
+    #[cfg(test)]
+    let one_pass_from = std::time::Instant::now();
+    if !stamps && let Some(freed) = unsafe { free_whole_before_drops(members, arena) } {
+        // The one pass is the teardown, in the split's reclaim.
+        #[cfg(test)]
+        crate::cycle::worker::testing::note_commit_part(2, one_pass_from.elapsed());
+        initial_disposition(ValidationResult::Unreachable);
+        return Some((freed, DeferredReclamation::queued_on(arena)));
+    }
 
     let mut finalization = Finalization::begin(arena.epoch());
     // Before the first guard and before the early answer a commit with nothing
