@@ -233,11 +233,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       `dev/design/gc-kinds.md`. Next: the tag's price counted in
       instructions and count writes a request before "no tag on +1".
 - [x] `gc-checkpoint`'s rounds at the batch's bound or 50 ms standing
-      (Edmond, 2026-10-08; A1k). The owner's pause under the larger
-      batches to be read.
+      (Edmond, 2026-10-08; A1k). The owner's longest collection unchanged
+      by the larger batches (`dev/BENCHMARKS.md`, 2026-10-08).
 - [x] The collector thread born at the first thread's start, roots or
-      none (Edmond, 2026-10-08). To read: `garbage-25`'s time to free under
-      `gc-checkpoint` against the 2.9 s of 2026-10-07.
+      none (Edmond, 2026-10-08). `garbage-25` freed in 42–48 ms under
+      `gc-checkpoint`, against 2.9 s (`dev/BENCHMARKS.md`, 2026-10-08).
 - [x] Young objects measured in both kinds: none never stored into the
       heap, a cut by age not worth it; neither taken (`dev/DECISIONS.md`,
       2026-10-08).

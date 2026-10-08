@@ -8,6 +8,41 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — `gc-checkpoint` with its collector born at the start: `garbage-25` freed in 42–48 ms rather than 2.9 s, the owner's longest pause on `web-heap` unchanged by the batches of 1,024
+
+**Build.** Three `gc-checkpoint` arms built for an executable: **O** at
+`44c39dc` (rounds at 64, the elder born at a filled block of R), **P** at
+`5f2f0e2` (rounds at 1,024 or 50 ms standing), **N** at `f94838e` (P with
+the elder born at the first thread's start). The six deciding loads on
+mutators 1,2, spare and shared placements, and `web-heap` with two
+mutators and cap 1, three repeats each, one rotation, no cell void.
+
+| load | time to free O | P | N | owner's longest collection O | P | N |
+|---|---|---|---|---|---|---|
+| garbage-25 | 2.89 s | 2.89–2.90 s | 42–48 ms | 1.1–1.7 ms | 0.8–3.4 ms | 0.3–1.9 ms |
+| live-churn | 3.36–3.39 s | 3.38–3.43 s | 3.01–3.05 s | 2.3–9.3 ms | 2.8–6.6 ms | 2.8–5.9 ms |
+| registered-ring-live | 0.27–0.30 ms | 0.28–0.30 ms | 0.15–0.16 ms | 2.2–10.7 ms | 1.5–6.1 ms | 2.6–6.0 ms |
+| deferred-then-dead | 1.38–1.39 s | 1.38–1.40 s | 1.37–1.39 s | 1.2–2.1 ms | 1.3–4.8 ms | 1.0–3.6 ms |
+| deferred-live-large | 36–37 ms | 37–39 ms | 37–39 ms | 0.4–2.4 ms | 0.3–0.8 ms | 0.4–3.5 ms |
+| live-churn-dies-by-count | none to free | | | under 0.3 ms | | |
+
+`web-heap`, CPU seconds and the owner's longest verdict collection:
+
+| arm | mutator | collector | garbage mean, MB | longest collection |
+|---|---|---|---|---|
+| O | 77.1–78.7 | 51.8–53.7 | 29.8–32.7 | 123–146 ms |
+| P | 75.9–77.1 | 47.8–49.2 | 25.6–29.8 | 132–163 ms |
+| N | 76.3–78.6 | 49.0–49.7 | 26.0–33.4 | 124–158 ms |
+
+**Reading.** The birth at the start removes `garbage-25`'s wait for a
+filled block of R: its time to free falls about sixtyfold, its collector's
+CPU rising from 21–35 ms to 43–67 ms a run. `live-churn` frees in 3.0 s
+rather than 3.4 s and `registered-ring-live` in half the time. Batches of
+1,024 leave the owner's longest collection within the spread of the
+batches of 64, on `web-heap` and on the six loads. `web-heap`'s collector
+costs 9 % less in P and 6 % less in N than in O by the means of three, as on 2026-10-07; its mutator,
+here with mutators on CPUs 1 and 2, sits at 76–79 s in every arm.
+
 ## 2026-10-08 — young roots: every one had been stored into the heap, and a cut by age saves nothing on `web-heap` while delaying the young garbage of three loads
 
 **Build.** A diagnostic probe over `44c39dc`, not on `main`: a set of the
