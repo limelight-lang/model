@@ -9,6 +9,20 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-08 — `gc-checkpoint`'s rounds serve R at the batch's bound, or once it has stood 50 ms
+
+Edmond, 2026-10-08 06:19: «Да меняй порог», on A1k measured 2026-10-07: A's
+rounds serve a mutator outright at 1,024 entries (`BATCH_BOUND`) instead of
+`SOFT_THRESHOLD` (64), and take a ring below that once it has stood 50 ms
+instead of 4 s. `gc-window` keeps 64 and 4 s for its rounds; its offer is
+its own rule (R50).
+
+**Why.** On `web-heap` A1k's collector spent 44.7–47.4 s against A's
+49.5–51.7 s (about −9 %), mutator and garbage within the spread, and the six
+deciding loads' CPU, time to free and p99 within A's (`dev/BENCHMARKS.md`,
+2026-10-07, "A with the same higher offer against B with R50"). The owner's
+pause under the larger batches was not read in that run and is owed.
+
 ## 2026-10-07 — two collector kinds, named: `gc-checkpoint` and `gc-window`, one per build
 
 Edmond: keep both counting collectors, give them clear names, no tracing for

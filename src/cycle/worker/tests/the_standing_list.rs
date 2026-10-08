@@ -441,6 +441,10 @@ fn a_retired_collector_leaves_every_record_unlinked() {
     let sleepers: Vec<Sleeper> = (0..3).map(|_| Sleeper::start(class)).collect();
     let records: Vec<*mut MutatorRecord> = sleepers.iter().map(Sleeper::record).collect();
     let _end = RetireOnDrop;
+    // The sleepers' rings hold `SOFT_THRESHOLD` entries, the rounds'
+    // threshold the case reads; `gc-checkpoint` serves at the batch's bound
+    // with no case's (Edmond, 2026-10-08).
+    testing::serve_rounds_at(SOFT_THRESHOLD);
     testing::confine_rounds_to_records(&records);
     testing::wait_between_rounds_for(Some(PAST_THE_CASE));
     testing::permit_births(true);

@@ -7,7 +7,7 @@ who decides that a garbage ring may be freed. Ruled by Edmond on 2026-10-07
 
 | Kind | Feature | Who decides and frees | What the program pays |
 |---|---|---|---|
-| A, checkpoint | `gc-checkpoint` (default) | The collector thread finds garbage rings; the owning thread checks them and frees them at its poll | No tag on any write; the frees and their pauses fall on the owner |
+| A, checkpoint | `gc-checkpoint` (default) | The collector thread finds garbage rings, taking a mutator's R at 1,024 entries or once it has stood 50 ms; the owning thread checks them and frees them at its poll | No tag on any write; the frees and their pauses fall on the owner |
 | B, window | `gc-window` | The collector judges a garbage set alone and frees it while the program runs | A window tag stored into header byte 7 by every count write and every tagging slot store |
 
 ```
@@ -43,17 +43,17 @@ forms (`dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md`, §7):
 
 `web-heap`, two mutators, three repeats, CPU seconds
 (`dev/BENCHMARKS.md`, 2026-10-07, "A with the same higher offer against B
-with R50"; `gc-checkpoint` is its row A, the build on main, and
+with R50"; `gc-checkpoint` is its row A1k, the rule on main since 2026-10-08, and
 `gc-window` its row R50):
 
 | | mutator | collector | total | garbage mean, MB |
 |---|---|---|---|---|
-| `gc-checkpoint` | 69.4–71.4 | 49.5–51.7 | 119–123 | 25.8–31.3 |
+| `gc-checkpoint` | 68.9–70.9 | 44.7–47.4 | 114–118 | 27.0–29.9 |
 | `gc-window` | 45.6–46.6 | 56.4–58.5 | 102–105 | 23.1–26.8 |
 
 - The owner's longest pause on `web-heap`: 117–198 ms for `gc-checkpoint`,
   10–34 ms for `gc-window` (`dev/BENCHMARKS.md`, 2026-10-05, S68.11).
-- Request latency p99 on `live-churn`: 786–983 µs against 164–262 µs (the
+- Request latency p99 on `live-churn`: 721–983 µs against 164–262 µs (the
   2026-10-07 entry above).
 - The tag itself, built for an executable: `ll_retain` 16 instructions
   against 13, `ll_release` 25 against 22
@@ -63,6 +63,6 @@ with R50"; `gc-checkpoint` is its row A, the build on main, and
 
 - `gc-window` where the program's own time and its pauses matter: about a
   third less mutator CPU, pauses of tens of milliseconds rather than
-  hundreds, lower tail latency, about 15 % less CPU in total.
+  hundreds, lower tail latency, about 10 % less CPU in total.
 - `gc-checkpoint` where the collector's core is the scarce one: its
-  collector spends about an eighth less, and no write carries a tag.
+  collector spends about a fifth less, and no write carries a tag.

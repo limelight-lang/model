@@ -424,9 +424,18 @@ const EXPIRED_WAITS_PER_ROUND: usize = 2;
 
 /// How long a mutator's candidate ring may stand non-empty below the
 /// round's threshold before the round takes it as an ordinary batch
-/// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`). 4 s, and not a
-/// measured figure: what it bounds is how long the entities a ring of
-/// fewer than [`SOFT_THRESHOLD`] candidates names wait on a thread that
+/// (`dev/design/a-standing-r-is-taken-after-n-rounds.md`).
+///
+/// Under `gc-checkpoint`, 50 ms beside the rounds' threshold at the batch's
+/// bound ([`threshold_for_rounds`]): the collector cheaper by 9 % on
+/// `web-heap` and the six deciding loads unchanged, measured as A1k
+/// (`dev/BENCHMARKS.md`, 2026-10-07; Edmond, 2026-10-08).
+#[cfg(feature = "gc-checkpoint")]
+const STANDING_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Under `gc-window`, 4 s, and not a measured figure: what it bounds is how
+/// long the entities a ring of fewer than [`SOFT_THRESHOLD`] candidates
+/// names wait on a thread that
 /// never reaches the threshold, against one batch's foreign-holder window
 /// per interval on a thread that registers a candidate now and then. The
 /// collector's own time, read against the serve clock, so a mutator's rate
@@ -435,6 +444,7 @@ const EXPIRED_WAITS_PER_ROUND: usize = 2;
 /// mutator is measured (`dev/BENCHMARKS.md`, "the live-roots arm"): about 25
 /// instructions a verdict, 1,495 to 1,562 for a full ring of 63, against the
 /// hundreds of thousands the collection it rides on spends.
+#[cfg(feature = "gc-window")]
 const STANDING_INTERVAL: Duration = Duration::from_secs(4);
 
 /// The embedder's standing interval in nanoseconds, or zero for
@@ -1150,13 +1160,18 @@ pub(crate) fn threshold_for_short_offers() -> usize {
 #[cfg(feature = "gc-window")]
 pub(crate) const SHORT_STANDING_INTERVAL: Duration = Duration::from_millis(50);
 
-/// The threshold the rounds serve at: the module's own, or a case's.
+/// The threshold the rounds serve at: a case's, or the batch's bound under
+/// `gc-checkpoint` (with [`STANDING_INTERVAL`] at 50 ms below it), or
+/// [`SOFT_THRESHOLD`] under `gc-window`.
 fn threshold_for_rounds() -> usize {
     #[cfg(test)]
     if let Some(threshold) = testing::threshold_for_rounds() {
         return threshold;
     }
 
+    #[cfg(feature = "gc-checkpoint")]
+    return BATCH_BOUND;
+    #[cfg(feature = "gc-window")]
     SOFT_THRESHOLD
 }
 
