@@ -8,6 +8,40 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — the close's returns past the window's arm: the close is 22 % of the owner's instructions, the shorter return saves no time; not taken
+
+**Profile.** Callgrind over the owner's fires on `web-heap` (30 s, one
+mutator, `4c2addb`): 3.78 G instructions, of them 0.84 G (22 %) in the
+close of the trace window, which hands back 11.25 M withheld slots one by
+one through `ll_free`. Per slot that free reads the window's arm again —
+the window is closed, so it reads the token and makes the returns a foreign
+holder withheld (three empty stacks, 22 instructions) — before the heap's
+own free.
+
+**Build.** `gc-checkpoint`, built for an executable: **M** at `4c2addb`,
+**C** with the close making each return through an entry that skips
+`ll_free`'s buffer test and the window's arm (the close holds the thread's
+token from the take, so the arm would withhold nothing), the foreign
+holder's returns made once before the loop. The Critic and the Sage found
+no hazard. `web-heap` with two mutators, cap 1, and the six deciding loads;
+three repeats each.
+
+| arm | `web-heap` owner's collections | reclaim | mutator CPU | longest collection |
+|---|---|---|---|---|
+| M | 19.6–21.0 s (20.5) | 3.4–3.7 s | 69.3–71.8 s | 81–99 ms |
+| C | 19.6–20.3 s (20.0) | 3.4–3.6 s | 69.1–70.6 s | 64–99 ms |
+
+The six loads' owner collections read alike in both arms (`live-churn`
+204–255 against 208–241 ms, `registered-ring-live` 316–335 against
+316–336 ms); one `live-churn` cell of C reads a 17.8 ms longest
+collection.
+
+**Reading.** 2 % by the means, inside the spread. C's instructions were not
+counted. The close is a pointer
+chase through slots that died long before, each return touching its
+block: the instructions it saves ran while those loads were outstanding,
+as the Critic expected. Not taken; the patch is not kept.
+
 ## 2026-10-08 — the drain queues a set's outside children as it meets them: `web-heap`'s teardown halved, the owner's collections 12 % cheaper, the longest 27 % shorter
 
 **Build.** `gc-checkpoint`, built for an executable: **M** at `28b7e7c` (the
