@@ -1495,3 +1495,111 @@ collector with finalization counted.
 
 Taken (settled by Claude on the Sage's advice, open to Edmond's
 overturning): the reduced arm first, kept out of `main` as a diagnostic arm.
+
+## Wave 3: P10, the proved set without the counts' sum (Claude's draft, 2026-10-08)
+
+**What the owner does today** (read at `4da1230`). In the feature build a
+set the collector proved by its tags reaches its owner marked
+(`Posting::WholeProved`, or `Posting::S` with its edges; `worker.rs`,
+`split_and_free`). The owner meets its members without reading a cell
+(`trace.rs`, `trace_within_the_set`), takes the edges the collector
+recorded between them and the references its free of C left held, and
+commits. The commit's first step, `Finalization::confirm`
+(`finalization.rs`), sums the members' counts against those edges
+(`counts_sum_to`) and walks the set by the exact validation where the sum
+differs; a debug build validates after a matching sum too. Destructors run
+after it, and the revalidation after destructors reads the set again.
+
+**The change.** Edmond's answer to Q4 («конечно убираем лишние проверки»;
+P10's first clause, accepted 2026-10-06): for a set proved by its tags the
+owner trusts the proof. `confirm` answers `Unreachable` without the sum,
+and the debug build keeps the exact validation as an assertion, as it does
+after a matching sum. The arena carries where its internal edges came
+from: the collector's record (this case) or the owner's own drain, whose
+sum stays as it is (the 2026-10-08 one-pass condition and A's commit read
+it). The revalidation after destructors stays (Edmond: «это верно»). A
+weakly held set is never marked proved (`delta_test.rs`), so it keeps the
+exact way, as P10 says.
+
+**Why it is sound.** The proof: every member of W − U carried no tag F at
+the frame, after the fence; every count store, the −1 included, tags its
+entity before the store (§5f), so no count of a member changed in the
+window, and the members were unreachable from outside at the frame.
+Unreachable stays unreachable: after the frame no code can name a member
+but R's entries (read by the collector and the owner, never written
+through), the collector's held drops (applied by the owner after the
+commit) and the weak references, which keep a set unproved. So the sum
+compares a count nothing could change with edges nothing could cut; it
+catches only a wrong proof, which the debug assertion and the
+revalidation after destructors keep catching in tests. The untagged
+stores of §5f's table are slot stores, not counts, and the untagged −1 is
+not built (Q9).
+
+**What it saves.** One read of each member's header before destructors,
+for sets with destructors only: B's collector frees C itself. On
+`web-heap` and the six loads no member has a destructor or a weak
+reference, so the rig shows nothing; the piece is the rule written into
+the code, measured by a count, not by time.
+
+**Gate.** Both builds green, with cases: a proved set is confirmed with no
+sum read (a test count beside `CONFIRMED_BY_THE_SUM`), its destructors run
+and its revalidation runs; a set the owner traced itself still goes through
+the sum; a weakly held set stays unmarked and walks.
+
+### The Critic on P10 (2026-10-08)
+
+The Critic (opus) read the draft against the code, running nothing. No
+failing scenario in the soundness argument: nothing changes a member's
+count or cuts an internal edge between the tag test and the confirm (the
+token stays `POSTED`, so no other collector takes this mutator's batch;
+C's drops into S ride with the set and are applied only where it is
+dropped unfreed; the untagged stores touch no member of S). The sum
+matches today for every proved set, an S with held references included
+(`split.rs`, `edges_into_the_marked`), so it walks only on a wrong proof.
+1. **The sum is the release build's only check before destructors**, and
+   it costs next to nothing: the guard loop right after it writes the same
+   header word, so the sum's load only brings in a line the guard needs.
+   Under P10 a wrong proof runs a live member's destructor and the
+   revalidation after it can only notice. Proposed: add up the counts
+   inside the guard loop, and on a mismatch release the guards and walk;
+   the check stays with no pass of its own. The draft's saving is also
+   misscoped: `WholeProved` posts W whole whenever the split is dropped,
+   so sets with no destructors reach the owner too.
+2. **The owner commits the set and P's roots** (`trace_within_the_set`
+   meets the batch's roots too); "roots within S" is assumed, and today
+   the sum would catch a stray root. Proposed: a release check that the
+   roots added no row beyond the set's members.
+3. **The plumbing**: a flag beside `internal_edges_read` that is not taken
+   with it skips both checks for the next set; one typed reading
+   (`None | Drained | Recorded`) taken once. The one-pass free and A's
+   commit are scoped correctly as the code stands.
+4. **Gate gaps**: an S with C non-empty (held > 0); a destructor that
+   resurrects a member; a proved set with a root outside it; what a
+   release build does on a wrong proof.
+
+### The Sage on P10 (2026-10-08)
+
+The Sage (Fable), reading the draft, the Critic and the code: the Critic
+is right on all four findings.
+- The sum is the release build's one check before destructors, and its
+  real cost is a second walk of the membership's rows, not the header
+  read: `mutator_guard_retain` loads the same word right after. Folded
+  into the guard loop, the separate walk goes and the check stays. On a
+  mismatch the prefix is released with `mutator_unguard_release` (not
+  `release_guards`, which counts a release and may queue an entry), then
+  the exact validation runs as today; the debug assertion moves after
+  the loop, with one guard a member.
+- What the sum guards besides the proof: a root of P outside the set.
+  The proved arm of `trace_within_the_set` meets every batch root and
+  colours every met row unreachable, so a stray root would become a
+  member and its destructor would run before the revalidation could see
+  it. Taken: after the roots, the rows met must number the set's members,
+  one comparison, no header read.
+- The arena's reading becomes one typed value taken once (`None`, the
+  owner's drain, the collector's record), in place of three fields.
+- The gate takes the Critic's four cases.
+
+Recommended: fold the sum into the guard loop. Edmond's answer to Q4
+removed the check as redundant; it is redundant against the proof, not
+against a stray root, so the fold goes to him as a fork, built meanwhile
+and not pushed until he answers.
