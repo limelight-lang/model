@@ -8,6 +8,29 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — `gc-window`'s collector: the record's append by cursor and one dispatch per met mature edge; inside the spread, taken
+
+**Build.** `gc-window`, built for an executable: **M** at `a9a8a78`;
+**W** with the record of subtracted edges appending through a cursor into
+the segment attached last (no division, no directory read; the grants on a
+cold path), and the mark handing the dispatch it made for `was_met` to the
+descent instead of making it again. `web-heap` with two mutators, cap 1;
+three repeats each, one session.
+
+| arm | collector CPU | collector CPU from the start | mutator CPU | batches |
+|---|---|---|---|---|
+| M | 57.8–60.0 s (59.7) | 46.6–48.6 s (48.4) | 50.3–51.6 s (50.8) | 5,992–6,161 |
+| W | 57.6–59.6 s (58.7) | 46.4–48.0 s (47.4) | 50.6–51.2 s (50.7) | 6,062–6,187 |
+
+Medians in brackets.
+
+**Reading.** 1.6 % on the collector's CPU by the medians, inside the
+spread; the mutator alike. The Critic expected under 1 %: the record's
+write never stood on the mark's critical path, and the second dispatch
+ran only on edges into a mature target the trace had met. Taken under the
+rule that a change no slower than main stays (`dev/DECISIONS.md`,
+2026-10-08), as code no harder to read.
+
 ## 2026-10-08 — the drain loads the entities ahead of it: inside the spread at every distance; not taken
 
 **Profile.** Callgrind with its cache model over the owner's fires on

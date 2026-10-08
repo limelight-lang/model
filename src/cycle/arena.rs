@@ -1604,13 +1604,27 @@ impl TraceScratchArena {
     }
 
     #[cfg(feature = "gc-window")]
+    #[inline]
     fn record_entry(&mut self, entry: u64) -> bool {
+        debug_assert_eq!(entry & 0b10, 0, "a row is four-byte aligned");
+        if self.edges.push_into_current(entry) {
+            return true;
+        }
+
+        self.record_entry_past_the_segment(entry)
+    }
+
+    #[cfg(feature = "gc-window")]
+    #[cold]
+    #[inline(never)]
+    fn record_entry_past_the_segment(&mut self, entry: u64) -> bool {
         use crate::cycle::recorded_edges::{PAGE_SEGMENTS, Room, SEGMENT_ENTRIES};
 
-        debug_assert_eq!(entry & 0b10, 0, "a row is four-byte aligned");
         match self.edges.room_for_the_next() {
-            Room::Ready => {}
-            Room::Full => return false,
+            // The fast append refused, so a segment with room is not
+            // attached at the record's end: an answer of room here is a
+            // record out of step with itself, and the trace stops.
+            Room::Ready | Room::Full => return false,
             room => {
                 if let Room::TopPageAndSegment { capacity } = room {
                     let top = self.alloc_for(
@@ -1643,8 +1657,7 @@ impl TraceScratchArena {
             }
         }
 
-        self.edges.push(entry);
-        true
+        self.edges.push_into_current(entry)
     }
 
     /// The edges this collector's mark recorded.

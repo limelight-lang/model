@@ -25,7 +25,7 @@ impl Bump {
             Room::Segment => self.segment(record),
             Room::Full => panic!("the record refused below its bound"),
         }
-        record.push(entry);
+        assert!(record.push_into_current(entry));
     }
 
     fn page(&mut self, record: &mut RecordedEdges) {
@@ -111,4 +111,57 @@ fn entries_read_back_across_every_boundary() {
             capacity: FIRST_PAGES
         }
     );
+}
+
+/// An append into the segment attached last stops at the record's bound and
+/// not only at the segment's end: the last segment holds fewer entries than
+/// a segment's room, and the one past the bound refuses mid-segment, as the
+/// arithmetic would.
+#[test]
+fn an_append_into_the_current_segment_stops_at_the_bound() {
+    let mut record = RecordedEdges::new();
+    let mut top: Vec<*mut *mut u64> = vec![std::ptr::null_mut(); MAX_PAGES];
+    let mut page: Vec<*mut u64> = vec![std::ptr::null_mut(); PAGE_SEGMENTS];
+    let mut segment = vec![0u64; SEGMENT_ENTRIES];
+    let last = MAX_ENTRIES / SEGMENT_ENTRIES * SEGMENT_ENTRIES;
+    assert!(last < MAX_ENTRIES, "the bound falls inside a segment");
+    record.len = last;
+    top[last / SEGMENT_ENTRIES / PAGE_SEGMENTS] = page.as_mut_ptr();
+    unsafe { record.attach_top(top.as_mut_ptr(), MAX_PAGES) };
+    assert_eq!(record.room_for_the_next(), Room::Segment);
+    unsafe { record.attach_segment(segment.as_mut_ptr()) };
+
+    for entry in last..MAX_ENTRIES {
+        assert!(record.push_into_current((entry as u64) << 2));
+    }
+    assert!(
+        !record.push_into_current(0),
+        "the record took an entry past its bound"
+    );
+    assert_eq!(record.room_for_the_next(), Room::Full);
+    assert_eq!(record.len(), MAX_ENTRIES);
+    assert_eq!(
+        unsafe { record.entry(MAX_ENTRIES - 1) },
+        ((MAX_ENTRIES - 1) as u64) << 2
+    );
+}
+
+/// Before any segment and at a segment's end the fast append refuses, so the
+/// arena's slow path asks for the grant the arithmetic names.
+#[test]
+fn an_append_into_the_current_segment_refuses_at_its_end() {
+    let mut record = RecordedEdges::new();
+    assert!(!record.push_into_current(0));
+    let mut bump = Bump {
+        top: Vec::new(),
+        pages: Vec::new(),
+        segments: Vec::new(),
+    };
+    for index in 0..SEGMENT_ENTRIES as u64 {
+        bump.append(&mut record, index << 2);
+    }
+    assert!(!record.push_into_current(0));
+    assert_eq!(record.room_for_the_next(), Room::Segment);
+    record.clear();
+    assert!(!record.push_into_current(0));
 }

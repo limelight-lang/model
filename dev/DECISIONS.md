@@ -9,6 +9,20 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-08 — a small optimisation stays when it is no slower than main
+
+A change made for speed that the Critic finds sound, that both suites pass,
+and that leaves the code no harder to read stays when its measurement
+against main in one session reads no slower, even inside the spread; its
+`dev/BENCHMARKS.md` entry then says "inside the spread" and claims no
+speed-up. A change that reads slower is reverted.
+
+Why: Edmond, 2026-10-08 15:57, on `gc-window`'s two small collector
+changes: "if there is a gain, maybe it is not worth rolling back". The
+3 % gate those changes carried was Claude's, not his. The web-heap
+measurement resolves about 2 %, and main itself moves about 6 % between
+sessions, so arms are compared only within one session.
+
 ## 2026-10-08 — the drain within the met queues the outside children the one pass drops
 
 The drain within the met queues each child it leaves out, in the order it

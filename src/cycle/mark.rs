@@ -807,10 +807,12 @@ pub(crate) unsafe fn schedule_root_if_unvisited(
 /// **A mature target takes the same answer**, and the test for it stands above
 /// the block dispatch: `prune` is the collection's reading of the epoch and
 /// the threshold, and a child that reads mature against it is left to the
-/// entity's own count without a dispatch of any kind (module doc, "The mature
+/// entity's own count without a row of this trace (module doc, "The mature
 /// live core is not descended into") — unless this trace has met it already
-/// ([`was_met`]), which costs a row lookup on the edges the stamp would prune
-/// and nowhere else.
+/// ([`was_met`]). That question is asked only under a collector's reading of
+/// every stamp, and only on the edges the stamp would prune: it costs the
+/// edge's dispatch and a row lookup, and a met child's dispatch serves its
+/// descent as well.
 ///
 /// **A child at count zero under a concurrent reader is a torn-down entity**: the
 /// mutator tore it down between the cell's read and the header's, its own
@@ -829,12 +831,15 @@ unsafe fn visit_child<R: CellReader>(
     prune: Prune,
     holding: Holding,
 ) -> bool {
-    if unsafe { stands_as_an_opaque_live_external(child, prune) } {
-        note_edge_pruned();
-        return true;
-    }
-
-    let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(child) }) else {
+    let target = match unsafe { stands_as_an_opaque_live_external(child, prune) } {
+        Pruning::Pruned => {
+            note_edge_pruned();
+            return true;
+        }
+        Pruning::Followed(Some(target)) => target,
+        Pruning::Followed(None) => unsafe { resolve_edge_target(child) },
+    };
+    let EdgeTarget::Tracked(row) = target else {
         return true;
     };
 
@@ -894,7 +899,8 @@ unsafe fn visit_child<R: CellReader>(
 }
 
 /// Whether the collections of `prune.epoch` have read this edge target's
-/// component as held from outside often enough for the descent to stop at it.
+/// component as held from outside often enough for the descent to stop at it
+/// ([`Pruning::Pruned`]).
 ///
 /// Two fields of one byte decide the first half — an age that has reached
 /// `prune.threshold` under this collection's own epoch, a stamp of any other
@@ -911,23 +917,43 @@ unsafe fn visit_child<R: CellReader>(
 /// holds it, so the stamp read here is whole and stands still
 /// (`crate::refcount::read_maturation_stamp`).
 #[inline]
-unsafe fn stands_as_an_opaque_live_external(child: *mut RcHeader, prune: Prune) -> bool {
+unsafe fn stands_as_an_opaque_live_external(child: *mut RcHeader, prune: Prune) -> Pruning {
     if prune.reads == StampReading::Nothing {
-        return false;
+        return Pruning::Followed(None);
     }
 
     let stamp = unsafe { read_maturation_stamp(child) };
     if stamp.age < prune.threshold || stamp.epoch != prune.epoch {
-        return false;
+        return Pruning::Followed(None);
     }
 
     match prune.reads {
-        StampReading::EveryTarget => !unsafe { was_met(child) },
-        StampReading::UnregisteredTargets => {
-            !is_registered_candidate(unsafe { mutator_flags(child) })
+        StampReading::EveryTarget => {
+            let target = unsafe { resolve_edge_target(child) };
+            if unsafe { was_met(target) } {
+                Pruning::Followed(Some(target))
+            } else {
+                Pruning::Pruned
+            }
         }
-        StampReading::Nothing => false,
+        StampReading::UnregisteredTargets => {
+            if is_registered_candidate(unsafe { mutator_flags(child) }) {
+                Pruning::Followed(None)
+            } else {
+                Pruning::Pruned
+            }
+        }
+        StampReading::Nothing => Pruning::Followed(None),
     }
+}
+
+/// What [`stands_as_an_opaque_live_external`] answers for one edge: the
+/// edge is pruned, or followed — with the target's dispatch when the answer
+/// already made it, so that [`visit_child`] does not make it twice.
+#[derive(Clone, Copy)]
+enum Pruning {
+    Pruned,
+    Followed(Option<EdgeTarget>),
 }
 
 /// Whether this trace has met `child` already, which keeps a stamped target
@@ -940,9 +966,9 @@ unsafe fn stands_as_an_opaque_live_external(child: *mut RcHeader, prune: Prune) 
 /// has been met. The row is looked up without being met.
 ///
 /// # Safety
-/// As [`visit_child`].
-unsafe fn was_met(child: *mut RcHeader) -> bool {
-    let EdgeTarget::Tracked(row) = (unsafe { resolve_edge_target(child) }) else {
+/// As [`visit_child`], and `target` is the child's dispatch.
+unsafe fn was_met(target: EdgeTarget) -> bool {
+    let EdgeTarget::Tracked(row) = target else {
         return false;
     };
 

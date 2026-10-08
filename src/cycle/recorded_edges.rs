@@ -67,6 +67,12 @@ pub(crate) struct RecordedEdges {
     top_capacity: usize,
     /// Entries written.
     len: usize,
+    /// Where the next entry goes in the segment attached last, null before
+    /// the first.
+    cursor: *mut u64,
+    /// Entries the record takes at [`Self::cursor`] before an append needs a
+    /// segment or refuses.
+    room: usize,
 }
 
 /// What [`RecordedEdges::room_for_the_next`] says the next append needs
@@ -92,6 +98,8 @@ impl RecordedEdges {
             pages: std::ptr::null_mut(),
             top_capacity: 0,
             len: 0,
+            cursor: std::ptr::null_mut(),
+            room: 0,
         }
     }
 
@@ -106,6 +114,8 @@ impl RecordedEdges {
         self.pages = std::ptr::null_mut();
         self.top_capacity = 0;
         self.len = 0;
+        self.cursor = std::ptr::null_mut();
+        self.room = 0;
     }
 
     /// What the next append needs before it can be written.
@@ -156,21 +166,42 @@ impl RecordedEdges {
     /// Attach the segment the next append writes into.
     ///
     /// # Safety
-    /// `segment` addresses `SEGMENT_ENTRIES` words of the arena's bump, and
-    /// the directory page covering it stands.
+    /// `segment` addresses `SEGMENT_ENTRIES` words of the arena's bump, the
+    /// directory page covering it stands, and the entries written fill whole
+    /// segments: the next append writes the new segment's first word.
     pub(crate) unsafe fn attach_segment(&mut self, segment: *mut u64) {
+        debug_assert_eq!(
+            self.len % SEGMENT_ENTRIES,
+            0,
+            "a segment opens at its boundary"
+        );
         let index = self.len / SEGMENT_ENTRIES;
         unsafe { *(*self.pages.add(index / PAGE_SEGMENTS)).add(index % PAGE_SEGMENTS) = segment };
+        self.cursor = segment;
+        self.room = SEGMENT_ENTRIES.min(MAX_ENTRIES - self.len);
     }
 
-    /// Append `entry`, which [`Self::room_for_the_next`] answered
-    /// [`Room::Ready`] for, or for which the page and segment it asked for
-    /// stand.
+    /// Append `entry` into the segment attached last, or answer **false**
+    /// when [`Self::room`] is spent. `room` is the only authority on whether
+    /// an append can be written: it is above zero exactly when a segment is
+    /// attached at the record's end and the bound is not reached, and
+    /// [`Self::room_for_the_next`] serves only to name the grant a refused
+    /// append asks for. Between [`Self::attach_segment`] and the first
+    /// write the two read differently, the arithmetic still asking for the
+    /// segment just attached.
     #[inline]
-    pub(crate) fn push(&mut self, entry: u64) {
-        let at = self.len;
-        unsafe { self.slot(at).write(entry) };
-        self.len = at + 1;
+    pub(crate) fn push_into_current(&mut self, entry: u64) -> bool {
+        if self.room == 0 {
+            return false;
+        }
+
+        unsafe {
+            self.cursor.write(entry);
+            self.cursor = self.cursor.add(1);
+        }
+        self.room -= 1;
+        self.len += 1;
+        true
     }
 
     /// The entry at `index`.
