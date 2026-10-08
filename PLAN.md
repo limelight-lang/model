@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-10-04 · Active: S68.
+Updated: 2026-10-08 · Active: S68.
 
 Review 2026-09-29, the last; its text and the closed stages' summaries are in
 `git log -- PLAN.md`.
@@ -246,6 +246,17 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
 - [x] The drain queues the outside children the one pass drops
       (2026-10-08): `web-heap`'s teardown 7.8 → 3.7 s, owner collections
       −12 %, longest −27 %.
+- [x] The optimisation round of both kinds closed (2026-10-08, the Critic
+      on each piece, `dev/BENCHMARKS.md`): taken, `gc-window`'s record
+      appended by cursor and one dispatch a met mature edge (mark
+      instructions −10 % an expansion, collector time −1.6 %, inside the
+      spread, kept by Edmond's rule that a change no slower than main stays).
+      Measured and not taken: the close's returns past the window's arm,
+      the drain's prefetch at distances 4, 8 and 16, the counts' sum before
+      the one pass (its removal moves the owner's collections nothing), the
+      stamping walk (4.3 % of `gc-window`'s collector). What is left is the
+      drain's pointer chase and the prune's read of each child's header: a
+      structural cost, not a pass to reorder.
 - [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9; the probe read again 2026-10-05 at `e1e74bc`, the owner's first poll 0.05–0.13 ms in every shape): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
