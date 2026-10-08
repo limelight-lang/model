@@ -8,6 +8,53 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — S68.14's measurements, first reading: what the rig already counts on `web-heap`
+
+**Build.** `gc-checkpoint` (**A**) and `gc-window` (**B**) at `30f4b0a`'s
+code, built for an executable; `web-heap` with two mutators, cap 1, the
+standings recorded (`LL_RIG_STANDINGS=1`), three repeats each, one
+session, 116 s a run. Figures are the three runs' range, or the middle
+run's where a bucketed column is read.
+
+| reading | A | B |
+|---|---|---|
+| batches | 4,961–5,184 | 6,117–6,391 |
+| roots batched | 4.99–5.22 M | 6.13–6.41 M |
+| collector CPU | 48.8–49.3 s | 56.9–58.3 s |
+| mutator CPU | 70.2–71.0 s | 49.6–50.6 s |
+| posts to apply: count, mean, longest | 6,200–6,414; 8.4–9.5 ms; 313–369 ms | 7,572–7,871; 11.5–12.3 ms; 360–437 ms |
+| the trace's expansions at F | — | 9.96–10.74 M of 212–222 M, 4.7–4.8 %; none at count zero |
+| windows (offers made, all taken) | — | 7,729–8,195, about 70 a second |
+| offer to take: p50, p99, longest | — | 77–81 µs; 31–33 ms; 408–447 ms |
+| R's length at an offer: mean, largest; offers at the bound | — | 2,811–2,864; 9,142–9,157; 95 % |
+| withdrawals at a mark | — | 0 |
+| polls held back by drop slices | — | 2,649–2,668 of 356–366 k polls at an offer, 0.7 % |
+| sets split; first refusals; second refusals read live | — | 5,065–5,219; 2,562–2,776 (51–53 %); 808–891 |
+| roots read live again after a split | — | 284–311 k, 4.6–4.9 % of the roots batched |
+| sets proved by tags; touched; weakly held | — | 3,358–3,413; 3,370–3,667; 0 |
+| slow-path token waits | 0 | 0 |
+
+**Corpses and read-live by the span since the previous offer** (B, middle
+run; the rig buckets by that span, not by the oldest root's age):
+
+| span | batches | roots | dead | read live | unwalked |
+|---|---|---|---|---|---|
+| under 1 ms | 816 | 0.83 M | 69 % | 28 % | 3 % |
+| 1–10 ms | 2,745 | 2.81 M | 42 % | 28 % | 30 % |
+| 10–100 ms | 3,900 | 3.90 M | 71 % | 7 % | 22 % |
+| 100 ms–1 s | 485 | 0.45 M | 89 % | 6 % | 6 % |
+| 1 s and over | 2 | 2,048 | 97 % | 3 % | 0 |
+
+**Reading.** P5's ground (the prune at F) is 4.7 % of B's expansions,
+under the plan's bar for "material"; P5 is not built. The offer is taken
+within 0.1 ms at the median, but its p99 is 32 ms and its longest 0.4 s.
+Read-live roots gather in the short spans: a window offered within 10 ms
+of the previous one carries 28 % read-live roots, one past 10 ms 6–7 %.
+The withheld-bytes columns read zero in both kinds (why is not checked); the owner's time by posting kind keeps
+only its longest; slow-path takes are not told apart by kind. Not yet
+read: coincidence refusals, the cause of the record scan's read-live,
+callgrind counts of `ll_retain` and `ll_release`.
+
 ## 2026-10-08 — the memory misses of both kinds' collections: the passes callgrind blames are worth a few percent at most; nothing taken
 
 **Profiles.** Callgrind with its cache model (LL 8 MB, no hardware
