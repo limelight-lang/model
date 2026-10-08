@@ -8,6 +8,37 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — the drain loads the entities ahead of it: inside the spread at every distance; not taken
+
+**Profile.** Callgrind with its cache model over the owner's fires on
+`web-heap` (`4c2addb`): the cells the drain reads give 36 % of the
+last-level misses, the live-set scan 17 %, the counts' sum 16 %. Callgrind
+has no hardware prefetcher, so these shares are an upper bound.
+
+**Build.** `gc-checkpoint`, built for an executable: **M** at `4c2addb`;
+**P** with the drain, after each pop, prefetching the entity that sits a
+fixed distance below the worklist's top (its header line and the next one),
+read within the current segment only. Distances 8 (**P**), 4 (**D4**) and
+16 (**D16**). `web-heap` with two mutators, cap 1; three repeats each, in
+two sessions (M against P, then M against D4 and D16).
+
+| arm | owner's collections | mark | reclaim | longest collection |
+|---|---|---|---|---|
+| M (first session) | 19.5–20.4 s (19.7) | 9.26–9.68 s (9.28) | 3.42–3.52 s | 72–98 ms |
+| P | 18.7–19.5 s (18.7) | 8.70–9.10 s (8.74) | 3.28–3.45 s | 66–89 ms |
+| M (second session) | 18.1–19.0 s (18.7) | 8.58–8.79 s (8.74) | 3.10–3.39 s | 72–87 ms |
+| D4 | 18.5–19.2 s (18.6) | 8.64–8.96 s (8.75) | 3.23–3.37 s | 68–84 ms |
+| D16 | 18.4–18.5 s (18.5) | 8.52–8.65 s (8.58) | 3.24–3.27 s | 72–86 ms |
+
+Medians in brackets.
+
+**Reading.** P's 6 % on the mark in the first session equals M's own drift
+between the two sessions (9.28 against 8.74 s), and in the second session
+neither distance moves the mark past 2 %. The worklist's order is the
+order the drain meets the entities, so the hardware prefetcher and the
+out-of-order window seem to cover what a software prefetch could
+(inferred, not counted). Not taken; the patch is not kept.
+
 ## 2026-10-08 — the close's returns past the window's arm: the close is 22 % of the owner's instructions, the shorter return saves no time; not taken
 
 **Profile.** Callgrind over the owner's fires on `web-heap` (30 s, one
