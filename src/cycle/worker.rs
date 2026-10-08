@@ -3398,7 +3398,11 @@ unsafe fn read_the_root(root: *mut RcHeader) -> RootReading {
 
     match unsafe { resolve_edge_target(root) } {
         EdgeTarget::Tracked(key) => RootReading::Tracked(key),
-        _ => RootReading::Verdict(Verdict::ReadLive),
+        _ => {
+            #[cfg(test)]
+            testing::read_live::note(testing::read_live::Site::Untracked, None);
+            RootReading::Verdict(Verdict::ReadLive)
+        }
     }
 }
 
@@ -3600,9 +3604,23 @@ unsafe fn verdict_for(root: *mut RcHeader, second_chance_spent: bool) -> Verdict
                 crate::cycle::split::note(crate::cycle::split::Counted::RootReadLiveAgain);
                 Verdict::ReadLive
             }
-            _ => Verdict::ReadLive,
+            _ => {
+                #[cfg(test)]
+                testing::read_live::note(
+                    testing::read_live::Site::LiveRow,
+                    Some(unsafe { crate::refcount::survived_readings(root) }),
+                );
+                Verdict::ReadLive
+            }
         },
-        None => Verdict::ReadLive,
+        None => {
+            #[cfg(test)]
+            testing::read_live::note(
+                testing::read_live::Site::NoRow,
+                Some(unsafe { crate::refcount::survived_readings(root) }),
+            );
+            Verdict::ReadLive
+        }
     }
 }
 

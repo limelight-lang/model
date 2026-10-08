@@ -8,6 +8,47 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — S68.14's measurements, second reading: why roots read live, the eight-bit tag's coincidences, the mutator's instructions
+
+**Build.** Both kinds at this entry's commit, which adds the rig's
+`read_live_by_site`, `read_live_by_survived` and `stale_tag_ages` columns
+(`testing::read_live`, the Sage's design of 2026-10-08); `web-heap`, two
+mutators, cap 1, standings recorded, three repeats each, one session.
+
+**Roots read live.**
+
+| | A | B |
+|---|---|---|
+| roots read live, of roots batched | 0.93–0.96 M of 5.02–5.08 M, 18.6–19.2 % | 0.95–1.01 M of 6.03–6.29 M, 15.1–16.8 % |
+| at a live row; untracked; no row | all at a live row | all at a live row |
+| live readings counted before: 0; 1; 2; 3 or more | 199–228 k; 150 k; 149 k; 435–436 k | 279–361 k; 150 k; 149 k; 290–436 k |
+| read live for the first time | 21–24 % | 28–38 % |
+
+The "two and a half times A's read-live" of S68.4 (2026-10-04) does not
+hold at today's code: B reads about as many roots live as A, a smaller
+share of more roots batched. Three in four of A's read-live roots, and two
+in three of B's, have been read live before: the same long-lived roots
+offered again. The counts at 1 and 2 readings stand at 150 k and 149 k in
+every run of both kinds, which reads as a fixed population of the load
+passing through the lanes (inferred, not traced).
+
+**The eight-bit window's coincidences** (B). The Δ-test cleared 42.0–42.4 M
+stale tags a run; 60–63 % trailed the frame by one window. The bins next
+to the hidden one (245–254 windows behind) hold 17–21 tags a bin a run, so
+the stale tags equal to the frame are of that order, about 20 a run,
+against 3,272–3,640 sets refused as touched: under 1 % of the refusals at
+most. The direct count with a wide side record (the Sage's E2) is not run;
+widening the tag would buy nothing measurable on this load.
+
+**The mutator's instructions** (callgrind, line tables, 30 s, both runs did
+the same 1,018 requests and 1,254 iterations): A 63.6 M a request, B 46.5 M.
+The load's own code is 5.3 M a request in both. The runtime's `cycle`
+source on the mutator threads reads 12.5 M a request in A (its collections
+included) and 6.9 M in B, `memory` 5.9 M and 3.8 M, the lines of
+`refcount.rs` 0.87 M and 0.65 M. Counts of `ll_retain` and `ll_release`
+are not read: both are inlined, so callgrind sees no call; a build with
+them out of line would count them.
+
 ## 2026-10-08 — S68.14's measurements, first reading: what the rig already counts on `web-heap`
 
 **Build.** `gc-checkpoint` (**A**) and `gc-window` (**B**) at `30f4b0a`'s

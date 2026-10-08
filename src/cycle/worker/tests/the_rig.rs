@@ -3674,6 +3674,7 @@ impl CellReading {
         let queued: usize = figures.iter().map(|one| one.queued_sum).sum();
         let offers = offer_counts();
         let (wave, by_span) = wave_three();
+        let (live_sites, live_survived, stale_ages) = testing::read_live::take();
         #[cfg(feature = "gc-window")]
         let written_back =
             joined(&testing::wave_three::take_unwalked_write_backs().map(|n| n as usize));
@@ -3948,6 +3949,25 @@ impl CellReading {
             ("batches_by_span", by_span),
             // The unwalked entries written back into R, unmarked and marked.
             ("unwalked_written_back", written_back),
+            // Roots a collector read live (`testing::read_live`): by site
+            // (untracked, a live row, no row), and by the live readings the
+            // root's header counted before (0, 1, 2, 3 or more, the last
+            // two sites only); then the stale tags the Δ-test cleared, by
+            // the windows they trail the frame, 1 to 254, `;` between bins.
+            ("read_live_by_site", joined(&live_sites.map(|n| n as usize))),
+            (
+                "read_live_by_survived",
+                joined(&live_survived.map(|n| n as usize)),
+            ),
+            (
+                "stale_tag_ages",
+                joined(
+                    &stale_ages[1..255]
+                        .iter()
+                        .map(|&n| n as usize)
+                        .collect::<Vec<_>>(),
+                ),
+            ),
         ]
     }
 

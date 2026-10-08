@@ -2770,3 +2770,60 @@ pub(crate) mod wave_three {
         )
     }
 }
+
+/// Why a collector read a root live (`PLAN.md`, S68.14, "why the record scan
+/// reads 2.5 times the heap scan's read-live"; the Sage, 2026-10-08): by the
+/// site of the reading, by the root's live readings before this one, and in
+/// `gc-window` by how many windows a stale tag the Δ-test cleared trailed the
+/// frame. Process-wide, as the rig reads one cell at a time.
+pub(crate) mod read_live {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Where a root was read live.
+    #[derive(Clone, Copy)]
+    pub(crate) enum Site {
+        /// The root resolved to no row of the GC heap.
+        Untracked,
+        /// The root's row was met and the scan left it live.
+        LiveRow,
+        /// The root's row was never met.
+        NoRow,
+    }
+
+    static SITES: [AtomicU64; 3] = [const { AtomicU64::new(0) }; 3];
+    /// Live roots by the live readings their header counted before this
+    /// one, saturating at three (`crate::refcount::survived_readings`).
+    static SURVIVED: [AtomicU64; 4] = [const { AtomicU64::new(0) }; 4];
+    /// Stale tags the Δ-test cleared, by how many windows the tag trails the
+    /// frame on the cycle of 255 numbers `the_next_window` turns
+    /// (1..=254): 1 is the previous window, and the bins near 254 are the
+    /// neighbours of 0, where a stale tag equal to the frame hides. A tag
+    /// another mutator's window wrote reads on this mutator's cycle, which
+    /// spreads it over every bin.
+    static STALE_AGES: [AtomicU64; 256] = [const { AtomicU64::new(0) }; 256];
+
+    /// One root read live at `site`, its header having counted `survived`
+    /// live readings before.
+    pub(crate) fn note(site: Site, survived: Option<u32>) {
+        SITES[site as usize].fetch_add(1, Ordering::Relaxed);
+        if let Some(survived) = survived {
+            SURVIVED[survived.min(3) as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// One stale tag cleared, `age` windows behind the frame.
+    #[cfg_attr(not(feature = "gc-window"), allow(dead_code))]
+    pub(crate) fn note_a_stale_tag(age: u8) {
+        STALE_AGES[age as usize].fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// The counts since this last answered, which it leaves at zero.
+    pub(crate) fn take() -> ([u64; 3], [u64; 4], [u64; 256]) {
+        let swap = |cell: &AtomicU64| cell.swap(0, Ordering::Relaxed);
+        (
+            SITES.each_ref().map(swap),
+            SURVIVED.each_ref().map(swap),
+            STALE_AGES.each_ref().map(swap),
+        )
+    }
+}

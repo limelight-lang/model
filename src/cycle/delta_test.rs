@@ -134,6 +134,10 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
                     touched = true;
                     crate::cycle::split::mark(row);
                 } else if tag != 0 {
+                    #[cfg(test)]
+                    crate::cycle::worker::testing::read_live::note_a_stale_tag(
+                        ((u16::from(window) + 255 - u16::from(tag)) % 255) as u8,
+                    );
                     crate::refcount::clear_a_stale_window_tag(member, tag);
                 }
                 if crate::refcount::mutator_flags(member) & crate::refcount::HAS_WEAK_REFERENCES
