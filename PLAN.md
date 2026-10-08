@@ -325,10 +325,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       Read 2026-10-08 (`dev/BENCHMARKS.md`, two entries): expansions at F
       4.7 % (P5 not built); offer to take p50 0.08 ms, p99 32 ms; read-live
       roots alike in both kinds, two in three or more read live before;
-      tag coincidences about 20 a run, under 1 % of refusals. Still to read:
-      the oldest root's age per batch, the owner's time by posting kind in
-      total, slow-path takes by kind, bytes withheld a batch, the calls of
-      `ll_retain` and `ll_release`.
+      tag coincidences about 20 a run, under 1 % of refusals; a retain
+      13 / 15 instructions and a release 26 / 30 in A / B, the count
+      writes 1–1.5 % of the mutator's; B's owner collects no set; no
+      slow-path wait; nothing withheld under a foreign holder. Still to
+      read: the oldest root's age per batch.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);

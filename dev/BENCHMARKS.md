@@ -8,6 +8,44 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — S68.14's measurements, third reading: the calls of `ll_retain` and `ll_release`, the owner's time, the slow paths, the withheld returns
+
+**The calls.** Callgrind, `web-heap`, 30 s, both kinds built with
+`ll_retain`, `ll_release` and `ll_release_batch` out of line (a counting
+build only, not kept); both runs did the same requests. Per mutator thread:
+
+| | A | B |
+|---|---|---|
+| `ll_retain` calls | 6.26 M / 6.40 M | 6.26 M / 6.40 M |
+| instructions a retain, its slow paths included | 13.0 | 15.0 |
+| `ll_release` calls | 10.33 M / 9.90 M | 7.60 M / 7.52 M |
+| instructions a release, its slow paths included | 25.8–26.1 | 29.8–30.0 |
+
+The retains are the same calls in both kinds; B's tag costs two
+instructions a retain and four a release. A makes 2.6 M more releases a
+thread: its owner's own teardowns, which B's collector does. The count
+writes come to about 0.68 M instructions a request in A and 0.63 M in B,
+1–1.5 % of the mutator's 63.6 M and 46.5 M (the second reading).
+
+**The owner's time by posting kind** (B). On `web-heap` B's owner runs no
+collection over P (0 in every run): its time is 6,017–6,279 dispositions,
+0.99–1.09 s in all, the longest 5.1–7.0 ms, and the application of the
+collector's frees, 0.42–0.48 s in all, the longest 2.4–23.4 ms. The
+by-kind column has nothing to split. A's owner: 4,242–4,269 collections,
+20.0–20.2 s (the first reading).
+
+**The slow paths' takes.** No wait on the token in either kind, on the
+trace or around it (`token_waits*` 0 in all six runs).
+
+**The returns withheld under a foreign holder.** No death and no chunk
+withheld at any release in either kind; B's releases held blocks one or two
+times a run, one or two blocks each. Bytes withheld a batch are not worth a
+column on this load.
+
+Still not read: the oldest root's age per batch (the rig buckets by the
+span since the previous offer; a root's age needs a time on each entry
+of R).
+
 ## 2026-10-08 — S68.14's measurements, second reading: why roots read live, the eight-bit tag's coincidences, the mutator's instructions
 
 **Build.** Both kinds at this entry's commit, which adds the rig's
