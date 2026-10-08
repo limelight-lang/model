@@ -253,7 +253,7 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
         return None;
     }
 
-    debug_assert!(
+    assert!(
         arena.deferred_drops_are_empty(),
         "a component's teardown starts with the queue the last one drained"
     );
@@ -339,7 +339,7 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
 ///
 /// # Safety
 /// `member` is a live entity header this thread may read.
-unsafe fn the_owner_may_free_whole(member: *mut RcHeader, kind: u32) -> bool {
+pub(crate) unsafe fn the_owner_may_free_whole(member: *mut RcHeader, kind: u32) -> bool {
     use crate::refcount::EntityKind;
     let flags = unsafe { crate::refcount::mutator_flags(member) };
     if flags & crate::refcount::HAS_WEAK_REFERENCES != 0
@@ -367,10 +367,19 @@ unsafe fn the_owner_may_free_whole(member: *mut RcHeader, kind: u32) -> bool {
     }
 }
 
-// The sets on this thread freed in the owner's one pass (tests only).
+// The sets on this thread freed in the owner's one pass, and of those the
+// sets whose children the drain queued (tests only).
 #[cfg(test)]
 thread_local! {
     static FREED_WHOLE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static QUEUED_BY_THE_DRAIN: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The sets freed in one pass on this thread whose outside children the drain
+/// queued since this last answered, which it leaves at zero.
+#[cfg(test)]
+pub(crate) fn take_queued_by_the_drain() -> usize {
+    QUEUED_BY_THE_DRAIN.with(|count| count.replace(0))
 }
 
 /// The sets on this thread [`free_whole_before_drops`] freed since this last
@@ -410,57 +419,76 @@ pub(crate) unsafe fn free_whole_before_drops(
     arena: &mut TraceScratchArena,
 ) -> Option<usize> {
     let (internal_edges, external_children) = arena.garbage_whole_reading()?;
+    let (queued_by_the_drain, freeable) = arena.left_out_queued_and_freeable();
     if members.len() == 0
+        || !freeable
         || !unsafe { crate::cycle::finalization::counts_sum_to(members, internal_edges) }
     {
         return None;
     }
 
-    let mut eligible = true;
-    unsafe {
-        members.for_each(|member| {
-            eligible = eligible && the_owner_may_free_whole(member, entity_kind(member));
-        })
-    };
-    if !eligible || !arena.reserve_drops(external_children) {
-        return None;
-    }
-    #[cfg(test)]
-    {
-        crate::cycle::finalization::note_confirmed_by_the_sum();
-        RESERVED_BY_THE_DRAIN.with(|count| count.set(count.get() + 1));
-    }
+    debug_assert!(
+        {
+            let mut every = true;
+            unsafe {
+                members.for_each(|member| {
+                    every &= the_owner_may_free_whole(member, entity_kind(member));
+                })
+            };
+            every
+        },
+        "the drain expanded every member"
+    );
     debug_assert_eq!(
         unsafe { crate::cycle::validation::validate_component_holding(members, 0, 0) },
         crate::cycle::validation::ValidationResult::Unreachable,
         "the counts that sum to the internal edges validate"
     );
-
-    debug_assert!(
-        arena.deferred_drops_are_empty(),
-        "a component's teardown starts with the queue the last one drained"
-    );
-    let mut queued = 0;
-    unsafe {
-        members.for_each(|member| {
-            crate::cells::trace_cells::<crate::cells::PlainCells>(
-                member,
-                entity_kind(member),
-                |cell| {
-                    if members.contains(cell.child) {
-                        return;
-                    }
-                    queued += 1;
-                    let pushed = arena.push_drop(cell.child);
-                    assert!(pushed, "a reserved deferred drop is never refused");
-                },
-            );
-        })
-    };
-    assert_eq!(
-        queued, external_children,
-        "the one pass queues every child the drain left out"
-    );
+    // The drain queued each child it left out where the arena granted every
+    // segment it asked for; otherwise the cells are read again here, the
+    // room taken first. The drops leave in the order the drain met the children
+    // or, read again, in the members' order: the order of outside children's
+    // drops is no contract of the one pass.
+    if queued_by_the_drain {
+        #[cfg(debug_assertions)]
+        unsafe {
+            the_cells_still_hold_what_the_drain_queued(members, arena)
+        };
+        arena.take_the_cells_left_out();
+    } else {
+        if !arena.reserve_drops(external_children) {
+            return None;
+        }
+        let mut queued = 0;
+        unsafe {
+            members.for_each(|member| {
+                crate::cells::trace_cells::<crate::cells::PlainCells>(
+                    member,
+                    entity_kind(member),
+                    |cell| {
+                        if members.contains(cell.child) {
+                            return;
+                        }
+                        queued += 1;
+                        let pushed = arena.push_drop(cell.child);
+                        assert!(pushed, "a reserved deferred drop is never refused");
+                    },
+                );
+            })
+        };
+        assert_eq!(
+            queued, external_children,
+            "the one pass queues every child the drain left out"
+        );
+    }
+    #[cfg(test)]
+    {
+        crate::cycle::finalization::note_confirmed_by_the_sum();
+        RESERVED_BY_THE_DRAIN.with(|count| count.set(count.get() + 1));
+        if queued_by_the_drain {
+            QUEUED_BY_THE_DRAIN.with(|count| count.set(count.get() + 1));
+        }
+    }
 
     #[cfg(feature = "debug-journal")]
     let mut first_member: *mut RcHeader = std::ptr::null_mut();
@@ -487,6 +515,44 @@ pub(crate) unsafe fn free_whole_before_drops(
         member_count as u64,
     );
     Some(member_count)
+}
+
+/// Check that the members' cells still name, outside the set, the children the
+/// drain queued, each as many times: the one pass drops what the drain read,
+/// and a store between the trace and the commit would make it drop another.
+///
+/// # Safety
+/// The members are live entity headers this thread may read.
+#[cfg(debug_assertions)]
+unsafe fn the_cells_still_hold_what_the_drain_queued(
+    members: &Membership<'_>,
+    arena: &TraceScratchArena,
+) {
+    let mut in_the_cells = Vec::new();
+    unsafe {
+        members.for_each(|member| {
+            crate::cells::trace_cells::<crate::cells::PlainCells>(
+                member,
+                entity_kind(member),
+                |cell| {
+                    if !members.contains(cell.child) {
+                        in_the_cells.push(cell.child as usize);
+                    }
+                },
+            );
+        })
+    };
+    let mut queued = Vec::new();
+    arena.for_each_cell_left_out(|child| {
+        queued.push(*child as usize);
+        true
+    });
+    in_the_cells.sort_unstable();
+    queued.sort_unstable();
+    assert_eq!(
+        in_the_cells, queued,
+        "the members' cells hold the children the drain queued"
+    );
 }
 
 /// The death of one member of a set freed whole, its counted cells already

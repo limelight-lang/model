@@ -487,6 +487,9 @@ pub(crate) unsafe fn drain_within_the_met<R: CellReader>(
         #[cfg(test)]
         note_expansion(entry.entity);
         let kind = unsafe { cells::entity_kind(entry.entity) };
+        arena.note_an_expansion(unsafe {
+            crate::cycle::reclamation::the_owner_may_free_whole(entry.entity, kind)
+        });
         let expansion = Expansion::<R, _>::new(arena, |arena, child| {
             if let EdgeTarget::Tracked(key) = unsafe { resolve_edge_target(child) }
                 && let Some(row) = unsafe { find_initialized_row(key) }
@@ -494,7 +497,7 @@ pub(crate) unsafe fn drain_within_the_met<R: CellReader>(
                 unsafe { shadow::subtract(row, 1, !R::CONCURRENT) };
                 arena.note_a_cell_subtracted();
             } else {
-                arena.note_a_cell_left_out();
+                arena.note_a_cell_left_out(child);
             }
             true
         });

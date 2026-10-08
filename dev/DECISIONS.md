@@ -9,6 +9,34 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-08 — the drain within the met queues the outside children the one pass drops
+
+The drain within the met queues each child it leaves out, in the order it
+meets them, in a chain of the arena's own beside the teardown's queue, and
+notes whether every entity it expands may be freed in one pass. The one
+pass takes that chain as the teardown's queue (a swap) when the drain was
+granted every segment it asked for; otherwise it reads the cells again as
+before. The chain holds no reference until the swap, and the arena's reset
+forgets it, so no exit of the trace has to empty it.
+
+Why: the teardown read every member's cells and rows again, 7.8 s of the
+owner's 24.2 s on `web-heap`; now 3.7 s (`dev/BENCHMARKS.md`, 2026-10-08).
+
+The Critic on the first form (2026-10-08): children queued straight into
+the teardown's queue sat there unowned until the free, and one exit of the
+collection (no membership) left them for the reset's assertion; the
+separate chain closes every such exit. A store between the trace and the
+commit would make the one pass drop what the drain read: debug builds
+compare the cells with the chain, which the production rule (nothing runs
+on the owner between its trace and its commit) keeps equal. The refusal
+of the drain's segment has an injection of its own, so the one pass's own
+refusal can still be staged. The order of the outside children's drops is
+the drain's or, read again, the members'; it is no contract (Edmond,
+2026-10-08 09:36). The teardown's own emptiness check is now a release
+assertion.
+
+Settled by Claude by the measurement, open to Edmond's overturning.
+
 ## 2026-10-08 — a set the owner found garbage whole is freed in one pass when no member's death asks for more
 
 The owner's commit of a set its own trace within the set found garbage

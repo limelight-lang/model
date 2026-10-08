@@ -147,6 +147,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("PREMISE_CELL_WALKS", false),
         ("PRESSURE_COLLECTIONS", false),
         ("PRESSURE_ROOTS_TRACED", false), // test-only const Cell, no drop glue
+        ("QUEUED_BY_THE_DRAIN", false),   // test-only const Cell, no drop glue
         ("QUEUE_WORK", false),            // test-only const Cell, no destructor registration
         ("RECORDS_CARVED", false),        // test-only const Cell, no drop glue
         ("RECORDS_TAKEN", false),         // test-only const Cell, no drop glue
@@ -154,6 +155,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("REFUSE_AT_VERTEX", false),      // test-only const Cell, no drop glue
         ("REFUSE_DRAWS", false),          // test-only const Cell, no drop glue
         ("REFUSE_DROP_RESERVATION", false), // test-only const Cell, no destructor registration
+        ("REFUSE_LEFT_OUT_SEGMENT", false), // test-only const Cell, no drop glue
         ("REFUSE_LIST_PLACEMENT", false), // test-only const Cell, no drop glue
         ("REFUSE_THREAD_HEAP", false),    // test-only const Cell, no drop glue
         ("REFUSING", false),              // test-only const Cell, no drop glue

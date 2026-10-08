@@ -8,6 +8,46 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — the drain queues a set's outside children as it meets them: `web-heap`'s teardown halved, the owner's collections 12 % cheaper, the longest 27 % shorter
+
+**Build.** `gc-checkpoint`, built for an executable: **M** at `28b7e7c` (the
+one pass reads every member's cells again for the outside children), **F**
+with the drain within the met queueing each child it leaves out, in a
+chain of its own the one pass takes as the teardown's, and noting whether
+every entity it expands may be freed in one pass. `web-heap` with two
+mutators, cap 1, and the six deciding loads on mutators 1,2, spare and
+shared placements; three repeats each, one rotation.
+
+`web-heap`, seconds (means in brackets):
+
+| arm | owner's collections | of them mark | reclaim | mutator CPU | collector CPU | longest collection |
+|---|---|---|---|---|---|---|
+| M | 22.9–25.1 (24.2) | 8.8–9.6 (9.3) | 7.3–8.1 (7.8) | 72.5–77.1 (75.3) | 47.9–51.9 (50.3) | 109–126 ms |
+| F | 20.6–22.0 (21.3) | 9.8–10.5 (10.1) | 3.5–3.7 (3.7) | 70.2–73.4 (71.7) | 50.3–53.9 (51.6) | 83–97 ms |
+
+Members freed by the collections 67.8–68.9 M in both; garbage mean
+27.3–30.6 MB in both.
+
+The six loads, both placements together:
+
+| load | owner's collections M | F | time to free M | F | p99 M | F | longest M | F |
+|---|---|---|---|---|---|---|---|---|
+| live-churn | 265–278 ms | 191–292 ms | 3.01–3.03 s | 3.01–3.04 s | 721–786 µs | 655–983 µs | 2.3–5.0 ms | 2.1–11.0 ms |
+| registered-ring-live | 366–413 ms | 301–326 ms | 0.15–0.17 ms | 0.15–0.16 ms | 360–459 µs | 328–393 µs | 3.1–4.2 ms | 1.8–4.7 ms |
+| deferred-live-large | 21–24 ms | 18–20 ms | 38–39 ms | 38–39 ms | 74–90 µs | 66–74 µs | 0.3–1.9 ms | 0.3–1.5 ms |
+| deferred-then-dead | 31–39 ms | 29–35 ms | 1.38–1.39 s | 1.38–1.39 s | 61–74 µs | 57–74 µs | 0.7–2.0 ms | 1.1–2.6 ms |
+| garbage-25 | 19–25 ms | 19–20 ms | 42–45 ms | 42–45 ms | 115–131 µs | 106–147 µs | 0.3–4.6 ms | 0.2–1.4 ms |
+| live-churn-dies-by-count | none | | none to free | | 131–180 µs | 115–180 µs | | |
+
+**Reading.** The teardown on `web-heap` falls from 7.8 to 3.7 s by the
+means: the one pass now touches each member's header alone. The mark,
+which now queues, grows by 0.8 s, so the owner's collections fall by
+2.9 s, 12 %, and the longest by a quarter. `registered-ring-live`'s
+collections fall 20 %. One `live-churn` cell of F reads an 11 ms longest
+collection and a 983 µs p99 beside two cells at or under M's; the
+collector's CPU on `web-heap` is 1.3 s higher by the means, inside both
+ranges. No time to free is worse.
+
 ## 2026-10-08 — a set garbage whole freed in one pass by its owner: `web-heap`'s owner collections 11 % cheaper, the six loads' 13–29 %, the teardown itself no cheaper
 
 **Build.** `gc-checkpoint`, built for an executable: **M** at `f94838e`, **F**

@@ -243,6 +243,20 @@ thread_local! {
     static REFUSE_DROP_RESERVATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// One segment to refuse to this thread's queue of the children a drain
+    /// within the met leaves out, apart from the teardown's reservations.
+    static REFUSE_LEFT_OUT_SEGMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Refuse the next segment the drain within the met asks for its queue of the
+/// children it leaves out ([`ArmedInjection`]).
+#[cfg(test)]
+pub(crate) fn refuse_left_out_segment() -> ArmedInjection {
+    ArmedInjection::arm(&REFUSE_LEFT_OUT_SEGMENT)
+}
+
 /// Refuse the next pressure teardown reservation of this thread
 /// ([`ArmedInjection`]).
 #[cfg(test)]
@@ -523,6 +537,12 @@ pub(crate) struct TraceScratchArena {
     cells_left_out: usize,
     /// The cells the same drain subtracted from a row.
     cells_subtracted: usize,
+    /// Whether the same drain queues each child it left out as a deferred
+    /// drop: from its start until a segment for the queue is refused.
+    queueing_left_out: bool,
+    /// Whether every entity the same drain expanded is one its owner may free
+    /// in one pass (`crate::cycle::reclamation::the_owner_may_free_whole`).
+    expanded_freeable: bool,
     /// The internal edges a trace within a set read off its drain where it
     /// found the set garbage whole, for the commit to check the members'
     /// counts against in place of the exact validation
@@ -607,6 +627,11 @@ pub(crate) struct TraceScratchArena {
     /// ([`crate::cycle::reclamation`]). Segments of this bump, like the
     /// worklist's, and emptied once per component.
     drops: DeferredDrops,
+    /// The children a drain within the met left out, in the order it met them:
+    /// a queue of its own that holds no reference until a one-pass free takes
+    /// it as the teardown's ([`Self::take_the_cells_left_out`]), so the
+    /// teardown's queue never holds a child it does not own.
+    left_out: DeferredDrops,
     /// The edges a collector's mark subtracted, in the order it wrote them
     /// ([`crate::cycle::recorded_edges`]). Segments of this bump, empty
     /// outside a collector's trace and spent by its scan.
@@ -714,6 +739,8 @@ impl TraceScratchArena {
             grants_behind: None,
             cells_left_out: 0,
             cells_subtracted: 0,
+            queueing_left_out: false,
+            expanded_freeable: false,
             external_children_read: None,
             internal_edges_read: None,
             held_from_outside_read: 0,
@@ -737,6 +764,7 @@ impl TraceScratchArena {
             stamps: StampReading::UnregisteredTargets,
             components: TraceStack::new(),
             drops: DeferredDrops::new(),
+            left_out: DeferredDrops::new(),
             #[cfg(feature = "gc-window")]
             edges: crate::cycle::recorded_edges::RecordedEdges::new(),
             published: 0,
@@ -1034,6 +1062,7 @@ impl TraceScratchArena {
             "a teardown left children queued: every component drains its own"
         );
         self.drops.rewind();
+        self.left_out.rewind();
         self.clear_touched_rows();
         #[cfg(test)]
         {
@@ -1782,10 +1811,14 @@ impl TraceScratchArena {
         ControlFlow::Continue(())
     }
 
-    /// Start the count of cells a drain within the met leaves out.
+    /// Start the count of cells a drain within the met leaves out, and the
+    /// queue of the children it leaves out.
     pub(crate) fn start_counting_cells_left_out(&mut self) {
+        self.left_out.drain(|_| {});
         self.cells_left_out = 0;
         self.cells_subtracted = 0;
+        self.queueing_left_out = true;
+        self.expanded_freeable = true;
     }
 
     /// Count a cell the drain within the met subtracted from a row.
@@ -1794,10 +1827,68 @@ impl TraceScratchArena {
         self.cells_subtracted += 1;
     }
 
-    /// Count a cell the drain within the met subtracted from no row.
+    /// Count a cell the drain within the met subtracted from no row, and queue
+    /// its child as a deferred drop while the queue's room is granted; a
+    /// refused segment stops the queueing, never the drain.
     #[inline]
-    pub(crate) fn note_a_cell_left_out(&mut self) {
+    pub(crate) fn note_a_cell_left_out(&mut self, child: *mut RcHeader) {
         self.cells_left_out += 1;
+        if self.queueing_left_out
+            && !self.left_out.push_into_current(child)
+            && !((self.left_out.advance_to_kept() || self.grow_left_out())
+                && self.left_out.push_into_current(child))
+        {
+            self.queueing_left_out = false;
+        }
+    }
+
+    /// One more segment for the queue of the children left out, or false
+    /// where the arena refuses it.
+    #[cold]
+    fn grow_left_out(&mut self) -> bool {
+        #[cfg(test)]
+        if REFUSE_LEFT_OUT_SEGMENT.with(|armed| armed.replace(false)) {
+            return false;
+        }
+        let region = self.alloc_for(DROP_SEGMENT_BYTES, Consumer::Drops);
+        if region.is_null() {
+            return false;
+        }
+        unsafe { self.left_out.extend(region, DROP_SEGMENT_RECORDS) };
+        true
+    }
+
+    /// Note an entity the drain within the met expanded, `freeable` where its
+    /// owner may free it in one pass.
+    #[inline]
+    pub(crate) fn note_an_expansion(&mut self, freeable: bool) {
+        self.expanded_freeable &= freeable;
+    }
+
+    /// Whether the drain within the met queued every child it left out, and
+    /// every entity it expanded is one its owner may free in one pass.
+    pub(crate) fn left_out_queued_and_freeable(&self) -> (bool, bool) {
+        (self.queueing_left_out, self.expanded_freeable)
+    }
+
+    /// Take the children the drain within the met queued as the teardown's
+    /// deferred drops, for a set freed in one pass: from here each is a
+    /// counted reference the drain of the teardown's queue drops. The
+    /// teardown's queue, empty, holds the drain's segments in exchange.
+    pub(crate) fn take_the_cells_left_out(&mut self) {
+        debug_assert!(
+            self.drops.is_empty(),
+            "a component's teardown starts with the queue the last one drained"
+        );
+        std::mem::swap(&mut self.drops, &mut self.left_out);
+        self.queueing_left_out = false;
+    }
+
+    /// Read the children the drain within the met queued, newest first. Tests
+    /// and debug checks only.
+    #[cfg(debug_assertions)]
+    pub(crate) fn for_each_cell_left_out(&self, visit: impl FnMut(&*mut RcHeader) -> bool) {
+        self.left_out.for_each_from_top(visit);
     }
 
     /// Keep the cells the drain left out as the external children of a set
