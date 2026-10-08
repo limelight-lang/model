@@ -8,6 +8,58 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-08 — an arm that offers only R's entries older than 100 ms: `web-heap`'s collector a third cheaper, the six deciding loads' dearer and their garbage 0.1 s later
+
+**Build.** An arm off `main` at `95af9d0`, not pushed (worktree
+`arms-age`): the offer counts R's entries appended within the cut (every
+append to R's tail counted, splices and write-backs included; a sample of
+the instant and the count each 64 appends, or after a quarter of the cut
+with any) and reads R as its older entries in every branch of the offer's
+rule; a merged lane is offered as B offers it (the Critic's three fixes,
+2026-10-08). The cut by `LL_AGE_CUT_MS`, 100 ms here (arm C100), against
+B at `6c78ad6`; `dev/tools/arms.sh`, three repeats, `web-heap` on CPUs 1–2
+with the collector on 3, the six loads with mutators 1,2, spare collector
+3, shared 2.
+
+`web-heap`, three runs each:
+
+| | B | C100 |
+|---|---|---|
+| collector CPU | 55.1, 57.0, 58.2 s | 38.5, 38.8, 42.8 s |
+| roots batched | 6.20–6.38 M | 4.00–4.09 M |
+| batches | 6,175–6,349 | 4,056–4,146 |
+| garbage mean | 21.2–23.6 MB | 26.3–31.3 MB |
+| garbage peak | 161–189 MB | 163–200 MB |
+| mutator CPU | 48.3–50.3 s | 47.7–50.4 s |
+| arrival p99 | 126–151 ms | 126–151 ms |
+| second refusals read live | 808–948 | 0 |
+
+The six loads, medians of three, B / C100:
+
+| load | placement | collector CPU ms | time to free ms | p99 µs | CPU ns an op |
+|---|---|---|---|---|---|
+| deferred-live-large | spare | 142 / 163 | 57.5 / 167.8 | 53 / 82 | 33,989 / 35,630 |
+| deferred-live-large | shared | 129 / 143 | 57.5 / 167.0 | 41 / 53 | 33,907 / 36,002 |
+| deferred-then-dead | spare | 93 / 105 | 1,385 / 1,487 | 29 / 29 | 34,906 / 35,530 |
+| deferred-then-dead | shared | 75 / 88 | 1,387 / 1,497 | 31 / 27 | 34,277 / 35,245 |
+| garbage-25 | spare | 59 / 82 | 45.1 / 154.9 | 90 / 74 | 469,708 / 490,766 |
+| garbage-25 | shared | 49 / 63 | 45.1 / 154.6 | 57 / 82 | 464,505 / 486,624 |
+| live-churn | spare | 605 / 646 | 2,985 / 3,051 | 213 / 213 | 59,022 / 61,070 |
+| live-churn | shared | 637 / 655 | 2,994 / 3,066 | 213 / 213 | 59,498 / 59,361 |
+| live-churn-dies-by-count | spare | 355 / 472 | none / none | 164 / 180 | 58,645 / 73,345 |
+| live-churn-dies-by-count | shared | 372 / 437 | none / none | 164 / 229 | 58,363 / 60,398 |
+| registered-ring-live | spare | 528 / 590 | 0.2 / 89.9 | 328 / 459 | 661,030 / 710,821 |
+| registered-ring-live | shared | 510 / 553 | 0.2 / 89.8 | 918 / 360 | 651,644 / 645,656 |
+
+**Reading.** On `web-heap` the cut does what the age table promised: a
+third fewer roots taken, the collector 30–33 % cheaper, no second refusal,
+the mutator and the latency unchanged; the garbage held grows by a fifth
+on the mean. On every one of the six loads the collector costs more, by
+3–39 %, and garbage that dies young is freed about 0.1 s later (the cut,
+plus the wait for the next offer); why the collector costs more there is
+not yet read. The offer rule is accepted (Edmond, 2026-10-07), so the arm
+stays off `main` until he decides.
+
 ## 2026-10-08 — S68.14's last reading: corpses and read-live against the roots' age
 
 The rig's `LL_RIG_ROOT_AGES` (`6c78ad6`) times each registration on the
