@@ -112,7 +112,7 @@
 //!   place of the crate's 8 s (`ll_gc_set_epoch_interval`; the Critic of
 //!   2026-09-30 on the ceiling, finding 6);
 //! - `LL_RIG_YOUNG_CUT_MS` — the young cut, in milliseconds, in place of the
-//!   crate's (`ll_gc_set_young_cut`);
+//!   crate's 100 ms;
 //! - `LL_RIG_KEEP_EVERY_PAGE` — set to 1, the arena's resets give back no
 //!   page to the operating system, the control of the discard past the warm
 //!   blocks (`arena::keep_every_page`);
@@ -4479,9 +4479,12 @@ fn run(cell: &Cell, load: Load, class: *const Class) -> CellReading {
     if let Ok(millis) = std::env::var("LL_RIG_EPOCH_MS") {
         crate::gc::ll_gc_set_epoch_interval(millis.parse().expect("milliseconds"));
     }
-    crate::gc::ll_gc_set_young_cut(
+    // The shipped cut unless the run names one.
+    crate::cycle::young_cut::set_young_cut(
         std::env::var("LL_RIG_YOUNG_CUT_MS")
-            .map_or(0, |millis| millis.parse().expect("milliseconds")),
+            .map_or(crate::cycle::young_cut::shipped_cut(), |millis| {
+                std::time::Duration::from_millis(millis.parse().expect("milliseconds"))
+            }),
     );
     crate::gc::ll_gc_set_epoch_ratio(
         std::env::var("LL_RIG_SPENT_PER_PROOF")

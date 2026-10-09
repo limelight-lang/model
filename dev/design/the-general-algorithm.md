@@ -42,6 +42,8 @@ until Edmond rules.
 - At its own poll, when R holds a batch, the mutator turns its window to F
   and offers the batch's end on its token. Nothing else turns the window
   (P1). The offer is the delta: R's roots, frozen at the frame (P3).
+  R's counts the offer reads are of its roots older than the young cut,
+  100 ms (Edmond, 2026-10-09; "The young cut", below).
 - It does not wait for a take: it goes on, and withholds returns of memory
   until the collector releases the token or a mark withdraws the offer (P7).
 - At a later poll it takes the cycles the collector proved and holding
@@ -1689,3 +1691,39 @@ the Sage's advice, open to Edmond's overturning):
   trigger with its case; then a sweep on the loads that show it.
 - For Edmond, as a note: the second trigger reinstates a count the
   2026-10-03 ruling removed, kept honest by the wall guard.
+
+## The young cut (Edmond, 2026-10-09)
+
+**Taken.** Under `gc-window` the offer reads R as its roots appended more
+than the cut before: 100 ms, the embedder's to set (`ll_gc_set_young_cut`,
+zero restores the default). A root a −1 has just put into R mostly reaches
+zero by its count before a batch could read it, so a batch of old roots
+traces what is left; on `web-heap` the collector spends a third less for
+3–4 MB more garbage on the mean (`dev/BENCHMARKS.md`, 2026-10-08 and
+2026-10-09).
+
+**The clock** (`crate::cycle::young_cut`, after two Critic rounds and the
+Sage, 2026-10-09). Each thread counts the roots that reach R's tail (a
+registration that lands, a write-back, a lane spliced back) and keeps 17
+buckets a sixteenth of the cut apart, each the serve clock's instant at its
+opening and the count then; inline thread-locals, no allocation. A bucket
+opens at the poll and on the append path at each 64 appends, when the count
+grew. The young roots are the count less that of the newest bucket opened a
+cut ago or earlier.
+
+**The bound.** No root younger than the cut is offered, but in the batch
+after a lane's merge, which reads R whole as before. A root R loses still
+counts, which only delays an offer. A root reads old a cut after the first
+bucket opened past it: on a thread that polls, the cut plus a sixteenth of
+it or one poll's gap.
+
+**Where R is read as old.** The offer's branches (the bound, 64 after the
+short interval, the standing interval) and the batch's ceiling. The
+caught-up rule of an X turn and the retire pass's early return read R whole,
+as the measured arm did; under the cut the retire pass sends no soft signal
+for a young backlog, the offer starting its taker at the threshold itself.
+
+**Not taken.** A ceiling past which R is offered whatever its age (the
+Sage: the arm had none, and a thread that stops polling offers nothing under
+any rule); reading the caught-up rule as old (it would release every lane at
+every X on a loaded thread, the Critic).

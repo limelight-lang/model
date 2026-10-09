@@ -9,6 +9,48 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-09 — the window's offer reads R as its roots older than 100 ms
+
+**Decided (Edmond, 2026-10-09 08:41: "Вопрос2 выглядит потрясающе, если ты
+не скажешь иначе", "question 2 looks stunning unless you say otherwise",
+on the card offering the cut as a setting of 100 ms by default).**
+Under `gc-window` a mutator's offer reads its root queue R as the roots
+appended more than 100 ms before, at the bound, the short interval and the
+standing interval alike; a lane merged since the last reading still reads
+R whole. The cut is the embedder's to set (`ll_gc_set_young_cut`, zero
+restores 100 ms). R's young backlog sends the collector no soft signal at
+the retire pass. `gc-checkpoint` is unchanged.
+
+Why: a root a −1 has just put into R mostly reaches zero by its count
+before a batch could read it; roots under 10 ms old at the take were dead
+in under a fifth of the cases and mostly went back unwalked, roots of
+100 ms–1 s dead in 98 % (`dev/BENCHMARKS.md`, "S68.14's last reading").
+On `web-heap` the collector spends a third less (35.9–37.1 s against
+53.8–54.1 s a 116 s run) for 3–4 MB more garbage on the mean; on the six
+small loads the collector costs no more and young garbage is freed
+0.06–0.11 s later (`dev/BENCHMARKS.md`, 2026-10-08 and 2026-10-09).
+This amends the offer rule of 2026-10-07 ("1,024, or 64 after 50 ms, or
+4 s"): the counts it reads are of R's old roots. Design:
+`dev/design/the-general-algorithm.md`, "The young cut".
+
+---
+
+## 2026-10-09 — the epoch keeps two triggers: no turn by the roots taken
+
+**Decided (Edmond, 2026-10-09 08:41: "вопрос1 - согласен! не встраивать",
+"question 1, agreed: do not build it in").** The accepted algorithm of
+2026-10-06 named the roots a batch takes as a second trigger of the epoch
+beside the proofs' price, X the floor. Built and measured, it is not taken:
+as specified it turns the epoch before the proofs reach their price, and
+`web-heap`'s collector costs 13 % more; turning only an epoch that proved
+nothing it changes nothing at 150,000 roots, and at 50,000 halves the wait
+of garbage behind a dead live core for 20–35 % more collector on three
+live loads (`dev/BENCHMARKS.md`, "P8's turn by taken roots"). The epoch
+turns by the proofs' price and by X. The caught-up rule's own constant,
+P8's other half, stands (`queue.rs`, `CAUGHT_UP_ENTRIES`).
+
+---
+
 ## 2026-10-08 — a set the window collector proved is summed in the debug build only
 
 **Decided (Edmond, 2026-10-08 19:44: "I propose keeping it for the debug
@@ -111,13 +153,13 @@ Edmond, 2026-10-07, asked to optimise both kinds, for example so that
 first-generation objects are not judged. Leaving a young object out
 outright would never free a ring that dies young, such as an object whose
 field holds itself. Two sound forms were measured (`dev/BENCHMARKS.md`,
-2026-10-08, young roots) and neither is taken:
+2026-10-08, young roots); the first is not taken:
 
 - a bit for an entity never stored into the heap, sparing its
   registration: no such registration on any load measured;
-- a cut leaving roots under some age out of a batch: at most 2 % of
-  `web-heap`'s verdicts, while three of the six loads would wait longer for
-  garbage that is young when it is read.
+- a cut leaving roots under some age out of a batch: taken on 2026-10-09
+  (the entry "the window's offer reads R as its roots older than 100 ms"),
+  after a later measurement replaced the 2 % this entry read.
 
 Settled by Claude, open to Edmond's overturning. What already spares old
 survivors is unchanged: the mature-target prune and the deferred lanes by

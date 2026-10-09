@@ -130,3 +130,9 @@ fn appends_count_with_no_cut_and_read_no_clock() {
     assert_eq!(OPENED.with(|opened| opened[0].get()), 0);
     testing::cut_at(None);
 }
+
+#[test]
+fn the_crate_ships_a_cut_of_100_ms_and_its_cases_read_r_whole() {
+    assert_eq!(shipped_cut(), Duration::from_millis(100));
+    assert_eq!(cut(), Duration::ZERO, "no case's cut and no embedder's");
+}

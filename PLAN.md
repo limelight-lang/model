@@ -332,8 +332,11 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       2026-10-08 (`dev/BENCHMARKS.md`, "S68.14's last reading"): roots
       under 10 ms old are dead under a fifth of the time and mostly go back
       unwalked, from 100 ms to 1 s 98 % dead, past 1 s the lanes' returns,
-      live. Every measurement of the step is read; the code pieces left
-      are P8 and P2 (waiting on its bound's value).
+      live. Every measurement of the step is read. P8 closed 2026-10-09:
+      the caught-up rule's own constant built, the turn by taken roots not
+      taken (Edmond); the young cut taken (Edmond, 2026-10-09, 100 ms,
+      `dev/DECISIONS.md`). The code piece left is P2 (waiting on its
+      bound's value).
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);

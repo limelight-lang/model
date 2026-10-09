@@ -2,7 +2,8 @@
 //! `dev/BENCHMARKS.md`, "an arm that offers only R's entries older than
 //! 100 ms"): under `gc-window` the offer reads R as its entries older than the
 //! cut, so that a root registered moments ago, which mostly dies by its count
-//! before a batch could read it, is not traced. A cut of zero reads R whole.
+//! before a batch could read it, is not traced (Edmond, 2026-10-09: 100 ms,
+//! the embedder's to set).
 //!
 //! **The clock of R's appends.** Each thread counts the entries that reach
 //! R's tail — a registration that lands, a write-back, a lane spliced back —
@@ -73,9 +74,26 @@ pub(crate) fn cut() -> Duration {
     }
 
     match EMBEDDERS_CUT_NANOS.load(Ordering::Relaxed) {
-        0 => YOUNG_CUT,
+        0 => crates_cut(),
         nanos => Duration::from_nanos(nanos),
     }
+}
+
+/// The crate's cut, [`YOUNG_CUT`]; none under the unit cases, which read
+/// the collector's work over R whole, the cut's own cases and the rig
+/// setting one.
+fn crates_cut() -> Duration {
+    #[cfg(test)]
+    return Duration::ZERO;
+    #[cfg(not(test))]
+    return YOUNG_CUT;
+}
+
+/// The cut the crate ships, for the rig, which runs as a case and measures
+/// the shipped rule.
+#[cfg(test)]
+pub(crate) const fn shipped_cut() -> Duration {
+    YOUNG_CUT
 }
 
 /// Count `entries` appended to R's tail, on the mutator's thread, and read
