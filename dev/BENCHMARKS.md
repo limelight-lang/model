@@ -8,6 +8,50 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-09 — the young cut ported (branch `young-cut`, not in main): equal to the measured arm on `web-heap`, cheaper on the small loads
+
+**What ran.** The port of the arm that offers only R's entries older than
+100 ms, as the Critic and the Sage of 2026-10-09 shaped it: a per-thread
+clock of R's appends in 17 inline buckets a sixteenth of the cut apart
+(`crate::cycle::young_cut`), the offer reading R as its old entries but in
+the batch after a merge, the retire pass's soft signal silenced under the
+cut, `ll_gc_set_young_cut` with no cut by default; local branch
+`young-cut` at `67bee1d`, both suites green. Arm P100 (`LL_RIG_YOUNG_CUT_MS=100`)
+against the arm C100s and B, interleaved in one series; `web-heap` three
+repeats on CPUs 1–2 with the collector on 3, a void cell run again (the
+first pass of each repeat ran beside the test suites on CPU 0 and read
+void; the figures are the clean re-runs); the six loads with mutators 1,2,
+spare collector 3, shared 2, three repeats a placement.
+
+`web-heap`, three clean runs each:
+
+| | B | C100s | P100 |
+|---|---|---|---|
+| collector CPU | 53.8, 53.9, 54.1 s | 36.8, 36.9, 37.0 s | 35.9, 36.7, 37.1 s |
+| mutator CPU | 47.7–48.6 s | 47.0–47.8 s | 47.0–48.0 s |
+| garbage mean | 19–22 MB | 24–26 MB | 23–25 MB |
+| roots batched | 6.53–6.68 M | 4.02–4.09 M | 3.99–4.07 M |
+
+The six loads, collector CPU and time to free in ms, C100s / P100, the
+three repeats' range, spare then shared:
+
+| load | collector CPU | time to free |
+|---|---|---|
+| `garbage-25` | 76–79 / 58–72; 55–58 / 39–42 | 156–158 / 150–151 |
+| `deferred-then-dead` | 95–102 / 85–88; 77–85 / 66–72 | 1,484–1,501 / 1,478–1,485 |
+| `deferred-live-large` | 140–149 / 136–155; 114–126 / 114–126 | 166–167 / 159 |
+| `live-churn` | 583–689 / 578–615; 561–627 / 580–658 | 3,038–3,059 / 3,037–3,048 |
+| `live-churn-dies-by-count` | 342–369 / 325–357; 330–347 / 313–338 | none late |
+| `registered-ring-live` | 535–955 / 528–742; 484–542 / 492–509 | 89–91 / 104 |
+
+The port reads as the arm on `web-heap` and on every load's collector CPU
+within or below the arm's range; on `garbage-25` and `deferred-then-dead`
+below it, at B's own range of the earlier series (40–56 and 65–85 ms),
+which the arm's per-poll sampling did not reach. `registered-ring-live`
+frees its young garbage 14 ms later than the arm. Whether the cut goes to
+main, and at which default, is Edmond's (it changes the accepted offer
+rule).
+
 ## 2026-10-09 — P8's turn by taken roots: as specified it costs `web-heap`'s collector 13 %; turning only an epoch that proved nothing it is neutral at 150,000 and halves a dead core's wait at 50,000 for 20–35 % more collector on live loads
 
 **What ran.** `gc-window`, the rig's arms (`dev/tools/arms.sh`) from one
