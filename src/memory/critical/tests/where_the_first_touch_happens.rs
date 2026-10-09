@@ -87,8 +87,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("AHEAD", false), // test-only const Cell<u64>, no drop glue (the young cut)
         ("ALLOCATING", false),
         ("APPENDS", false), // const Cell<u64>, no drop glue (the young cut)
-        ("ARMED", false),                  // test-only const Cell, no drop glue
-        ("AT_THE_SURPLUS_UNLINK", false),  // test-only const Cell of an fn pointer, no drop glue
+        ("ARMED", false),   // test-only const Cell, no drop glue
+        ("AT_THE_SURPLUS_UNLINK", false), // test-only const Cell of an fn pointer, no drop glue
         ("AT_THE_THRESHOLD_SINCE", false), // const Cell<Option<Instant>>, no drop glue (`gc-window`)
         ("BATCH", false), // test-only const Cell of a Copy pair, no drop glue (`gc-window`)
         ("BETWEEN_THE_READS", false), // test-only const Cell of an fn pointer, no drop glue
@@ -103,7 +103,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("COMMIT_SPLIT", false),     // test-only const Cell, no drop glue
         ("CONFIRMED_BY_THE_SUM", false), // test-only const Cell, no drop glue
         ("COUNTS", false),           // test-only const Cell, no drop glue
-        ("COUNTS", false), // const [Cell<u64>; 17], no drop glue (the young cut)
+        ("COUNTS", false),           // const [Cell<u64>; 17], no drop glue (the young cut)
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),
