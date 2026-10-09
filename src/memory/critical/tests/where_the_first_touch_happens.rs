@@ -84,7 +84,9 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("ABANDON_NEXT_PUSH", false), // test-only const Cell, no drop glue
         ("ADMITTED", false),
         ("AGED", false), // test-only const Cell of a Copy struct, no drop glue (`gc-window`)
+        ("AHEAD", false), // test-only const Cell<u64>, no drop glue (the young cut)
         ("ALLOCATING", false),
+        ("APPENDS", false), // const Cell<u64>, no drop glue (the young cut)
         ("ARMED", false),                  // test-only const Cell, no drop glue
         ("AT_THE_SURPLUS_UNLINK", false),  // test-only const Cell of an fn pointer, no drop glue
         ("AT_THE_THRESHOLD_SINCE", false), // const Cell<Option<Instant>>, no drop glue (`gc-window`)
@@ -101,9 +103,11 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("COMMIT_SPLIT", false),     // test-only const Cell, no drop glue
         ("CONFIRMED_BY_THE_SUM", false), // test-only const Cell, no drop glue
         ("COUNTS", false),           // test-only const Cell, no drop glue
+        ("COUNTS", false), // const [Cell<u64>; 17], no drop glue (the young cut)
         ("COUNT_PRESSURE_ROOTS", false), // test-only const Cell, no drop glue
         ("CRITICAL", true),
         ("CURRENT_CONTEXT", false),
+        ("CUT", false), // test-only const Cell<Option<Duration>>, no drop glue (the young cut)
         ("DEFERRED_FREES", false),
         ("DEFERRED_RETURNS", false),
         ("DISPATCHES_AT_DESCENT_BOUNDARY", false), // test-only const Cell, no drop glue
@@ -136,6 +140,8 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("MINE", false), // test-only const Cell of a leaked reference, no drop glue (`gc-window`)
         ("MUTATOR_RECORD", false), // const Cell of a pointer into a record the process keeps, no drop glue
         ("MUTATOR_STATE", false),
+        ("NEWEST", false), // const Cell<usize>, no drop glue (the young cut)
+        ("OPENED", false), // const [Cell<u64>; 17], no drop glue (the young cut)
         ("OWNER_POSITIONS", false), // test-only const Cell, no drop glue
         ("PANIC_IN_CLOSE", false),
         ("PANIC_IN_HARVEST", false),
