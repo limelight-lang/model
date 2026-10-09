@@ -111,6 +111,13 @@ unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: 
     }
 
     let mutator = unsafe { &*record };
+    // The young cut's clock ticked at every poll that follows appends, the
+    // byte held or not, so that a thread whose token stands taken dates its
+    // appends all the same.
+    let cut = crate::cycle::young_cut::cut();
+    if !cut.is_zero() {
+        crate::cycle::young_cut::tick_if_appended(cut);
+    }
     if state(mutator.token.read()) != FREE {
         return false;
     }
@@ -126,14 +133,22 @@ unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: 
     // reading never saw.
     let merges = mutator.merges();
     let reader = unsafe { Reader::new(mutator.candidate_ring()) };
-    match is_due(
-        mutator,
-        reader.front_block_reading(),
-        merges,
-        threshold,
-        bound,
-        short,
-    ) {
+    // Under the young cut R stands for its entries older than the cut, but
+    // where a lane merged, which reads R whole (`crate::cycle::young_cut`,
+    // "The bound").
+    let old = (!cut.is_zero() && merges == mutator.merges_seen()).then(|| {
+        let young = crate::cycle::young_cut::young(crate::cycle::young_cut::instant(), cut);
+        let young = usize::try_from(young).unwrap_or(usize::MAX);
+        reader
+            .unread_up_to(young.saturating_add(bound))
+            .saturating_sub(young)
+            .min(bound)
+    });
+    let reading = match old {
+        Some(old) => (old > 0).then_some(Reading::Old(old)),
+        None => reader.front_block_reading().map(Reading::Front),
+    };
+    match is_due(mutator, reading, merges, threshold, bound, short) {
         Due::Now => {}
         Due::NotYet => return false,
         // The elder born while R holds the threshold, as an offer at the
@@ -154,7 +169,7 @@ unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: 
     }
 
     // The ring's owner, with no holder of its token, walks the chain.
-    let ceiling = reader.unread_up_to(worker::BATCH_BOUND);
+    let ceiling = old.unwrap_or_else(|| reader.unread_up_to(worker::BATCH_BOUND));
     let window = crate::refcount::the_next_window();
     let level = crate::cycle::deferred_slot_reuse::withheld_recall();
     if mutator.token.offer(window, ceiling, level).is_err() {
@@ -178,6 +193,23 @@ unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: 
     true
 }
 
+/// R as the offer reads it: its front block, or under the young cut the
+/// count of its entries older than the cut.
+#[derive(Clone, Copy)]
+enum Reading {
+    Front(FrontBlockReading),
+    Old(usize),
+}
+
+impl Reading {
+    fn holds_at_least(&self, entries: usize) -> bool {
+        match self {
+            Reading::Front(ring) => ring.holds_at_least(entries),
+            Reading::Old(old) => *old >= entries,
+        }
+    }
+}
+
 /// Whether the poll offers R: at once, not yet, or not yet with R at the
 /// threshold, where the elder is started.
 enum Due {
@@ -195,7 +227,7 @@ enum Due {
 /// ([`MutatorRecord::note_standing_since`]).
 fn is_due(
     mutator: &MutatorRecord,
-    ring: Option<FrontBlockReading>,
+    ring: Option<Reading>,
     merges: u32,
     threshold: usize,
     bound: usize,

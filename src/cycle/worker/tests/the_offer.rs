@@ -324,3 +324,102 @@ fn the_mark_under_an_offer_withdraws_it() {
     let _ = unsafe { crate::gc::ll_gc_collect_cycles() };
     reset_lanes();
 }
+
+/// Read R older than a cut on this thread for the case, from a fresh clock,
+/// and R whole again when the guard drops.
+struct YoungCut;
+
+impl YoungCut {
+    fn of(cut: Duration) -> Self {
+        crate::cycle::young_cut::testing::reset_the_clock();
+        crate::cycle::young_cut::testing::cut_at(Some(cut));
+        Self
+    }
+}
+
+impl Drop for YoungCut {
+    fn drop(&mut self) {
+        crate::cycle::young_cut::testing::cut_at(None);
+        crate::cycle::young_cut::testing::reset_the_clock();
+    }
+}
+
+/// Under the young cut R of entries younger than the cut is not offered at
+/// the bound, and is offered once the cut has passed, with the old count as
+/// the ceiling (`crate::cycle::young_cut`).
+#[test]
+fn a_young_r_is_offered_once_the_cut_has_passed() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_secs(60));
+    let _cut = YoungCut::of(Duration::from_millis(100));
+    let mut arena = Arena::new();
+    let _ = a_record_with_nothing_standing();
+    garbage_rings(&mut arena, THRESHOLD / 2, "YoungCutNode");
+
+    assert!(!unsafe { offer_at(THRESHOLD) }, "R young at the bound");
+    crate::cycle::young_cut::testing::set_the_clock_ahead(Duration::from_millis(99));
+    assert!(
+        !unsafe { offer_at(THRESHOLD) },
+        "a millisecond short of the cut"
+    );
+    crate::cycle::young_cut::testing::set_the_clock_ahead(Duration::from_millis(1));
+    assert!(unsafe { offer_at(THRESHOLD) }, "the cut passed");
+    assert_eq!(token().ceiling(), THRESHOLD, "the old count");
+    withdraw_and_collect();
+}
+
+/// Under the young cut a lane merged since the last reading reads R whole,
+/// its young entries offered with it: the one batch the cut's bound leaves
+/// out (`crate::cycle::young_cut`, "The bound").
+#[test]
+fn a_merged_lane_offers_a_young_r_whole() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_secs(60));
+    let _cut = YoungCut::of(Duration::from_secs(60));
+    let mut arena = Arena::new();
+    let mutator = a_record_with_nothing_standing();
+    garbage_rings(&mut arena, THRESHOLD / 2, "YoungCutMergedNode");
+
+    assert!(!unsafe { offer_at(THRESHOLD) }, "R young");
+    mutator.note_merges_seen(mutator.merges().wrapping_sub(1));
+    assert!(unsafe { offer_at(THRESHOLD) }, "a merge not yet seen");
+    assert_eq!(
+        token().ceiling(),
+        THRESHOLD,
+        "R whole, young entries with it"
+    );
+    withdraw_and_collect();
+}
+
+/// Under the young cut the retire pass over R at the soft threshold resets
+/// the deaths and sends no signal, the young backlog being no batch; with
+/// no cut it signals as before.
+#[test]
+fn a_young_r_at_the_soft_threshold_sends_no_signal_at_the_retire_pass() {
+    let _g = test_guard();
+    reset_lanes();
+    let _interval = StandingInterval::of(Duration::from_secs(60));
+    let mut arena = Arena::new();
+    let _ = a_record_with_nothing_standing();
+    garbage_rings(
+        &mut arena,
+        crate::cycle::worker::SOFT_THRESHOLD / 2,
+        "YoungCutRetireNode",
+    );
+
+    {
+        let _cut = YoungCut::of(Duration::from_secs(60));
+        let _ = crate::cycle::queue::take_the_signal_for_test();
+        unsafe { crate::cycle::queue::retire_at_the_poll() };
+        assert!(
+            !crate::cycle::queue::signal_is_due(),
+            "no signal under the cut"
+        );
+    }
+    unsafe { crate::cycle::queue::retire_at_the_poll() };
+    assert!(crate::cycle::queue::signal_is_due(), "a signal with none");
+    let _ = unsafe { crate::gc::ll_gc_collect_cycles() };
+    reset_lanes();
+}

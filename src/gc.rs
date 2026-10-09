@@ -571,6 +571,19 @@ pub extern "C" fn ll_gc_set_standing_interval(millis: u64) {
     crate::cycle::worker::set_standing_interval(std::time::Duration::from_millis(millis));
 }
 
+/// ABI: set the young cut, in milliseconds: under `gc-window` a mutator's
+/// offer reads its candidate ring as the entries older than the cut, so that
+/// roots registered moments ago, which mostly die by their counts, are not
+/// traced; zero restores the crate's default (`crate::cycle::young_cut`).
+/// The embedder's dial between the collector's work and how long young
+/// garbage waits (`dev/BENCHMARKS.md`, "an arm that offers only R's entries
+/// older than 100 ms"). Read in both builds, used under `gc-window` alone.
+/// Callable at any time from any thread; each mutator's next poll reads it.
+#[unsafe(no_mangle)]
+pub extern "C" fn ll_gc_set_young_cut(millis: u64) {
+    crate::cycle::young_cut::set_young_cut(std::time::Duration::from_millis(millis));
+}
+
 /// ABI: serve the collector's checkpoint now. The compiler emits it once
 /// **after** a run of [`ll_release_batch`](crate::refcount::ll_release_batch)
 /// calls (a scope exit), paired with one [`ll_gc_checkpoint_ack`] before the

@@ -541,7 +541,13 @@ unsafe fn append_marked_entry(state: *mut MutatorCycleState, entity: *mut RcHead
     // too late: every other allocation path would already have found the
     // pool empty.
     let writer = unsafe { Writer::new(this_thread_record_ref().candidate_ring()) };
-    match writer.push(entity_entry(entity) | mark, || fresh_block(mutator_state)) {
+    let pushed = writer.push(entity_entry(entity) | mark, || fresh_block(mutator_state));
+    // The young cut's clock counts what reached R's tail (`crate::cycle::young_cut`).
+    #[cfg(feature = "gc-window")]
+    if pushed.is_ok() {
+        crate::cycle::young_cut::note_appends(1);
+    }
+    match pushed {
         Ok(ring::Pushed::IntoTailBlock) => {}
         // A block of entries filled: the poll's signal to the collector, on
         // the path that was slow already.
@@ -1462,7 +1468,15 @@ pub(crate) unsafe fn retire_at_the_poll() {
     let reader = unsafe { crate::ring::Reader::new((*record).candidate_ring()) };
     if reader.has_at_least(crate::cycle::worker::SOFT_THRESHOLD) {
         mutator_state.candidate_deaths.set(0);
-        mutator_state.signal_due.set(true);
+        // Under the young cut R's young backlog is no batch, and the offer
+        // starts its taker at the threshold itself (`crate::cycle::offer`).
+        #[cfg(feature = "gc-window")]
+        let signal = crate::cycle::young_cut::cut().is_zero();
+        #[cfg(feature = "gc-checkpoint")]
+        let signal = true;
+        if signal {
+            mutator_state.signal_due.set(true);
+        }
         return;
     }
 
@@ -1508,6 +1522,8 @@ fn reoffer_every_lane(why: u64) {
     mutator_state.for_each_lane(|lane| {
         let moved = lane.len();
         if let Some((first, last)) = lane.take() {
+            #[cfg(feature = "gc-window")]
+            crate::cycle::young_cut::note_appends(moved as u64);
             unsafe { this_thread_record_ref().splice_into_r(first, last) };
             journal_reoffered(why, moved);
         }
@@ -1639,6 +1655,8 @@ fn hand_the_lane_back(lane: &mut Chain) -> bool {
     let Some((first, last)) = lane.take() else {
         return false;
     };
+    #[cfg(feature = "gc-window")]
+    crate::cycle::young_cut::note_appends(moved as u64);
     unsafe { this_thread_record_ref().splice_into_r(first, last) };
     journal_reoffered(crate::journal::kinds::REOFFERED_LANE_DUE, moved);
     true

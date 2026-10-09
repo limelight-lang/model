@@ -175,6 +175,9 @@ pub(crate) mod token;
 // The mutator's offer of a batch of R at a poll, under `gc-window`.
 #[cfg(feature = "gc-window")]
 pub(crate) mod offer;
+// The young cut: R read as its entries older than a cut, under
+// `gc-window`; its setting stands in both builds.
+pub(crate) mod young_cut;
 // The record the token stands in, with the words a collector thread's
 // handoff uses, in storage that outlives the thread.
 pub(crate) mod mutator_record;
