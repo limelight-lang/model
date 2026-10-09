@@ -262,7 +262,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       the default build, by the gate; the results into the journal and the
       article.
 
-- [ ] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
+- [x] S68.13 The frame the mutator offers (Edmond, 2026-10-05; design §5f,
       third form after two Critic rounds, the Sage, and three Critics by
       aspect): every count store, decrement included, and every slot store
       the trace reads stores its tag first and the data with a release; the
@@ -299,6 +299,10 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       read in the journal) went to main without his word and was reverted
       by it on 2026-10-06. The request machinery stays in the default
       build's protocol.
+      Closed 2026-10-09 by Edmond («да закрытваем хватит уже гонять»):
+      with the young cut every column of the gate met but the owner pause,
+      whose cells past 5 ms ran under 1 ms on the CPU (`dev/DECISIONS.md`,
+      2026-10-09). The offer-to-take p99 under the cut was not read again.
 
 - [ ] S68.14 Wave 3 of the rework (Edmond, 2026-10-06: the general algorithm
       accepted, `dev/design/the-general-algorithm.md`): measurements before
@@ -318,8 +322,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       `Unwalked`; P2's prerequisites (workspace and P for 16k, marks in
       bytes, then 1k, 4k, 16k); P8–P10 (the epoch's second trigger, the
       sum replaced for an S with no weak references); P5 only if its
-      measured share is material. S68.13's failed gate stays open for
-      Edmond.
+      measured share is material. S68.13 closed 2026-10-09.
       Done when: every measurement above read in `dev/BENCHMARKS.md`, and
       each code piece green in both builds with its own gate.
       Read 2026-10-08 (`dev/BENCHMARKS.md`, two entries): expansions at F

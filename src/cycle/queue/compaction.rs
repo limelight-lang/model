@@ -205,6 +205,12 @@ fn pass_over_r(mutator_state: &MutatorCycleState, ring: Quiescent<'_>, deferred_
 /// at any instant; an unwind inside a free leaves the front past that entry
 /// and the rest of the run to the next close. A marked entry is freed like
 /// any other, `Free` outranking `Deferred`.
+///
+/// Every [`FRONT_RUN_LOOKAHEAD`]-th entry, the headers of the next
+/// `2 × FRONT_RUN_LOOKAHEAD` entries are prefetched off a peek that consumes
+/// nothing: a run is tens of thousands of cold headers, and one read at a
+/// time spends most of the run waiting on each in turn (`dev/BENCHMARKS.md`,
+/// "the owner's long applications on `web-heap`").
 fn free_the_front_run() {
     let record = mutator_record::this_thread_record();
     if record.is_null() {
@@ -216,7 +222,17 @@ fn free_the_front_run() {
     // reading before its claim consumes nothing.
     let reader = unsafe { ring::Reader::new((*record).candidate_ring()) };
     let mut one = [0usize; 1];
+    let mut ahead = [0usize; 2 * FRONT_RUN_LOOKAHEAD];
+    let mut read = 0usize;
     loop {
+        if read % FRONT_RUN_LOOKAHEAD == 0 {
+            let seen = reader.peek(&mut ahead).len();
+            for &entry in &ahead[..seen] {
+                prefetch_header(entry_entity(entry));
+            }
+        }
+        read += 1;
+
         let peeked = reader.peek(&mut one);
         if peeked.len() == 0 {
             return;
@@ -232,6 +248,21 @@ fn free_the_front_run() {
         free(entity, journal::SLOT_FROM_R_FRONT_RUN);
         checkpoint(FRONT_RUN_CHECKPOINT);
     }
+}
+
+/// How often the front run prefetches, in entries, and half how far ahead.
+const FRONT_RUN_LOOKAHEAD: usize = 16;
+
+/// Ask for `entity`'s header line ahead of its reading. A hint: it neither
+/// faults nor orders, so an entry the run stops short of costs one line fetched for nothing.
+#[inline(always)]
+fn prefetch_header(entity: *mut RcHeader) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        core::arch::x86_64::_mm_prefetch(entity as *const i8, core::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    let _ = entity;
 }
 
 /// The pass over P. With `prefix` the batch's count of P's entries, dispose

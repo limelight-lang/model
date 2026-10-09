@@ -9,6 +9,28 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-09 — S68.13 closed with its owner pause read as the thread's own time
+
+**Decided (Edmond, 2026-10-09 12:54, verbatim: «да закрытваем хватит уже
+гонять»), on the question "close S68.13 and read the owner's pause by the
+time the thread ran, or keep it open until a machine without
+virtualization":** S68.13 is closed. Its gate (`PLAN.md`, S68.13) is met
+on `web-heap` with the young cut but for §9's owner pause under 5 ms (three
+cells of five past it, 5.7–18.9 ms; `dev/BENCHMARKS.md`, 2026-10-09). The
+pauses past 5 ms ran under 1 ms on the CPU; the longest the thread spent
+working was 3.8 ms with the front run's headers prefetched (same file,
+"the owner's long applications"). No further cells were run before the
+close, at Edmond's word.
+
+**The front run's prefetch** (Edmond 12:54: «да это можно»): the run reads
+the headers of the next entries ahead of their turn. No rule changes: the
+same slots are freed in the same order at the same close.
+
+**Left open:** the offer-to-take latency's p99 under the young cut, which
+the gate names and which was not read again.
+
+---
+
 ## 2026-10-09 — the window's offer reads R as its roots older than 100 ms
 
 **Decided (Edmond, 2026-10-09 08:41: "Вопрос2 выглядит потрясающе, если ты

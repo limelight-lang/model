@@ -8,6 +8,45 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-09 — the owner's long applications on `web-heap`: the front run's cold headers and time off the CPU; the run's headers prefetched halve its cost an entry
+
+**What the probe read.** A probe build (local worktree `pause-probe`, not in
+main) timed each part of the owner's disposition of P with no trace window
+(`crate::cycle::collect::dispose_of_p`, the gate's `disposal_longest_us`):
+the overflow pass, P's prefix, the front run (`free_the_front_run`), the
+frees in each and the time inside `ll_free`, `munmap` calls, and the
+thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`) against the wall clock.
+`web-heap` by the protocol's cell, two mutators, cap 1; 13 cells, about
+5,300 dispositions a cell.
+
+**What the long dispositions are.** No destructor ran and no set stood weakly
+held in any cell (`verdict_destructors_us` and `tag_sets_weakly_held` 0).
+A long disposition is one of two things:
+
+- The front run freeing 10,000–28,000 completed deaths in one close:
+  4–9 ms, of which `ll_free` is 1–2 ms and the rest the reading of each
+  dead entity's cold header, 223–243 ns an entry. No `munmap` ran.
+- Time off the CPU: in the two longest of the cells read with the CPU
+  clock (16.6 ms and 4.0 ms) the thread ran 0.6 and 0.3 ms of it, with no
+  run-queue wait and no page fault. Inferred, not
+  seen: the VM's steal (`/proc/stat` reads about 3 % steal on the mutators'
+  CPUs).
+
+**The front run's headers prefetched**, three cells each, interleaved:
+
+| | main | prefetched |
+|---|---|---|
+| front run, ns an entry | 223–243 | 115–125 |
+| dispositions' total, s | 1.47–1.54 | 1.18–1.23 |
+| longest disposition, ms | 6.1–8.6 | 4.0–6.9 |
+| collector CPU, s | 39.0–41.6 | 38.8–40.6 |
+| mutator CPU, s | 50.5–51.3 | 49.6–50.8 |
+
+Two more prefetched cells with the CPU clock: the longest disposition
+whose CPU time matches its wall time is 3.8 ms; every one past 5 ms ran
+under 1 ms of it. Prefetch: every 16 entries, a peek of the next 32 and a
+`_mm_prefetch` of each header; the peek consumes nothing.
+
 ## 2026-10-09 — with the young cut, S68.13's gate read again against S68.12: touched sets 11–24 against 3,233–3,677, the collector 20 % cheaper; the owner's longest application past 5 ms in three cells of five. P2's probe at 2,048: batches near twice as large, the collector unchanged
 
 **Builds.** K1024: `main` at `6737aa6` (`gc-window`, the young cut at
