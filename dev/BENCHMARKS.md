@@ -8,6 +8,88 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-09 — P8's turn by taken roots: as specified it costs `web-heap`'s collector 13 %; turning only an epoch that proved nothing it is neutral at 150,000 and halves a dead core's wait at 50,000 for 20–35 % more collector on live loads
+
+**What ran.** `gc-window`, the rig's arms (`dev/tools/arms.sh`) from one
+binary, the count of roots a turn set by `LL_RIG_ROOTS_A_TURN`: OFF
+(10^12, never reached), K150 and K50 (the trigger of the local commit
+`44d3d44`, branch `p8-trigger`, not in main), V150 and V50 (the same with
+`proving == 0` added to its condition, branch `p8-variant`). Deciding
+loads: `MUTATORS=1,2 SPARE=3 SHARED=2`, 10 s and a 12 s drain, three
+repeats a placement; `web-heap`: two mutators on CPUs 1–2, cap 1 on CPU 3,
+116 s, three repeats, a void cell run again. Collector CPU is
+`collector_cpu_us` of the whole cell; each arm pair ran interleaved in one
+series, so ranges compare inside a series only.
+
+**`web-heap`** (collector CPU in s; mean garbage in MB; turns by proofs /
+X / taken roots, process-wide):
+
+| series | arm | collector CPU | garbage | turns |
+|---|---|---|---|---|
+| 1 | OFF | 52.8–57.6 | 19–21 | 26–30 / 12–15 / 0 |
+| 1 | K150 | 59.6–60.8 | 20–22 | 0 / 12 / 41–42 |
+| 1 | K50 | 76.5–78.3 | 34–38 | 0 / 12 / 102–106 |
+| 2 | OFF | 55.4–57.8 | 22 | 27–30 / 12–15 / 0 |
+| 2 | V150 | 55.4–55.9 | 21–24 | 28–31 / 12–13 / 0 |
+| 3 | OFF | 55.6–56.5 | 20–21 | 28–29 / 13–14 / 0 |
+| 3 | V50 | 56.2–57.8 | 20–21 | 28–29 / 12–14 / 0 |
+
+The trigger as specified reaches its count before the proofs reach their
+price, so it takes every proof turn's place: the stamps retire before the
+batches prune at them, and the collector pays 13 % (K150) and 40 % (K50).
+With `proving == 0` it never fires on `web-heap`, whose every epoch
+proves.
+
+**The deciding loads**, OFF against the variant, collector CPU in ms over
+both placements, three repeats each:
+
+| load | OFF | V150 | OFF | V50 | time to free, OFF → V50 |
+|---|---|---|---|---|---|
+| `live-churn` | 566–707 | 646–700 | 579–638 | 741–826 | 2.98 → 1.37–1.41 s |
+| `live-churn-dies-by-count` | 342–379 | 339–386 | 318–397 | 461–502 | none late |
+| `deferred-live-large` | 126–135 | 122–147 | 111–134 | 135–177 | 57 ms both |
+| `registered-ring-live` | 499–597 | 469–589 | 488–555 | 488–548 | none late |
+
+`garbage-25` and `deferred-then-dead` turn nothing by taken roots at
+K150 or K50 (their batches take 22 k and 53 k roots a run over two
+mutators) and read alike across OFF, K150 and K50 in the first series.
+V150 turns 2 epochs on `live-churn` and 8 on `registered-ring-live` and
+changes no time to free. V50 turns 6–26 per load; the cost is the lanes
+coming back oftener (roots re-offered 343 k → 472 k on `live-churn`,
+351 k → 449 k on `live-churn-dies-by-count`, 280 k → 420 k on
+`deferred-live-large`); the gain is on `live-churn` alone, whose garbage
+behind a dead live core waits half as long.
+
+**Dead roots by lane of origin** (the test-only count of this commit's
+branch, `proposed_by_survived` and `zero_count_by_survived`): in
+`gc-window` every dead root a collector read was at a count of zero;
+the Proposed arm of `verdict_for` counted none on any load, so the
+tag-proved sets reach their roots' verdicts elsewhere and the count of
+those is not taken. On `live-churn` OFF, of about 288 k roots dead at a
+count of zero, 264 k came back from lane 1 and 24 k from lane 3; at K50
+176 k, 84 k and 27 k from lanes 1, 3 and 7.
+
+**Not decided here.** Whether to build the turn by taken roots, and at
+which count, is Edmond's: the accepted algorithm names the trigger
+(`dev/DECISIONS.md`, 2026-10-06), and as specified it fails its gate on
+`web-heap`.
+
+**The arm that offers only roots older than 100 ms, its soft signal
+silenced** (`C100s`: the latest patch of `/home/user/arms-age`, where
+`retire_at_the_poll` sets no `signal_due` while the cut is on), against B
+and C100, three loads, three repeats a placement, collector CPU in ms:
+
+| load | B | C100 | C100s |
+|---|---|---|---|
+| `live-churn-dies-by-count` | 326–356 | 387–426 | 326–378 |
+| `garbage-25` | 40–56 | 54–80 | 54–80 |
+| `registered-ring-live` | 417–511 | 503–540 | 469–540 |
+
+The young backlog's soft signals explain the cost on
+`live-churn-dies-by-count` alone; `garbage-25` stays 20 ms dearer a run
+and frees 0.11 s later (45 → 156 ms), as the cut makes it. `web-heap` on
+C100s is not run yet.
+
 ## 2026-10-08 — an arm that offers only R's entries older than 100 ms: `web-heap`'s collector a third cheaper, the six deciding loads' dearer and their garbage 0.1 s later
 
 **Build.** An arm off `main` at `95af9d0`, not pushed (worktree
