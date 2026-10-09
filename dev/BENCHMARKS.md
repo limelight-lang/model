@@ -8,6 +8,36 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-09 — S68's clauses S68.13 left unread, on `web-heap` at `a85eb88`: B's mutator 30 % under A's; the offer-to-take p99 46 ms under the young cut
+
+**Builds.** A: `main` at `a85eb88`, the default build (`gc-checkpoint`).
+B: the same commit under `gc-window` (the young cut at 100 ms, the front
+run prefetched). `web-heap` by the protocol's cell (`dev/tools/arms.sh …
+web`, 46.78 ms interarrival, two mutators on CPUs 1–2, cap 1 on CPU 3),
+three cells each, interleaved; one more B cell under `LL_RIG_STANDINGS`
+for the offer's latency. No void cell.
+
+| | A | B |
+|---|---|---|
+| mutator CPU, s | 71.5–72.2 | 49.8–51.0 |
+| collector CPU, s | 51.5–52.6 | 42.7–44.7 |
+| garbage mean / peak, MB | 27.0–28.8 / 217–269 | 27.3–30.8 / 154–203 |
+| batches | 4,955–5,039 | 4,038–4,100 |
+| sets touched / proved | — | 16–22 / 3,996–4,069 |
+| owner's longest collection, ms | 90.7–112.8 | none |
+| owner's longest disposition, ms | 1.7–4.3 | 4.4, 5.8, 34.7 |
+| longest application of the collector's frees, ms | — | 1.9–4.9 |
+
+Under `LL_RIG_STANDINGS` (one B cell): offer to take p50 0.10 ms, p99
+45.7 ms, longest 506 ms.
+
+Against S68's gate (`PLAN.md`, S68): B's mutator CPU within +3 % of A's,
+met (A's mutator time carries its owner's collections, which B's does
+not); Δ-refusals 0.4–0.5 % of batches, met; garbage mean overlapping, peak
+lower. The owner pause past 5 ms in two B cells of three; this build has no
+CPU clock on the disposition, so whether the 34.7 ms is time off the CPU,
+as the 2026-10-09 probe found for the cells past 5 ms, is not read.
+
 ## 2026-10-09 — the owner's long applications on `web-heap`: the front run's cold headers and time off the CPU; the run's headers prefetched halve its cost an entry
 
 **What the probe read.** A probe build (local worktree `pause-probe`, not in
