@@ -40,8 +40,8 @@ const BUCKETS: usize = 17;
 /// The appends between two readings of the clock on the append path.
 const TICK_EVERY: u64 = 64;
 
-/// The crate's cut: none, R read whole.
-const YOUNG_CUT: Duration = Duration::ZERO;
+/// The crate's cut: 100 ms (Edmond, 2026-10-09).
+const YOUNG_CUT: Duration = Duration::from_millis(100);
 
 /// The embedder's cut in nanoseconds, or zero for the crate's
 /// ([`set_young_cut`]).
