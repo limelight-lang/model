@@ -8,6 +8,59 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-09 — with the young cut, S68.13's gate read again against S68.12: touched sets 11–24 against 3,233–3,677, the collector 20 % cheaper; the owner's longest application past 5 ms in three cells of five. P2's probe at 2,048: batches near twice as large, the collector unchanged
+
+**Builds.** K1024: `main` at `6737aa6` (`gc-window`, the young cut at
+100 ms). C6812: S68.12's build at `cb0faf1` (`recycler-over-counts`), the
+gate's reference (`PLAN.md`, S68.13). K2048: K1024 with `BATCH_BOUND`
+2,048 (the copy's assert at half the bump, the record 512 bytes; local
+branch `p2-probe`, not in main). `web-heap` by the protocol's cell
+(`dev/tools/arms.sh … web`, 46.78 ms interarrival, two mutators on CPUs
+1–2, cap 1 on CPU 3, 116 s with a 20 s warm-up, 12 s drain), the arms
+interleaved; a void cell run again.
+
+**S68.13's gate**, five cells each:
+
+| | K1024 (main) | C6812 (S68.12) |
+|---|---|---|
+| collector CPU, s | 37.5–40.9 | 48.3–53.8 |
+| mutator CPU, s | 48.0–49.7 | 49.1–51.8 |
+| garbage mean / peak, MB | 24–26 / 139–188 | 25–28 / 170–228 |
+| garbage at the drain's end | 0 | 0 |
+| batches | 4,041–4,123 | 6,756–7,264 |
+| roots batched, M | 4.00–4.08 | 5.46–5.65 |
+| sets proved / touched | 3,943–4,083 / 11–24 | 3,805–3,886 / 3,233–3,677 |
+| second refusals, roots read live | 0 | 1,295–1,547 |
+| owner's longest application, ms | 3.4, 4.3, 5.7, 8.2, 18.9 | 3.1, 3.4, 3.9, 4.5, 8.5 |
+| arrival p99.9, ms | 167–301 | 167–301 |
+
+Against the gate: touched refusals no higher than S68.12's, met (0.3–0.6 %
+of batches against 47–51 %; §9's 10 % met); collector CPU lower than
+S68.12's, met (the ranges apart); garbage and every drain, met. §9's owner
+pause under 5 ms in every cell, **not met**: three cells of five past it
+(5.7, 8.2, 18.9 ms), against one of five in C6812 (8.5 ms). Not read: the
+offer-to-take latency's p99 (a cell under `LL_RIG_STANDINGS`) and the
+mutator's CPU against A. The touched sets fell with the cut: the
+2026-10-05 reading found them to be the roots of requests still being
+built, which the cut no longer offers.
+
+**P2's probe** (`dev/design/the-general-algorithm.md`, "Wave 3: P2", the
+order's first step), three clean cells each:
+
+| | K1024 | K2048 |
+|---|---|---|
+| roots a batch | 989–990 | 1,852–1,863 |
+| batches | 4,036–4,118 | 2,575–2,640 |
+| roots batched, M | 4.00–4.07 | 4.79–4.92 |
+| collector CPU, s | 37.4, 39.1, 41.6 | 38.0, 39.1, 41.4 |
+| garbage mean, MB | 24–26 | 24–26 |
+
+Under the cut a batch sits at the bound, and a bound of 2,048 nearly
+doubles it, but the collector's CPU does not move: fewer batches take 20 %
+more roots, the bound reached by younger ones. By the order, roots a batch
+moved, so the byte marks are next; the collector's cost, which is what the
+bound would buy, did not.
+
 ## 2026-10-09 — the young cut ported (branch `young-cut`, not in main): equal to the measured arm on `web-heap`, cheaper on the small loads
 
 **What ran.** The port of the arm that offers only R's entries older than
