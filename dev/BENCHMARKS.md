@@ -87,8 +87,22 @@ and C100, three loads, three repeats a placement, collector CPU in ms:
 
 The young backlog's soft signals explain the cost on
 `live-churn-dies-by-count` alone; `garbage-25` stays 20 ms dearer a run
-and frees 0.11 s later (45 → 156 ms), as the cut makes it. `web-heap` on
-C100s is not run yet.
+and frees 0.11 s later (45 → 156 ms), as the cut makes it.
+
+C100s against B in a series of their own, collector CPU and time to free
+in ms, three repeats a placement (spare, then shared):
+
+| load | B | C100s | time to free, B → C100s |
+|---|---|---|---|
+| `live-churn` | 567–618, 535–641 | 581–590, 569–618 | 2,973–2,995 → 3,035–3,044 |
+| `deferred-then-dead` | 82–85, 65–78 | 92–101, 80–83 | 1,384–1,398 → 1,483–1,496 |
+| `deferred-live-large` | 131–137, 109–119 | 139–155, 109–130 | 57 → 165–170 |
+
+`web-heap`, three runs each, B / C100s: collector CPU 53.8, 53.9, 55.8 s /
+36.5, 38.0, 38.2 s; mean garbage 21–22 / 24–26 MB; peak 127–170 /
+155–166 MB; roots batched 6.43–6.66 M / 4.02–4.08 M. The cut keeps C100's
+third off `web-heap`'s collector; on the six loads it costs 0–25 ms of
+collector a 22 s run and frees young garbage 0.06–0.11 s later.
 
 ## 2026-10-08 — an arm that offers only R's entries older than 100 ms: `web-heap`'s collector a third cheaper, the six deciding loads' dearer and their garbage 0.1 s later
 
