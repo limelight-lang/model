@@ -9,6 +9,19 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-09 — the batch's bound stays 1,024: P2 not built
+
+**Settled by Claude on the measurement, open to Edmond's overturning** (his
+rule of 2026-10-06 for an optional optimization a measurement answers): a
+bound of 2,048 under the young cut nearly doubles the roots a batch (990 →
+1,855) and leaves the collector's CPU where it stands (38.0–41.4 s against
+37.4–41.6 s, three cells each; `dev/BENCHMARKS.md`, 2026-10-09, "P2's
+probe"). What the larger bound would buy is a cheaper collector, and the
+probe shows none, so the byte marks and the 4k and 16k bounds of P2's order
+are not built. Wave 3's last code piece, and S68.14 closes with it.
+
+---
+
 ## 2026-10-09 — S68.13 closed with its owner pause read as the thread's own time
 
 **Decided (Edmond, 2026-10-09 12:54, verbatim: «да закрытваем хватит уже

@@ -304,7 +304,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       whose cells past 5 ms ran under 1 ms on the CPU (`dev/DECISIONS.md`,
       2026-10-09). The offer-to-take p99 under the cut was not read again.
 
-- [ ] S68.14 Wave 3 of the rework (Edmond, 2026-10-06: the general algorithm
+- [x] S68.14 Wave 3 of the rework (Edmond, 2026-10-06: the general algorithm
       accepted, `dev/design/the-general-algorithm.md`): measurements before
       code, then code. Measure on `web-heap` in A and B, cap 1: the share
       of the trace's expansions at F; corpses and read-live a batch against
@@ -338,8 +338,10 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       live. Every measurement of the step is read. P8 closed 2026-10-09:
       the caught-up rule's own constant built, the turn by taken roots not
       taken (Edmond); the young cut taken (Edmond, 2026-10-09, 100 ms,
-      `dev/DECISIONS.md`). The code piece left is P2 (waiting on its
-      bound's value).
+      `dev/DECISIONS.md`). P2 not built (settled by Claude on the
+      probe of 2026-10-09, open to Edmond's overturning: a bound of 2,048
+      nearly doubles a batch and moves the collector's CPU nothing,
+      `dev/BENCHMARKS.md`; the bound stays 1,024). Closed 2026-10-09.
 
 **Open for Edmond (2026-10-05):** the take on a grant that waits up to 36 ms
 at the 1 ms pace (cap the commit, exempt the slow paths, or another way);
