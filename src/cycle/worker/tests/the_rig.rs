@@ -1774,7 +1774,7 @@ impl WebLoop {
         let mut instructions_from = 0;
         let mut plan = self.draw_a_plan(None);
         for index in 0.. {
-            let Some((arrival, queued)) = queue.take(from) else {
+            let Some((arrival, queued)) = queue.take(from, Some(&mut self.garbage)) else {
                 break;
             };
 
@@ -1893,7 +1893,7 @@ impl WebLoop {
             figures.spin_turns += spun.turns;
             figures.spin_calls += spun.calls;
             if phase < 2 {
-                sleep_without_poll(waits[phase]);
+                sleep_without_poll(waits[phase], Some(&mut *garbage));
             }
         }
 
@@ -2077,11 +2077,14 @@ impl<I: Iterator<Item = Duration>> ArrivalQueue<I> {
     /// waiting at its service's start, itself among them: the oldest waiting,
     /// or, with none, the next, slept for without a poll. `None` once every
     /// arrival before `run_for` was taken.
-    fn take(&mut self, from: Instant) -> Option<(Duration, usize)> {
+    fn take(&mut self, from: Instant, garbage: Option<&mut Garbage>) -> Option<(Duration, usize)> {
         self.admit(from);
         if self.waiting.is_empty() {
             let next = self.next?;
-            sleep_without_poll((from + next).saturating_duration_since(Instant::now()));
+            sleep_without_poll(
+                (from + next).saturating_duration_since(Instant::now()),
+                garbage,
+            );
             self.admit(from);
         }
 
@@ -2121,7 +2124,7 @@ fn poll_and_read(garbage: &mut Garbage) -> usize {
 fn wait_until(due: Instant, without_poll: bool, mut poll: impl FnMut()) {
     while let Some(ahead) = due.checked_duration_since(Instant::now()) {
         if without_poll {
-            sleep_without_poll(ahead);
+            sleep_without_poll(ahead, None);
             continue;
         }
 
@@ -2319,21 +2322,61 @@ impl Cell {
 /// polls or frees again, and the returns it withholds under a foreign trace
 /// stay withheld through the sleep. The web loads' wait is its second
 /// caller.
-fn sleep_without_poll(wait: Duration) {
-    if polls_before_blocking() {
-        // Outside the stretch: the call is a poll and writes counts.
-        CALLS_BEFORE_BLOCKING.fetch_add(1, Ordering::Relaxed);
-        let _ = unsafe { crate::gc::ll_gc_before_blocking() };
+fn sleep_without_poll(wait: Duration, mut garbage: Option<&mut Garbage>) {
+    let mode = before_blocking();
+    if mode == BeforeBlocking::Off {
+        in_a_stretch(Stretch::Wait, || std::thread::sleep(wait));
+        return;
     }
-    in_a_stretch(Stretch::Wait, || std::thread::sleep(wait));
+
+    // Outside the stretch: the call is a poll and writes counts, and the
+    // garbage it freed is read at once, as after every poll.
+    let due = Instant::now() + wait;
+    CALLS_BEFORE_BLOCKING.fetch_add(1, Ordering::Relaxed);
+    let _ = unsafe { crate::gc::ll_gc_before_blocking() };
+    if let Some(garbage) = garbage.as_deref_mut() {
+        garbage.read(Instant::now(), held_by_size());
+    }
+    if mode == BeforeBlocking::Call {
+        in_a_stretch(Stretch::Wait, || {
+            std::thread::sleep(due.saturating_duration_since(Instant::now()))
+        });
+        return;
+    }
+
+    // The ceiling of every scheme that wakes a sleeper: a poll every
+    // millisecond through the wait, each read.
+    while let Some(ahead) = due.checked_duration_since(Instant::now()) {
+        in_a_stretch(Stretch::Wait, || {
+            std::thread::sleep(ahead.min(Duration::from_millis(1)))
+        });
+        let _ = unsafe { crate::gc::ll_gc_maybe_collect() };
+        if let Some(garbage) = garbage.as_deref_mut() {
+            garbage.read(Instant::now(), held_by_size());
+        }
+    }
 }
 
-/// Whether the rig polls before every wait it sleeps without a poll, as a
-/// compiled program calls `ll_gc_before_blocking` before a blocking call
-/// (`dev/design/recycler-over-counts.md`, §5g): `LL_RIG_BEFORE_BLOCKING=1`.
-fn polls_before_blocking() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| std::env::var("LL_RIG_BEFORE_BLOCKING").is_ok_and(|on| on == "1"))
+/// What the rig does before a wait it sleeps without a poll
+/// (`dev/design/recycler-over-counts.md`, §5g), by `LL_RIG_BEFORE_BLOCKING`:
+/// nothing; `1`, the call before blocking a compiled program would make;
+/// `poll`, the call and then a poll every millisecond through the wait.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BeforeBlocking {
+    Off,
+    Call,
+    Poll,
+}
+
+fn before_blocking() -> BeforeBlocking {
+    static MODE: std::sync::OnceLock<BeforeBlocking> = std::sync::OnceLock::new();
+    *MODE.get_or_init(
+        || match std::env::var("LL_RIG_BEFORE_BLOCKING").as_deref() {
+            Ok("1") => BeforeBlocking::Call,
+            Ok("poll") => BeforeBlocking::Poll,
+            _ => BeforeBlocking::Off,
+        },
+    )
 }
 
 /// The calls [`sleep_without_poll`] made before its waits.
@@ -2462,7 +2505,7 @@ fn an_arrival_waits_behind_the_services_before_it() {
     let mut queue = ArrivalQueue::new(offsets.into_iter(), millis(50));
     let from = Instant::now();
     let mut served = Vec::new();
-    while let Some((arrival, queued)) = queue.take(from) {
+    while let Some((arrival, queued)) = queue.take(from, None) {
         let start = from.elapsed();
         std::thread::sleep(millis(5));
         served.push((arrival, queued, start - arrival));
