@@ -21,6 +21,28 @@ that rate. Both collectors stay, `gc-checkpoint` the default.
 
 ---
 
+## 2026-10-12 — a thread blocked with no poll to come calls `ll_gc_before_blocking` each 50 ms of its wait
+
+**Supersedes** the entry below on one point: the offer before a blocking
+call, not taken there, is taken at another site.
+
+**Decided (Edmond, 2026-10-12: «Делай», asked with the measurement and the
+rule's verdict before him).** The site is Edmond's: the call is made not
+before a thread blocks but from its reactor's timer, each 50 ms its wait
+lasts, and the call is `ll_gc_before_blocking` as built (`main`, from the
+branch `before-blocking`; `dev/design/recycler-over-counts.md`, §5g,
+"Taken"). Read against B without it (`dev/BENCHMARKS.md`, 2026-10-12, "a
+sleeping owner's garbage"): a thread waiting 1,000 ms between requests
+holds 2.3 MB of garbage against 24.8 MB, the ceiling of a poll every 1 ms
+1.0 MB, for 0.5 s of mutator and 1.7 s of collector CPU in 116 s; on the
+busy loads the garbage is 10–13 % lower with both CPUs inside B's spread.
+The rule fixed before the run (§5g, item 5) reads it as not taken, the
+collector's median at 1,000 ms above B's spread by the freeing of the
+garbage B holds until the thread wakes; Edmond takes that cost. Under
+`gc-checkpoint` the call does nothing, as built.
+
+---
+
 ## 2026-10-12 — S68.9 closed: the park has nothing to answer under the frame, and the offer before a blocking call is measured and not taken
 
 **Supersedes** the park of 2026-10-04 ("an idle mutator answers T by a

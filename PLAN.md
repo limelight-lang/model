@@ -185,7 +185,9 @@ rate.
       the park answered; the offer before a blocking call that §5f left
       open is built and read, the garbage 12–15 % lower for the collector
       5 % dearer, and not taken by the rule fixed before the run
-      (`dev/DECISIONS.md`, 2026-10-12).
+      (`dev/DECISIONS.md`, 2026-10-12). Taken at the timer's site
+      (Edmond, 2026-10-12: «Делай»): the call each 50 ms of a wait, the
+      sleeping thread's garbage 24.8 → 2.3 MB at 1,000 ms.
 - [x] S68.10 The deferred lanes under turns by X alone (design §5c, the
       Sage's second ruling, 2026-10-05): an X turn releases every lane only
       where R stands below the soft threshold — built and read

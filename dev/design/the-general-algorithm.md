@@ -532,7 +532,7 @@ the audits of the same day, not run.
 | the standing interval | read on the collector's round clock, so the poll reads no clock | stays: a ring stands at most one fallback interval late |
 | cap 0 | the elder turns `OFFERED` into `ASKED` (`token.rs`) | stays: cap 0 is the switch that hands collection back to the owner |
 | the gate closed, the slot-free path | no offer | stays: references there may be uncounted (§7.16) |
-| a thread that never polls | offers nothing, its R is never collected | an edge case; an offer before a blocking call is a new export, left for the per-function wave |
+| a thread that never polls | offers nothing, its R is never collected | a thread blocked with no poll to come calls `ll_gc_before_blocking` each 50 ms of its wait, from its reactor's timer (`recycler-over-counts.md`, §5g) |
 | a slow path takes the token under `COLLECTOR` (pressure collection, exit, explicit fire, the teardown pass, compaction, the record reset) | it recalls at the stop level and waits for the collector to stop, up to a whole commit (`take_recalling`) | an edge case by ruling (the commit is one act); measured: how often and how long, per load, before a second collector is weighed (Q7) |
 | a mark reached under `OFFERED` | the offer is withdrawn, no wait | none needed |
 | the collector | waits for no mutator: the take is one CAS, there is no handshake after it | none needed |

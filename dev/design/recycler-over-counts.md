@@ -999,7 +999,7 @@ class word and the storage of members proved garbage (`collector_frees.rs`,
 Not covered by the table: stores the generated code makes outside the
 crate's cells, which are bound by contract (`cells.rs`).
 
-### 5g. A thread about to block, under the frame: S68.9 (built, read, not taken)
+### 5g. A thread about to block, under the frame: S68.9 (built; the call each 50 ms of a wait, taken)
 
 S68.9's parked state (§5b) answered a checkpoint, and §5f removed the
 checkpoint: nothing waits on a mutator after the take, so a sleeping thread
@@ -1015,8 +1015,9 @@ closing S68.9).
 **As ruled** (the Critic and the Sage, 2026-10-12; settled by Claude, open
 to Edmond's overturning).
 
-1. *The call.* `ll_gc_before_blocking()`, emitted before a call that may
-   block with no poll to come. It is a poll, so §7, item 16, covers it as
+1. *The call.* `ll_gc_before_blocking()`, made by a thread blocked with no
+   poll to come, each 50 ms its wait lasts (see "Taken" below; the first
+   reading made it before every such block). It is a poll, so §7, item 16, covers it as
    written: no ARC-elided retain/release pair spans it. One call and no
    end: under §5f nothing stands across the blocking call. The bracket
    `ll_gc_blocking_call(f, arg)` of §5b is not built.
@@ -1084,6 +1085,28 @@ waits, where a young root is still live]: touched sets 2.5–3.1 % of
 batches against 0.4 %. A thread that blocks
 between requests holds what it holds until its next poll, as before.
 
+**Taken, at the timer's site (Edmond, 2026-10-12: «Делай», asked with item
+5's verdict before him).** Edmond's form: the call is made not before a
+thread blocks but from a timer of its reactor, each 50 ms the wait lasts,
+the wait's own timeout. Read the same way (`dev/BENCHMARKS.md`, 2026-10-12,
+"a sleeping owner's garbage"): at 1,000 ms the garbage mean 2.3 MB against
+B's 24.8 and the ceiling's 1.0 (a poll every 1 ms of a wait), for 0.5 s of
+mutator and 1.7 s of collector CPU in 116 s; at 46.78 ms and on
+`web-heap-arrays-slow` the garbage 10–13 % lower, both CPUs inside B's
+spread, touched sets at B's. Item 5's rule reads it as not taken, the
+collector's median at 1,000 ms (13.8 s) above B's spread (11.9–12.8 s);
+the extra CPU is the freeing of the 22 MB B holds until the thread wakes,
+and Edmond takes it. So:
+
+- the embedder's wait with no poll to come has a timeout of 50 ms, and
+  each time it expires the thread calls `ll_gc_before_blocking()` and
+  waits again; it makes no call before the wait, so a wait shorter than
+  50 ms costs nothing;
+- the call itself is items 1–3 unchanged: the pacing of item 2 makes a
+  timer faster than 50 ms offer no more often;
+- the rig's `LL_RIG_BEFORE_BLOCKING=timer` is this site; the rig's default
+  makes no call, so its loads stay comparable with the entries before.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at
@@ -1103,9 +1126,10 @@ between requests holds what it holds until its next poll, as before.
     offer (an ARC-cancelled retain/release pair never spans a poll) — and a
     runtime entry that polls inside itself is one: `ll_release_vector` calls
     the full poll every `POLL_STRIDE` elements, so no uncounted reference may
-    be live across a call to it either. Neither the blocking stretch of §5b
-    nor the offer before a blocking call of §5g is built: no export stands
-    between a poll and a blocking call.
+    be live across a call to it either. The blocking stretch of §5b is not
+    built; the call of §5g is a poll, so no uncounted reference is live
+    across it either, and a thread's wait with the timer of §5g holds every
+    reference it holds counted.
 16b. *In force only with the untagged −1 that does not reach zero (Q9,
     deferred; today every −1 tags).* A borrow, a reference the mutator
     holds without a count of its own (an ARC-elided load, a borrowed

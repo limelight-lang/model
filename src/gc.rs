@@ -520,10 +520,11 @@ unsafe fn fire(arming: Arming) -> usize {
     }
 }
 
-/// ABI: the poll generated code emits before a call that may block with no
-/// poll to come, at a point where every reference the thread holds is counted,
-/// as at any poll (`dev/design/recycler-over-counts.md`, §5g and §7, item 16).
-/// Answers what it freed.
+/// ABI: the poll a thread blocked with no poll to come makes each 50 ms its
+/// wait lasts, from its reactor's timer (the wait's timeout), at a point where
+/// every reference the thread holds is counted, as at any poll
+/// (`dev/design/recycler-over-counts.md`, §5g and §7, item 16). Answers what it
+/// freed.
 ///
 /// Under `gc-window` it polls, and polls once more where the collector's frees
 /// still stand, so that a batch posted before the block is disposed of and its
