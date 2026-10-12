@@ -168,3 +168,6 @@ the drain's end; sets touched 0.3–0.6 % of batches. The load found a
 leak first: C's drops into a proved S, held and then discarded with S,
 left the members they named unfreed; the owner's reclaim applies them
 (`dev/DECISIONS.md`, 2026-10-12).
+
+**2026-10-12, S68 closed** by Edmond on these readings (`dev/DECISIONS.md`,
+2026-10-12).

@@ -14,7 +14,7 @@ crate. The destination's last mile, the compiler that links this crate, is
 outside this plan: `rfc/BACKLOG.md`, "The big one", and the front end in
 `limelight`.
 
-Updated: 2026-10-08 · Active: S68.
+Updated: 2026-10-12 · S68 closed (Edmond, 2026-10-12).
 
 Review 2026-09-29, the last; its text and the closed stages' summaries are in
 `git log -- PLAN.md`.
@@ -114,7 +114,7 @@ criterion, and it leaves when it gets one or when it is ruled on.
 - `dev/ARCHITECTURE.md` is the crate's knowledge map and moves with behaviour
   like any other document (`dev/WORKFLOW.md`).
 
-## S68 — The collector judges and frees a garbage set alone  [in progress]
+## S68 — The collector judges and frees a garbage set alone  [done]
 
 Goal: build *Recycler over counts* (`dev/design/recycler-over-counts.md`;
 `dev/DECISIONS.md`, "the collector judges and frees a garbage set by window
@@ -128,6 +128,12 @@ and an array-bearing load — mutator CPU within +3 % of the default build,
 the longest owner pause under 5 ms in every cell, held garbage no worse,
 Δ-refusals under 10 % of batches — the figures put to Edmond, appended to
 `dev/HOW-THE-CYCLE-COLLECTOR-EVOLVED.md`.
+Closed (Edmond, 2026-10-12: «да ок», «закрывай»): the gate met on
+`web-heap` and `web-heap-arrays` at `deea1a0` (`dev/BENCHMARKS.md`,
+2026-10-12): B's mutator 30–33 % under A's, the owner's longest pause 3.0 ms
+of CPU, garbage lower, Δ-refusals 0.3–0.6 % of batches; S68.8 and S68.12
+closed with it, S68.12's question of the gate's denominator moot at that
+rate.
 
 - [x] S68.1 The tag's price: `ll_retain`/`ll_release` and the store barrier
       with and without a byte-7 store, microbenchmarks and instructions
@@ -207,7 +213,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       (2026-10-12): (a)–(d) stand in the code; the frees before a
       stretch were read again inside S68.9's offer before a blocking call,
       not taken.
-- [ ] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
+- [x] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
       fallback timer's minimum 1 ms — built and read (2026-10-05): B's
       garbage 26.5–28.7 MB against A's 24.7–28.3, every drain clear, the
       owner's pause under 5 ms but one 6.2 ms no-checkpoint set; the
@@ -265,7 +271,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       stamping walk (4.3 % of `gc-window`'s collector). What is left is the
       drain's pointer chase and the prune's read of each child's header: a
       structural cost, not a pass to reorder.
-- [ ] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9; the probe read again 2026-10-05 at `e1e74bc`, the owner's first poll 0.05–0.13 ms in every shape): the 400k-ring probe (a column in
+- [x] S68.8 The runs (first reading 2026-10-04: gate not met, `dev/BENCHMARKS.md`; read again after S68.9; the probe read again 2026-10-05 at `e1e74bc`, the owner's first poll 0.05–0.13 ms in every shape): the 400k-ring probe (a column in
       `what_the_split_costs`), `web-heap` and an array-bearing load against
       the default build, by the gate; the results into the journal and the
       article.

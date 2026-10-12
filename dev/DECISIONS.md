@@ -9,6 +9,18 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-12 — S68 closed: `gc-window` meets its gate on the web loads with and without arrays
+
+**Decided (Edmond, 2026-10-12: «да ок», «закрывай»).** S68 is closed with
+S68.8 and S68.12: on `web-heap` and `web-heap-arrays` at `deea1a0` B's
+mutator CPU is 30–33 % under A's, the owner's longest pause 3.0 ms of the
+thread's CPU, its garbage lower than A's and 0 at the drain's end, and
+the Δ-test refuses 0.3–0.6 % of batches (`dev/BENCHMARKS.md`, 2026-10-12).
+S68.12's open question, which batches the 10 % gate counts, is moot at
+that rate. Both collectors stay, `gc-checkpoint` the default.
+
+---
+
 ## 2026-10-12 — S68.9 closed: the park has nothing to answer under the frame, and the offer before a blocking call is measured and not taken
 
 **Supersedes** the park of 2026-10-04 ("an idle mutator answers T by a
