@@ -234,6 +234,31 @@ pub(super) const ARRAY_CLASS: usize = 3;
 /// The bytes of a slot of each of the [`CLASSES`].
 pub(super) const CLASS_BYTES: [usize; CLASSES] = [SIZES[0], SIZES[1], SIZES[2], ARRAY_BYTES];
 
+// Each of the classes is a size class of the heap exactly, and no two are the
+// same one, so `held_by_size` reads each class's bytes and only them.
+const _: () = {
+    let sizes = crate::memory::heap::SIZE_CLASSES;
+    let mut class = 0;
+    while class < CLASSES {
+        let mut exact = false;
+        let mut index = 0;
+        while index < sizes.len() {
+            exact |= sizes[index] == CLASS_BYTES[class];
+            index += 1;
+        }
+        assert!(exact, "a class the loads count is a size class of the heap");
+        let mut other = class + 1;
+        while other < CLASSES {
+            assert!(
+                CLASS_BYTES[class] != CLASS_BYTES[other],
+                "two classes the loads count share a size class"
+            );
+            other += 1;
+        }
+        class += 1;
+    }
+};
+
 /// The index of the largest of [`SIZES`], which an ORM head and its segments
 /// take.
 const LARGEST: u8 = 2;

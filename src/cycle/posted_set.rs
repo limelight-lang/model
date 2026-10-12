@@ -515,23 +515,13 @@ impl PostedSet {
         unsafe { (*self.head).held_count }
     }
 
-    /// C's drops into the set, held for its owner's reading; null where none.
-    /// The set keeps them: its reclaim applies them as it frees the set
+    /// C's drops into the set, as the set holds them: its reclaim takes them
+    /// off it and applies them as it frees the set
     /// (`crate::cycle::reclamation::reclaim_before_drops`), and any other
-    /// ending stands them at the set's drop.
+    /// ending leaves them for the set's drop to stand.
     #[cfg(feature = "gc-window")]
-    pub(crate) fn held_chain(&self) -> *mut BlockHeader {
-        unsafe { (*self.head).held }
-    }
-
-    /// Forget the held drops the set's reclaim applied, whose blocks it gave
-    /// back.
-    #[cfg(feature = "gc-window")]
-    pub(crate) fn forget_the_held(&mut self) {
-        unsafe {
-            (*self.head).held = std::ptr::null_mut();
-            (*self.head).held_count = 0;
-        }
+    pub(crate) fn held_drops(&self) -> HeldDrops {
+        HeldDrops(self.head)
     }
 
     /// Why the set reaches the owner as it does ([`kind`]).
@@ -548,6 +538,47 @@ impl PostedSet {
                 .iter()
                 .map(|&address| address as *mut RcHeader)
         })
+    }
+}
+
+/// The held drops of a posted set, named through the set: one owner for the
+/// chain, the set, until [`HeldDrops::take`] takes it off. A copy is valid
+/// while the set stands, which a collection over P holds across its commit.
+#[cfg(feature = "gc-window")]
+#[derive(Clone, Copy)]
+pub(crate) struct HeldDrops(*mut SetBlock);
+
+#[cfg(feature = "gc-window")]
+impl HeldDrops {
+    /// No set's: nothing to apply.
+    pub(crate) const NONE: Self = Self(std::ptr::null_mut());
+
+    /// The chain the set holds, null where none.
+    ///
+    /// # Safety
+    /// The set stands.
+    pub(crate) unsafe fn chain(self) -> *mut BlockHeader {
+        if self.0.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        unsafe { (*self.0).held }
+    }
+
+    /// Take the chain off the set, which then stands nothing at its drop: the
+    /// caller applies it and gives its blocks back.
+    ///
+    /// # Safety
+    /// The set stands.
+    pub(crate) unsafe fn take(self) -> *mut BlockHeader {
+        if self.0.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        unsafe {
+            (*self.0).held_count = 0;
+            std::mem::replace(&mut (*self.0).held, std::ptr::null_mut())
+        }
     }
 }
 

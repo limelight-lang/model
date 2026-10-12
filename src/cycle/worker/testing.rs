@@ -233,11 +233,15 @@ static CPU_AT_THE_LAST_ROUND: [AtomicU64; super::MAX_COLLECTORS] =
 /// round. The rig reads it at the instant it stops its mutators, which the
 /// lives' own figures run past.
 pub(crate) fn collector_cpu_to_now() -> std::time::Duration {
+    // Under the lock a life's end takes its CPU into the ended lives and
+    // zeroes its standing reading under, so no life is counted twice or not
+    // at all.
+    let lives = lock(&COLLECTOR_LIVES);
     let standing: u64 = CPU_AT_THE_LAST_ROUND
         .iter()
         .map(|cpu| cpu.load(Ordering::Relaxed))
         .sum();
-    lock(&COLLECTOR_LIVES).cpu + std::time::Duration::from_nanos(standing)
+    lives.cpu + std::time::Duration::from_nanos(standing)
 }
 
 /// The elder's rounds since the last call as (start, end) pairs, the last
@@ -1129,9 +1133,9 @@ pub(crate) fn note_collector_life_end(index: usize) {
             counters.ended += cycles.read().1;
         }
     }
-    CPU_AT_THE_LAST_ROUND[index].store(0, Ordering::Relaxed);
     let (voluntary, involuntary) = thread_context_switches();
     let mut lives = lock(&COLLECTOR_LIVES);
+    CPU_AT_THE_LAST_ROUND[index].store(0, Ordering::Relaxed);
     lives.lives += 1;
     lives.cpu += cpu;
     lives.wall += wall;
@@ -1964,9 +1968,10 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// The calling thread's CPU time since its creation
-/// (`CLOCK_THREAD_CPUTIME_ID`); zero off Linux and under Miri.
+/// (`CLOCK_THREAD_CPUTIME_ID`); zero off 64-bit Linux, whose `timespec` the
+/// call reads, and under Miri.
 pub(crate) fn thread_cpu_time() -> std::time::Duration {
-    #[cfg(all(target_os = "linux", not(miri)))]
+    #[cfg(all(target_os = "linux", target_pointer_width = "64", not(miri)))]
     {
         /// `CLOCK_THREAD_CPUTIME_ID` in Linux's numbering.
         const THREAD_CPU_CLOCK: i32 = 3;
@@ -1982,7 +1987,7 @@ pub(crate) fn thread_cpu_time() -> std::time::Duration {
         std::time::Duration::new(time[0] as u64, time[1] as u32)
     }
 
-    #[cfg(not(all(target_os = "linux", not(miri))))]
+    #[cfg(not(all(target_os = "linux", target_pointer_width = "64", not(miri))))]
     std::time::Duration::ZERO
 }
 

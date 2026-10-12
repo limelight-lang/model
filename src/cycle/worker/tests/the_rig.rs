@@ -2217,16 +2217,16 @@ impl ThreadCounters {
     /// Begin counting on the calling mutator, whose record is registered;
     /// the per-thread figures a cell reads are zeroed.
     fn begin() -> Self {
-        let (cpu_from, switches_from) = (
-            testing::thread_cpu_time(),
-            testing::thread_context_switches(),
-        );
+        let switches_from = testing::thread_context_switches();
         let faults_from = testing::thread_minor_faults();
         let cycles = testing::ThreadCycles::open();
         let _ = crate::cycle::queue::take_queue_work();
         let _ = testing::take_withheld_by_segment();
         let _ = testing::take_this_threads_standings();
         let record = unsafe { &*mutator_record::this_thread_record() };
+        // The CPU window inside the wall's, each clock read once at each end.
+        let from = Instant::now();
+        let cpu_from = testing::thread_cpu_time();
         Self {
             turnovers_from: record.turnovers(),
             record,
@@ -2234,18 +2234,18 @@ impl ThreadCounters {
             switches_from,
             faults_from,
             cycles,
-            from: Instant::now(),
+            from,
         }
     }
 
     /// The loop's figures: its wall, CPU, cycles and instructions, and what
     /// the thread withheld and answered in it.
     fn read_the_loop(&self, reading: &mut MutatorReading) {
+        reading.cpu_in_the_loop = testing::thread_cpu_time() - self.cpu_from;
         reading.wall = self.from.elapsed();
         reading.withheld_by_segment = testing::take_withheld_by_segment();
         reading.standings = testing::take_this_threads_standings();
         reading.withheld_by_an_entry_at_the_end = crate::cycle::queue::withheld_by_an_entry();
-        reading.cpu_in_the_loop = testing::thread_cpu_time() - self.cpu_from;
         if let Some(cycles) = &self.cycles {
             (
                 reading.cycles_in_the_loop,
@@ -3586,9 +3586,11 @@ impl CellReading {
             ),
             (
                 "collector_cpu_from_the_start_us",
-                (self.collector_cpu_at_the_stop - self.collector_cpu_at_the_start)
-                    .as_micros()
-                    .to_string(),
+                (self
+                    .collector_cpu_at_the_stop
+                    .saturating_sub(self.collector_cpu_at_the_start))
+                .as_micros()
+                .to_string(),
             ),
             (
                 "collector_wall_us",

@@ -352,7 +352,9 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
 unsafe fn apply_the_held(members: &Membership<'_>, arena: &mut TraceScratchArena) {
     use crate::cycle::collector_frees::{held_children, note_held_stood_at_a_reclaim};
 
-    let held = arena.take_the_held_chain();
+    // The set stands across its commit: the collection over P holds it.
+    let drops = arena.take_the_held_drops();
+    let held = unsafe { drops.chain() };
     if held.is_null() {
         return;
     }
@@ -361,16 +363,23 @@ unsafe fn apply_the_held(members: &Membership<'_>, arena: &mut TraceScratchArena
     // for, so its header is this thread's to read.
     let children = || unsafe { held_children(held) };
     if !children().all(|child| unsafe { members.contains(child) }) {
+        debug_assert!(
+            false,
+            "every child a held drop names is a member: the proof is taken only \
+             where the set's rows are every row the trace met"
+        );
         note_held_stood_at_a_reclaim();
         return;
     }
 
-    for child in children() {
+    // Off the set before any of it is applied, so that no ending after this
+    // one, an unwind through the drain among them, stands blocks given back.
+    let held = unsafe { drops.take() };
+    for child in unsafe { held_children(held) } {
         let left = unsafe { severed_edge_release(child) };
         debug_assert!(left > 0, "a member's guard stands under its held drops");
     }
     unsafe { crate::cycle::collector_frees::release_the_held(held) };
-    arena.note_the_held_applied();
 }
 
 /// Whether the owner may free `member` in [`free_whole_before_drops`]'s one

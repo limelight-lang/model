@@ -947,13 +947,18 @@ fn thread_cpu_time() -> std::time::Duration {
     std::time::Duration::ZERO
 }
 
-/// Count one application's wall from `from` and its CPU time from
-/// `cpu_from`, a reading of [`thread_cpu_time`].
+/// Count one application's wall from `from` and, in a test build, its CPU
+/// time from `cpu_from`, a reading of [`thread_cpu_time`] taken straight
+/// after `from`: the CPU window stands inside the wall's.
 fn note_an_application(from: std::time::Instant, cpu_from: std::time::Duration) {
+    #[cfg(test)]
+    let cpu = (thread_cpu_time() - cpu_from).as_nanos() as u64;
+    #[cfg(not(test))]
+    let _ = cpu_from;
     let took = from.elapsed().as_nanos() as u64;
     APPLICATION_NANOS.fetch_add(took, Ordering::Relaxed);
     LONGEST_APPLICATION_NANOS.fetch_max(took, Ordering::Relaxed);
-    let cpu = (thread_cpu_time() - cpu_from).as_nanos() as u64;
+    #[cfg(test)]
     LONGEST_APPLICATION_CPU_NANOS.fetch_max(cpu, Ordering::Relaxed);
 }
 

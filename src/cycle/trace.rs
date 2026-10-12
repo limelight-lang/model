@@ -271,7 +271,7 @@ unsafe fn take_the_proof(
     arena.drop_the_work();
     unsafe { crate::cycle::row::colour_every_met_row_unreachable(arena.touched_head()) };
     arena.take_the_internal_edges_the_collector_recorded(set.internal_edges());
-    arena.take_the_references_held_from_outside(set.held_from_outside(), set.held_chain());
+    arena.take_the_references_held_from_outside(set.held_from_outside(), set.held_drops());
     #[cfg(test)]
     SETS_PROVED_BY_TAGS_VALIDATED.with(|count| count.set(count.get() + 1));
     crate::cycle::token::note_last_row_read();

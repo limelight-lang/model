@@ -565,14 +565,12 @@ pub(crate) struct TraceScratchArena {
     /// The references held from outside a set proved by its tags
     /// (`take_the_references_held_from_outside`).
     held_from_outside_read: usize,
-    /// The chain of C's drops those references stand for, which the set
-    /// owns: the reclaim of the set applies it ([`Self::take_the_held_chain`])
-    /// and says so ([`Self::take_the_held_applied`]); null where no proof
-    /// stands in this arena.
+    /// C's drops those references stand for, named through the set that
+    /// owns them, for the set's reclaim to take and apply
+    /// ([`Self::take_the_held_drops`]); none where no proof stands in this
+    /// arena.
     #[cfg(feature = "gc-window")]
-    held_chain: *mut BlockHeader,
-    #[cfg(feature = "gc-window")]
-    held_applied: bool,
+    held_drops: crate::cycle::posted_set::HeldDrops,
     /// The external children a trace within a set read off its drain where
     /// it found the set garbage whole, for the teardown to reserve by in place
     /// of its own walk of the cells (`crate::cycle::reclamation`); `None`
@@ -766,9 +764,7 @@ impl TraceScratchArena {
             internal_edges_read: None,
             held_from_outside_read: 0,
             #[cfg(feature = "gc-window")]
-            held_chain: std::ptr::null_mut(),
-            #[cfg(feature = "gc-window")]
-            held_applied: false,
+            held_drops: crate::cycle::posted_set::HeldDrops::NONE,
             #[cfg(test)]
             swept: std::time::Duration::ZERO,
             recall_readings: 0,
@@ -1063,8 +1059,7 @@ impl TraceScratchArena {
         self.held_from_outside_read = 0;
         #[cfg(feature = "gc-window")]
         {
-            self.held_chain = std::ptr::null_mut();
-            self.held_applied = false;
+            self.held_drops = crate::cycle::posted_set::HeldDrops::NONE;
         }
         // The held entries carry row pointers the same way.
         self.held.rewind();
@@ -1961,38 +1956,25 @@ impl TraceScratchArena {
     /// free of the rest left counted, its drops into the set held: what the
     /// members' counts carry besides the edges between them, which the
     /// commit's validations allow for (`crate::cycle::posted_set`); and
-    /// `chain`, those drops, which the set keeps and its reclaim applies.
+    /// `drops`, those drops, which the set keeps until its reclaim takes them.
     #[cfg(feature = "gc-window")]
     pub(crate) fn take_the_references_held_from_outside(
         &mut self,
         held: usize,
-        chain: *mut BlockHeader,
+        drops: crate::cycle::posted_set::HeldDrops,
     ) {
         self.held_from_outside_read = held;
-        self.held_chain = chain;
-        self.held_applied = false;
+        self.held_drops = drops;
     }
 
-    /// The held chain of the set proved by its tags, for its reclaim to apply,
-    /// which it forgets; null where none.
+    /// The held drops of the set proved by its tags, for its reclaim, which
+    /// this forgets.
     #[cfg(feature = "gc-window")]
-    pub(crate) fn take_the_held_chain(&mut self) -> *mut BlockHeader {
-        std::mem::replace(&mut self.held_chain, std::ptr::null_mut())
-    }
-
-    /// Record that the reclaim applied the held chain and gave its blocks
-    /// back, so that the set must stand nothing at its drop.
-    #[cfg(feature = "gc-window")]
-    pub(crate) fn note_the_held_applied(&mut self) {
-        self.held_applied = true;
-    }
-
-    /// Whether the reclaim applied the held chain of the proof this arena
-    /// took, which it forgets with the chain.
-    #[cfg(feature = "gc-window")]
-    pub(crate) fn take_the_held_applied(&mut self) -> bool {
-        self.held_chain = std::ptr::null_mut();
-        std::mem::take(&mut self.held_applied)
+    pub(crate) fn take_the_held_drops(&mut self) -> crate::cycle::posted_set::HeldDrops {
+        std::mem::replace(
+            &mut self.held_drops,
+            crate::cycle::posted_set::HeldDrops::NONE,
+        )
     }
 
     /// The references held from outside a set proved by its tags, which the

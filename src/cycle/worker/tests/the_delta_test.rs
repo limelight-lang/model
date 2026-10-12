@@ -13,7 +13,10 @@ use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
 use crate::memory::context::LLContext;
 use crate::object::{Object, new_constructed};
-use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, slot_state, window_tag};
+use crate::refcount::{
+    MemoryCategory, RcHeader, SlotState, entity_refcount, ll_release, ll_retain, slot_state,
+    window_tag,
+};
 use crate::test_support::{prop_offset, store_prop};
 
 unsafe extern "C" fn no_destructor_body(_object: *mut Object) {}
@@ -465,8 +468,19 @@ fn a_set_cut_short_is_not_marked_proved() {
 
 static DESTRUCTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-unsafe extern "C" fn count_the_destruction(_object: *mut Object) {
-    DESTRUCTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+/// The object [`count_the_destruction`] keeps when it destroys it, retained
+/// as a store of `$this` into a global would; zero for none.
+static RESURRECT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe extern "C" fn count_the_destruction(object: *mut Object) {
+    use std::sync::atomic::Ordering::Relaxed;
+    DESTRUCTED.fetch_add(1, Relaxed);
+    if RESURRECT
+        .compare_exchange(object as usize, 0, Relaxed, Relaxed)
+        .is_ok()
+    {
+        unsafe { ll_retain(object as *mut RcHeader) };
+    }
 }
 
 /// A clean ring `c` holding a ring `d` whose class has a destructor, every
@@ -677,6 +691,46 @@ fn a_batch_after_a_proved_s_is_freed_by_the_collector() {
     );
     assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
     assert_eq!(bytes_held(), held_before);
+    reset_lanes();
+}
+
+/// A proved S that reads live after its destructors — `d1`'s keeps `d1` — is
+/// not reclaimed, so none of C's held drops is applied: they stand on the
+/// record, `d1` keeps the count the held drop stands for, and the next poll
+/// applies it.
+#[test]
+fn a_held_drop_stands_where_the_set_reads_live_after_its_destructors() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let [_, _, d1, _] = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+    RESURRECT.store(d1 as usize, std::sync::atomic::Ordering::Relaxed);
+
+    let _ = served_and_counted();
+    assert_eq!(
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the clean ring applied, the destructed one read live"
+    );
+    assert_eq!(
+        RESURRECT.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "d1's destructor kept it"
+    );
+    assert!(unsafe { &*record() }.collectors_frees_stand());
+    assert_eq!(
+        unsafe { entity_refcount(d1) },
+        3,
+        "d2's edge, the kept reference and the held drop"
+    );
+    let _ = unsafe { ll_gc_maybe_collect() };
+    assert!(!unsafe { &*record() }.collectors_frees_stand());
+    assert_eq!(
+        unsafe { entity_refcount(d1) },
+        2,
+        "the next poll applied the held drop"
+    );
+    assert!(!unsafe { ll_release(d1 as *mut RcHeader) });
     reset_lanes();
 }
 

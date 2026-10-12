@@ -492,10 +492,11 @@ unsafe fn fire(arming: Arming) -> usize {
             );
             unsafe { crate::cycle::collect::dispose_of_p() };
             #[cfg(test)]
-            crate::cycle::worker::testing::note_disposal(
-                from.elapsed(),
-                crate::cycle::worker::testing::thread_cpu_time() - cpu_from,
-            );
+            {
+                // The CPU window inside the wall's.
+                let cpu = crate::cycle::worker::testing::thread_cpu_time() - cpu_from;
+                crate::cycle::worker::testing::note_disposal(from.elapsed(), cpu);
+            }
             0
         }
         Arming::Verdicts => {
