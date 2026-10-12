@@ -2329,9 +2329,28 @@ fn sleep_without_poll(wait: Duration, mut garbage: Option<&mut Garbage>) {
         return;
     }
 
+    let due = Instant::now() + wait;
+    if mode == BeforeBlocking::Timer {
+        // A reactor's timer: asleep for up to the interval at a time, then
+        // the call, whose garbage is read, while the wait goes on.
+        while let Some(ahead) = due.checked_duration_since(Instant::now()) {
+            let slept = ahead.min(TIMER_INTERVAL);
+            in_a_stretch(Stretch::Wait, || std::thread::sleep(slept));
+            if slept < TIMER_INTERVAL {
+                break;
+            }
+
+            CALLS_BEFORE_BLOCKING.fetch_add(1, Ordering::Relaxed);
+            let _ = unsafe { crate::gc::ll_gc_before_blocking() };
+            if let Some(garbage) = garbage.as_deref_mut() {
+                garbage.read(Instant::now(), held_by_size());
+            }
+        }
+        return;
+    }
+
     // Outside the stretch: the call is a poll and writes counts, and the
     // garbage it freed is read at once, as after every poll.
-    let due = Instant::now() + wait;
     CALLS_BEFORE_BLOCKING.fetch_add(1, Ordering::Relaxed);
     let _ = unsafe { crate::gc::ll_gc_before_blocking() };
     if let Some(garbage) = garbage.as_deref_mut() {
@@ -2360,13 +2379,19 @@ fn sleep_without_poll(wait: Duration, mut garbage: Option<&mut Garbage>) {
 /// What the rig does before a wait it sleeps without a poll
 /// (`dev/design/recycler-over-counts.md`, §5g), by `LL_RIG_BEFORE_BLOCKING`:
 /// nothing; `1`, the call before blocking a compiled program would make;
-/// `poll`, the call and then a poll every millisecond through the wait.
+/// `poll`, the call and then a poll every millisecond through the wait;
+/// `timer`, the call each [`TIMER_INTERVAL`] the wait lasts, none before it.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum BeforeBlocking {
     Off,
     Call,
     Poll,
+    Timer,
 }
+
+/// The interval of the reactor's timer `timer` models: the poll's short
+/// interval.
+const TIMER_INTERVAL: Duration = Duration::from_millis(50);
 
 fn before_blocking() -> BeforeBlocking {
     static MODE: std::sync::OnceLock<BeforeBlocking> = std::sync::OnceLock::new();
@@ -2374,6 +2399,7 @@ fn before_blocking() -> BeforeBlocking {
         || match std::env::var("LL_RIG_BEFORE_BLOCKING").as_deref() {
             Ok("1") => BeforeBlocking::Call,
             Ok("poll") => BeforeBlocking::Poll,
+            Ok("timer") => BeforeBlocking::Timer,
             _ => BeforeBlocking::Off,
         },
     )
