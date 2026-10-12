@@ -9,6 +9,28 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-12 — S68.9 closed: the park has nothing to answer under the frame, and the offer before a blocking call is measured and not taken
+
+**Supersedes** the park of 2026-10-04 ("an idle mutator answers T by a
+park"), whose part on the gate's owner pause stands.
+
+**Settled by Claude, open to Edmond's overturning** (the Critic and the
+Sage, 2026-10-12; `dev/design/recycler-over-counts.md`, §5g). §5f removed
+the checkpoint, so a sleeping thread pauses no one and the parked state
+answers nothing: it is not built, and `ll_gc_blocking_call` with it. What
+§5f left open, a blocked thread's R offered before it sleeps, is built as
+`ll_gc_before_blocking` (a poll, then R offered whatever its count and the
+young cut, paced at 50 ms a thread; a no-op under `gc-checkpoint`, where a
+poll before a sleep would consent to a request the sleep cannot answer) and
+read against B without it by a rule fixed before the run: the garbage mean
+12–15 % lower, the collector's CPU 5 % higher and past B's spread on two of
+three loads, so it is not taken (`dev/BENCHMARKS.md`, 2026-10-12). It stays
+on the local branch `before-blocking`. A thread that blocks between
+requests holds up to 1,023 roots until its next poll, as the offer at the
+bound accepted (2026-10-07).
+
+---
+
 ## 2026-10-12 — C's held drops into a proved S are applied by the owner's reclaim as S is freed
 
 **Overturns** the clause of 2026-10-04 that C's drops into a proved S "are
@@ -452,9 +474,7 @@ batch, the service rate at 40 % CPU — read before any further lane work.
 on S68.10; design §5c, §5d).**
 - *The rig.* `Plan::draw` runs inside a blocking stretch: it writes no
   count, slot or tag and touches no runtime entity, and is harness time the
-  protocol already subtracts. What it removes from the missed checkpoints
-  counts for nothing toward the condition for `ll_gc_blocking_call`, which
-  is read on the misses left. The build advances within a slice in steps of
+  protocol already subtracts. The build advances within a slice in steps of
   at most `POLL_STRIDE` births, a poll after each: a compiled loop polls on
   its back-edge, and `POLL_STRIDE` is the runtime's own stride for a loop it
   cannot see inside.

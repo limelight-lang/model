@@ -169,12 +169,17 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       at `as_table_mut` restated (consent points, not frees). And the poll's
       acquire load, which no loom case can defend (load buffering), stands
       on the argument at `TraceToken::reach_the_checkpoint` alone.
-- [ ] S68.9 What the first reading asks (design §5b): the blocking stretch
+- [x] S68.9 What the first reading asks (design §5b): the blocking stretch
       on the checkpoint byte, which an idle mutator's blocking wait answers T
       with — built in the crate and the rig (`enter_blocking_on_this_thread`),
       with the loom model's cases and the posting's kind in the rig; the
       exported bracket (`ll_gc_blocking_call`) after the re-reading, on the
       Sage's condition; the cap read at 64k and 1M; then S68.8's runs again.
+      Closed (2026-10-12, design §5g): §5f's frame removed the checkpoint
+      the park answered; the offer before a blocking call that §5f left
+      open is built and read, the garbage 12–15 % lower for the collector
+      5 % dearer, and not taken by the rule fixed before the run
+      (`dev/DECISIONS.md`, 2026-10-12).
 - [x] S68.10 The deferred lanes under turns by X alone (design §5c, the
       Sage's second ruling, 2026-10-05): an X turn releases every lane only
       where R stands below the soft threshold — built and read
@@ -184,7 +189,7 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       `BATCH_BOUND`, the 10 ms sleep) read before further lane work — both
       read (2026-10-05), and at S68.12's pacing every drain of ten cells
       clears.
-- [ ] S68.11 The sets that still fall to the owner (design §5d, the Sage
+- [x] S68.11 The sets that still fall to the owner (design §5d, the Sage
       2026-10-05): (a) the rig's draw in a blocking stretch and its build
       polling every `POLL_STRIDE` births; (b) the member cap 1M by default;
       (c) a second refusal reads live; (d) the application in slices; each
@@ -198,7 +203,10 @@ the longest owner pause under 5 ms in every cell, held garbage no worse,
       (2026-10-05): the waits hold 3.9k drops and the posted set 36 ms on
       the mean, 282 ms at the longest — applying what stands before a
       stretch is not built (the Critic: P stays posted, the wait's request
-      pays the slices, the Sage's stretch applies no frees).
+      pays the slices, the Sage's stretch applies no frees). Closed
+      (2026-10-12): (a)–(d) stand in the code; the frees before a
+      stretch were read again inside S68.9's offer before a blocking call,
+      not taken.
 - [ ] S68.12 The collector's pacing (design §5e, the Sage 2026-10-05): the
       fallback timer's minimum 1 ms — built and read (2026-10-05): B's
       garbage 26.5–28.7 MB against A's 24.7–28.3, every drain clear, the

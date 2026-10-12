@@ -999,6 +999,91 @@ class word and the storage of members proved garbage (`collector_frees.rs`,
 Not covered by the table: stores the generated code makes outside the
 crate's cells, which are bound by contract (`cells.rs`).
 
+### 5g. A thread about to block, under the frame: S68.9 (built, read, not taken)
+
+S68.9's parked state (§5b) answered a checkpoint, and §5f removed the
+checkpoint: nothing waits on a mutator after the take, so a sleeping thread
+pauses no one. What §5b also gave, a sleeping thread's garbage traced while
+it sleeps, §5f left open: a worker blocked in `accept` with fewer than 1,024
+roots in R offers nothing until it polls again, and a batch it offered just
+before stands `POSTED` through the sleep, its P unread and its collector's
+frees unapplied (`dev/DECISIONS.md`, 2026-10-07, the offer at the bound: "a
+thread that blocks between requests may hold up to 1,023 roots until an
+embedder's 'about to block' offer exists (open)"; the Critic, 2026-10-12, on
+closing S68.9).
+
+**As ruled** (the Critic and the Sage, 2026-10-12; settled by Claude, open
+to Edmond's overturning).
+
+1. *The call.* `ll_gc_before_blocking()`, emitted before a call that may
+   block with no poll to come. It is a poll, so §7, item 16, covers it as
+   written: no ARC-elided retain/release pair spans it. One call and no
+   end: under §5f nothing stands across the blocking call. The bracket
+   `ll_gc_blocking_call(f, arg)` of §5b is not built.
+2. *Under `gc-window`, in order:*
+   - the poll (`ll_gc_maybe_collect`); where the collector's frees still
+     stand after it, the poll once more. A poll applies one stride of
+     drops (`APPLY_STRIDE`, 4,072) and, while drops stand, returns with the
+     byte `POSTED` and its arming kept; the poll that applies the last of
+     them fires the disposition, releases the byte and makes its own offer.
+     So the call applies at most two strides, 8,144 drops, about 4 ms at
+     the 0.9–1.8 ms a stride read on 2026-10-12; not in full, since the
+     block may be a send or a lock another thread waits on;
+   - where frees still stand, or the gate is closed, the call stops there:
+     the next poll goes on;
+   - else an offer of R with the threshold, the short interval and the
+     young cut bypassed, R whole up to the batch's bound, and everything
+     else of the poll's offer kept: the byte read `FREE`, the pacing after
+     a withdrawal at a mark, the elder's birth check, the wake of a taker
+     (`offer.rs`);
+   - paced on the thread's own clock: at most one such offer a thread in
+     `SHORT_STANDING_INTERVAL` (50 ms), its instant read only after the
+     byte reads `FREE` and R holds an entry. A loop of calls that return at
+     once then offers no faster than the ordinary rule's quickest branch,
+     20 small batches a second a thread, and a worker idle for seconds is
+     offered at its first block.
+   A byte `OFFERED` or `COLLECTOR` at the call is a batch in flight: the
+   call offers nothing more and waits for nothing.
+3. *Under `gc-checkpoint` the call does nothing*, not even the poll: a poll
+   before a sleep consents to a standing request, and the trace would then
+   run while the thread sleeps and find no checkpoint, the sets of §5b whose
+   pauses ran 95–176 ms. Without the call the request waits out the sleep
+   and is answered in the next request. The export stands in both builds.
+4. *Tests.* A ring of 600 roots, under every threshold, freed by a woken
+   collector while the thread sleeps after the call, under a young cut of
+   100 ms; the call after a batch posted disposes of P and offers R; a
+   byte `OFFERED` at the call offers nothing and waits for nothing; a
+   closed gate does nothing; a thread with no record; two calls inside
+   50 ms make one offer; a no-op under `gc-checkpoint`.
+5. *The rig.* The web loads make the call before every wait slept without
+   a poll (the request's waits and the wait for the next arrival), outside
+   `Stretch::Wait`; columns: calls, offers the call made, the garbage held
+   at the wake before the first poll. Read B with the call against B
+   without it, five cells each, interleaved: `web-heap` at the protocol's
+   46.78 ms (its sleeps are about 35 ms, inside the ordinary 50 ms, so the
+   regression check); `web-heap` at an interarrival of 1,000 ms; and
+   `web-heap-arrays-slow`. **Kept** when at 1,000 ms the garbage mean's
+   five-cell range lies wholly below B's without the call, and in all three
+   the collector's and the mutator's CPU stay inside B's spread with every
+   clause of S68's gate met. **Dropped** when the collector's CPU leaves
+   the spread upward in any of them, or the 1,000 ms cells show no
+   separation.
+6. *Docs.* §7, item 16, names the call; a DECISIONS entry supersedes the
+   park of 2026-10-04, and the entry of 2026-10-05 on the rig's draw drops
+   its tie to `ll_gc_blocking_call`.
+
+**Read (2026-10-12), and not taken by item 5's rule.** Built on the local
+branch `before-blocking` (`0aa4454`, not in `main`): the call, its six cases
+and the rig's `LL_RIG_BEFORE_BLOCKING`; B with the call against B without
+it, five cells each (`dev/BENCHMARKS.md`, 2026-10-12). The garbage mean
+fell 12–15 % in the medians at 46.78 ms, and the collector's CPU rose 5 %,
+its median above B's largest cell on `web-heap` at 46.78 ms and on
+`web-heap-arrays-slow`; at 1,000 ms the garbage ranges overlap. The extra
+work is the call's own offers [inf: most of them before a request's own
+waits, where a young root is still live]: touched sets 2.5–3.1 % of
+batches against 0.4 %. A thread that blocks
+between requests holds what it holds until its next poll, as before.
+
 ## 6. The owner's poll
 
 12. The owner applies the drops, each through `drop_ref`, typed at
@@ -1018,10 +1103,9 @@ crate's cells, which are bound by contract (`cells.rs`).
     offer (an ARC-cancelled retain/release pair never spans a poll) — and a
     runtime entry that polls inside itself is one: `ll_release_vector` calls
     the full poll every `POLL_STRIDE` elements, so no uncounted reference may
-    be live across a call to it either. The blocking stretch of §5b is not
-    built under this feature (§5f, "Decided for the first build"):
-    `ll_gc_blocking_call` exists in no source file, and an offer before a
-    blocking call would be a new export.
+    be live across a call to it either. Neither the blocking stretch of §5b
+    nor the offer before a blocking call of §5g is built: no export stands
+    between a poll and a blocking call.
 16b. *In force only with the untagged −1 that does not reach zero (Q9,
     deferred; today every −1 tags).* A borrow, a reference the mutator
     holds without a count of its own (an ARC-elided load, a borrowed

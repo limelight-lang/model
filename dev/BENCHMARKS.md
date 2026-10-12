@@ -8,6 +8,39 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-12 — S68.9's offer before a blocking call: garbage 12–15 % lower, the collector 5 % dearer; not taken
+
+**Builds.** B: `gc-window` at `0aa4454` (local branch `before-blocking`,
+`main` at `282caf4` with `ll_gc_before_blocking`; design §5g), one binary;
+the arm `Bc` sets `LL_RIG_BEFORE_BLOCKING=1`, so that the rig calls it
+before every wait it sleeps without a poll, the request's waits and the
+wait for the next arrival. Two mutators on CPUs 1–2, cap 1 on CPU 3, five
+cells an arm and load, interleaved. No void cell. Medians, min–max in
+brackets.
+
+| | B | Bc |
+|---|---|---|
+| `web-heap` 46.78 ms: collector CPU, s | 39.7 [38.8–41.4] | 41.7 [40.6–44.5] |
+| mutator CPU, s | 49.8 [48.2–50.6] | 49.8 [49.4–51.2] |
+| garbage mean, MB | 27.1 [26.0–28.4] | 24.0 [21.2–25.7] |
+| sets touched / batches | 0.4 % | 2.8–3.1 % |
+| `web-heap-arrays-slow`: collector CPU, s | 51.8 [50.3–52.7] | 54.3 [52.3–54.9] |
+| mutator CPU, s | 54.5 [53.5–55.4] | 55.1 [53.1–55.7] |
+| garbage mean, MB | 40.1 [37.5–41.5] | 34.1 [33.2–36.8] |
+| `web-heap` 1,000 ms: collector CPU, s | 12.3 [12.2–12.8] | 12.8 [12.3–13.5] |
+| garbage mean, MB | 22.8 [16.2–43.7] | 19.0 [15.3–32.4] |
+
+`Bc` made about 12,600 calls a cell at 46.78 ms and 2,050 offers by them
+(1,700 on `-slow`; 54–109 at 1,000 ms). The owner's longest pauses by CPU
+under 2.5 ms in both arms, every drain clear but 2 KiB in one B cell and
+1.3 KiB in one `Bc` cell.
+
+By the rule fixed before the run (design §5g, item 5): the collector's CPU
+leaves B's spread upward on `web-heap` at 46.78 ms and on `-slow`, and at
+1,000 ms the garbage ranges overlap, so the call is not taken.
+
+---
+
 ## 2026-10-12 — S68's array-bearing load, `web-heap-arrays` at `deea1a0`: every clause of the gate met; B's mutator 33 % under A's, as on the `web-heap` control
 
 **Builds.** A: `main` at `deea1a0`, the default build (`gc-checkpoint`).

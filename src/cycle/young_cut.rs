@@ -31,6 +31,9 @@
 //! **No allocation.** The ring and the count are const thread-locals with no
 //! drop glue, as every thread-local the exit reaches.
 
+// Under `gc-checkpoint` only the setting is read: no offer reads the clock.
+#![cfg_attr(feature = "gc-checkpoint", allow(dead_code))]
+
 use std::cell::Cell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
