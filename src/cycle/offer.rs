@@ -55,6 +55,18 @@ thread_local! {
     /// below the bound, or `None` while R is not there or since the last
     /// offer.
     static AT_THE_THRESHOLD_SINCE: Cell<Option<Instant>> = const { Cell::new(None) };
+
+    /// The instant of this thread's last offer made before blocking, or
+    /// `None` for none ([`offer_before_blocking`]).
+    static LAST_OFFER_BEFORE_BLOCKING: Cell<Option<Instant>> = const { Cell::new(None) };
+}
+
+/// Whether an offer before blocking may be made now: none was made in the
+/// last [`worker::SHORT_STANDING_INTERVAL`] on this thread.
+fn paced_before_blocking() -> bool {
+    LAST_OFFER_BEFORE_BLOCKING
+        .with(Cell::get)
+        .is_none_or(|at| at.elapsed() >= worker::SHORT_STANDING_INTERVAL)
 }
 
 /// Note that a stack's mark withdrew this thread's offer, for the pacing of
@@ -76,9 +88,23 @@ pub(crate) unsafe fn offer_if_due() -> bool {
             worker::threshold_for_short_offers(),
             worker::threshold_for_offers(),
             worker::SHORT_STANDING_INTERVAL,
-            true,
+            Made::AtThePoll,
         )
     }
+}
+
+/// Offer R before a call that may block with no poll to come, whatever its
+/// count, its standing and the young cut, and answer whether the offer was
+/// made: R cannot change while the thread blocks, so nothing it holds gains
+/// by waiting (`dev/design/recycler-over-counts.md`, §5g). At most one such
+/// offer a thread in [`worker::SHORT_STANDING_INTERVAL`], so that a loop of
+/// calls that return at once offers no faster than the poll's quickest
+/// branch; everything else of the poll's offer holds.
+///
+/// # Safety
+/// As [`offer_if_due`].
+pub(crate) unsafe fn offer_before_blocking() -> bool {
+    unsafe { offer(1, 1, Duration::ZERO, Made::BeforeBlocking) }
 }
 
 /// [`offer_if_due`] with R due at `threshold`, for a case whose collector
@@ -89,7 +115,7 @@ pub(crate) unsafe fn offer_if_due() -> bool {
 /// As [`offer_if_due`].
 #[cfg(test)]
 pub(crate) unsafe fn offer_at(threshold: usize) -> bool {
-    unsafe { offer(threshold, threshold, Duration::ZERO, false) }
+    unsafe { offer(threshold, threshold, Duration::ZERO, Made::ForACase) }
 }
 
 /// [`offer_at`] with the short interval: R offered at `bound`, or at
@@ -99,24 +125,39 @@ pub(crate) unsafe fn offer_at(threshold: usize) -> bool {
 /// As [`offer_if_due`].
 #[cfg(test)]
 pub(crate) unsafe fn offer_between(threshold: usize, bound: usize, short: Duration) -> bool {
-    unsafe { offer(threshold, bound, short, false) }
+    unsafe { offer(threshold, bound, short, Made::ForACase) }
 }
 
-/// The offer at `bound`, or at `threshold` held `short`; `from_the_poll`,
-/// made only where a collector stands to take it, and that collector woken.
-unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: bool) -> bool {
+/// Who makes an offer, and so what it reads.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Made {
+    /// The poll: made only where a collector stands to take it, and that
+    /// collector woken.
+    AtThePoll,
+    /// [`offer_before_blocking`]: as at the poll, with the young cut not
+    /// read and the offer paced on this thread's clock.
+    BeforeBlocking,
+    /// A case, whose collector is a thread of its own or one it wakes
+    /// itself.
+    #[cfg(test)]
+    ForACase,
+}
+
+/// The offer at `bound`, or at `threshold` held `short`, made as `made` says.
+unsafe fn offer(threshold: usize, bound: usize, short: Duration, made: Made) -> bool {
     let record = mutator_record::this_thread_record();
     if record.is_null() {
         return false;
     }
 
     let mutator = unsafe { &*record };
+    let from_the_poll = matches!(made, Made::AtThePoll | Made::BeforeBlocking);
     // The young cut's clock ticked at every poll that follows appends, the
     // byte held or not, so that a thread whose token stands taken dates its
     // appends all the same.
-    let cut = crate::cycle::young_cut::cut();
-    if !cut.is_zero() {
-        crate::cycle::young_cut::tick_if_appended(cut);
+    let ticked = crate::cycle::young_cut::cut();
+    if !ticked.is_zero() {
+        crate::cycle::young_cut::tick_if_appended(ticked);
     }
     if state(mutator.token.read()) != FREE {
         return false;
@@ -126,6 +167,19 @@ unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: 
     if withdrawn_at != u64::MAX && worker::rounds_begun() == withdrawn_at {
         return false;
     }
+
+    let cut = if made == Made::BeforeBlocking {
+        // The clock read only once the byte reads `FREE` and R holds an
+        // entry, as the poll's short interval is.
+        let ring = unsafe { Reader::new(mutator.candidate_ring()) };
+        if ring.unread_up_to(1) == 0 || !paced_before_blocking() {
+            return false;
+        }
+
+        Duration::ZERO
+    } else {
+        ticked
+    };
 
     // The merges before the ring, as the collector read them: a merge between
     // the two loads is read in the ring and missed by the count, which offers
@@ -187,6 +241,11 @@ unsafe fn offer(threshold: usize, bound: usize, short: Duration, from_the_poll: 
     );
     WITHDRAWN_AT_ROUND.with(|at| at.set(u64::MAX));
     AT_THE_THRESHOLD_SINCE.with(|since| since.set(None));
+    if made == Made::BeforeBlocking {
+        LAST_OFFER_BEFORE_BLOCKING.with(|at| at.set(Some(Instant::now())));
+        #[cfg(test)]
+        testing::OFFERS_BEFORE_BLOCKING.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     if from_the_poll {
         worker::wake_a_taker(mutator.collector());
     }
@@ -279,5 +338,25 @@ fn is_due(
         (true, _) => Due::Now,
         (false, true) => Due::AtTheThreshold,
         (false, false) => Due::NotYet,
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// The offers [`offer_before_blocking`] made, process-wide.
+    pub(crate) static OFFERS_BEFORE_BLOCKING: AtomicUsize = AtomicUsize::new(0);
+
+    /// The offers made before blocking since the last call, taken.
+    pub(crate) fn take_offers_before_blocking() -> usize {
+        OFFERS_BEFORE_BLOCKING.swap(0, Ordering::Relaxed)
+    }
+
+    /// Set the instant of this thread's last offer made before blocking, or
+    /// `None` for none: the pacing [`offer_before_blocking`] reads.
+    pub(crate) fn note_an_offer_before_blocking_at(at: Option<Instant>) {
+        LAST_OFFER_BEFORE_BLOCKING.with(|last| last.set(at));
     }
 }

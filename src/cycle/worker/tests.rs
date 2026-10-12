@@ -324,6 +324,26 @@ fn node_class(name: &str) -> *const crate::class::Class {
         .build()
 }
 
+/// Under `gc-checkpoint` the poll before a blocking call does nothing: R
+/// stands as it was and nothing is fired or consented to
+/// (`crate::gc::ll_gc_before_blocking`).
+#[cfg(feature = "gc-checkpoint")]
+#[test]
+fn the_call_before_blocking_does_nothing_under_the_checkpoint_kind() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = crate::memory::arena::Arena::new();
+    let class = node_class("BeforeBlockingCheckpointNode");
+    let _ = unsafe { crate::cycle::testing::ring(&mut arena, [class, class]) };
+    let roots = crate::cycle::queue::candidate_count();
+    assert!(roots > 0, "the ring registered");
+
+    assert_eq!(unsafe { crate::gc::ll_gc_before_blocking() }, 0);
+    assert_eq!(crate::cycle::queue::candidate_count(), roots, "R as it was");
+    let _ = unsafe { crate::gc::ll_gc_collect_cycles() };
+    reset_lanes();
+}
+
 #[test]
 fn a_threads_start_births_the_elder_with_no_root_registered() {
     let _g = test_guard();
@@ -1118,6 +1138,8 @@ mod the_journal_of_the_collector;
 mod the_merged_lane;
 #[cfg(feature = "gc-window")]
 mod the_offer;
+#[cfg(feature = "gc-window")]
+mod the_offer_before_blocking;
 mod the_posted_set;
 mod the_progress;
 mod the_reading_before_the_claim;

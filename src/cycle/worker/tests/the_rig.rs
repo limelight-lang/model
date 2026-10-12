@@ -159,7 +159,7 @@ use crate::memory::context::LLContext;
 use crate::object::{Object, ll_object_die, new_constructed};
 use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, ll_retain, slot_state};
 use crate::test_support::{prop_offset, store_prop};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, Instant};
 
@@ -2320,8 +2320,24 @@ impl Cell {
 /// stay withheld through the sleep. The web loads' wait is its second
 /// caller.
 fn sleep_without_poll(wait: Duration) {
+    if polls_before_blocking() {
+        // Outside the stretch: the call is a poll and writes counts.
+        CALLS_BEFORE_BLOCKING.fetch_add(1, Ordering::Relaxed);
+        let _ = unsafe { crate::gc::ll_gc_before_blocking() };
+    }
     in_a_stretch(Stretch::Wait, || std::thread::sleep(wait));
 }
+
+/// Whether the rig polls before every wait it sleeps without a poll, as a
+/// compiled program calls `ll_gc_before_blocking` before a blocking call
+/// (`dev/design/recycler-over-counts.md`, §5g): `LL_RIG_BEFORE_BLOCKING=1`.
+fn polls_before_blocking() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("LL_RIG_BEFORE_BLOCKING").is_ok_and(|on| on == "1"))
+}
+
+/// The calls [`sleep_without_poll`] made before its waits.
+static CALLS_BEFORE_BLOCKING: AtomicUsize = AtomicUsize::new(0);
 
 /// What a stretch of the rig's own stands for, named as its section.
 #[derive(Clone, Copy)]
@@ -4046,6 +4062,16 @@ impl CellReading {
             // read live and roots unwalked, `;` between figures and `/`
             // between buckets. A ceiling is R's count read to the end of the
             // block that passes the bound, not the batch.
+            // The polls before a blocking wait under `LL_RIG_BEFORE_BLOCKING`
+            // and the offers they made, zeros without it or `gc-window`.
+            (
+                "before_blocking_calls",
+                CALLS_BEFORE_BLOCKING.load(Ordering::Relaxed).to_string(),
+            ),
+            (
+                "before_blocking_offers",
+                before_blocking_offers().to_string(),
+            ),
             ("polls_at_the_offer", wave[0].to_string()),
             ("polls_held_by_drops", wave[1].to_string()),
             ("offers_made", wave[2].to_string()),
@@ -5434,4 +5460,12 @@ fn the_split_by_segment_reads_a_hold_the_case_sets() {
         testing::SEGMENT_AROUND,
         "a free token names no segment"
     );
+}
+
+/// The offers the polls before blocking made, zero without `gc-window`.
+fn before_blocking_offers() -> usize {
+    #[cfg(feature = "gc-window")]
+    return crate::cycle::offer::testing::take_offers_before_blocking();
+    #[cfg(feature = "gc-checkpoint")]
+    0
 }

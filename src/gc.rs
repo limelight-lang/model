@@ -520,6 +520,50 @@ unsafe fn fire(arming: Arming) -> usize {
     }
 }
 
+/// ABI: the poll generated code emits before a call that may block with no
+/// poll to come, at a point where every reference the thread holds is counted,
+/// as at any poll (`dev/design/recycler-over-counts.md`, §5g and §7, item 16).
+/// Answers what it freed.
+///
+/// Under `gc-window` it polls, and polls once more where the collector's frees
+/// still stand, so that a batch posted before the block is disposed of and its
+/// byte released; then, with no frees standing and the gate open, it offers R
+/// whatever its count, its standing and the young cut
+/// ([`crate::cycle::offer::offer_before_blocking`]), for the collector to
+/// test while the thread sleeps. It waits for nothing. Under `gc-checkpoint`
+/// it does nothing: a poll before a sleep would consent to a standing request,
+/// and the trace that follows would find no checkpoint while the thread
+/// sleeps, the request answered in the next request instead.
+///
+/// # Safety
+/// Callable at a safepoint of the calling mutator.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ll_gc_before_blocking() -> usize {
+    #[cfg(feature = "gc-window")]
+    {
+        let record = crate::cycle::mutator_record::this_thread_record();
+        if record.is_null() {
+            return 0;
+        }
+
+        let mut freed = unsafe { ll_gc_maybe_collect() };
+        // Two strides of drops at the most, about 4 ms at the strides read on
+        // `web-heap-arrays`: the block may be a send or a lock another thread
+        // waits on.
+        if unsafe { &*record }.collectors_frees_stand() {
+            freed += unsafe { ll_gc_maybe_collect() };
+        }
+        if unsafe { &*record }.collectors_frees_stand() || !crate::cycle::collect::may_collect() {
+            return freed;
+        }
+
+        let _ = unsafe { crate::cycle::offer::offer_before_blocking() };
+        freed
+    }
+    #[cfg(feature = "gc-checkpoint")]
+    0
+}
+
 /// ABI: cap the collector threads the process may hold, from zero to
 /// `cycle::worker::MAX_COLLECTORS`, `cap` clamped to the maximum. The
 /// embedder's one dial over the collectors: the runtime births siblings up
