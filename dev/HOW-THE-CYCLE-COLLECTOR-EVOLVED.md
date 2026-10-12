@@ -157,3 +157,14 @@ in every cell, held garbage no worse, refusals under 10 % of batches.
 ## 9. Results
 
 (Appended as the runs land.)
+
+**2026-10-12, the array-bearing load.** `web-heap-arrays` (arrays 31 % of
+the garbage) and the `web-heap` control, five cells an arm, A the default
+build against B, `gc-window`, both at `deea1a0` (`dev/BENCHMARKS.md`,
+2026-10-12). Every clause of S68's gate met: B's mutator CPU 53.0–57.0 s
+against A's 78.0–86.7 s; B's longest owner pause 3.0 ms of the thread's
+CPU time; B's garbage mean 35.3–41.0 MB against A's 39.0–53.8 MB, 0 at
+the drain's end; sets touched 0.3–0.6 % of batches. The load found a
+leak first: C's drops into a proved S, held and then discarded with S,
+left the members they named unfreed; the owner's reclaim applies them
+(`dev/DECISIONS.md`, 2026-10-12).

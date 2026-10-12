@@ -8,6 +8,60 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-12 — S68's array-bearing load, `web-heap-arrays` at `deea1a0`: every clause of the gate met; B's mutator 33 % under A's, as on the `web-heap` control
+
+**Builds.** A: `main` at `deea1a0`, the default build (`gc-checkpoint`).
+B: the same commit under `gc-window` (the young cut at 100 ms, the front
+run prefetched, C's held drops applied by the owner's reclaim). The
+protocol of `dev/design/the-web-loads.md` ("`web-heap-arrays`, S68's
+array-bearing load"):
+`dev/tools/arms.sh <out> 5 web`, two mutators on CPUs 1–2, cap 1 on CPU 3,
+`web-heap-arrays` and the `web-heap` control both at 46.78 ms, five cells
+an arm and load, interleaved. No void cell. Arrays made 31 % of the
+garbage in every array cell. Ranges are min–max over five cells.
+
+| | A arrays | B arrays | A control | B control |
+|---|---|---|---|---|
+| mutator CPU, s | 78.0–86.7 | 53.0–57.0 | 68.2–75.3 | 48.0–51.8 |
+| collector CPU, s | 55.0–62.6 | 51.5–57.8 | 47.7–54.1 | 38.0–43.6 |
+| garbage mean, MB | 39.0–53.8 | 35.3–41.0 | 24.7–30.7 | 25.2–29.0 |
+| garbage peak, MB | 261–366 | 214–312 | 187–245 | 153–175 |
+| garbage at the drain's end | 0 | 0 | 0 | 0 |
+| longest disposition, CPU / wall, ms | 1.0–1.8 / 1.3–3.6 | 1.6–3.0 / 3.1–22.8 | 0.9–1.9 / 0.9–3.8 | 1.7–2.8 / 2.3–4.8 |
+| longest application of the collector's frees, CPU / wall, ms | — | 0.9–1.8 / 1.8–7.0 | — | 0.9–1.7 / 2.0–4.6 |
+| owner's longest collection, ms | 100.6–166.4 | 0.2–15.1 | 80.7–113.0 | none |
+| sets touched / batches | — | 12–25 / 4,034–4,153 | — | 10–20 / 4,044–4,105 |
+| held drops stood at a reclaim | — | 0 | — | 0 |
+
+Against S68's gate (`PLAN.md`, S68): B's median mutator CPU 55.1 s
+against A's 82.2 s, met; the arrays' own effect, B's margin on the arrays
+(−33 %) less its margin on the control (−30 %), costs B nothing. Each B
+cell's CPU pauses under 3.0 ms, met; one B wall at 22.8 ms with 3.0 ms of
+CPU, time off the CPU as S68.13 read it. Garbage mean and peak lower in B,
+0 at the drain's end, met. Δ-refusals 0.3–0.6 % of batches, met.
+
+**Side loads,** one cell an arm, outside the gate:
+
+| | A large | B large | A slow | B slow |
+|---|---|---|---|---|
+| mutator CPU, s | 80.3 | 55.2 | 80.1 | 53.5 |
+| collector CPU, s | 58.0 | 53.2 | 56.7 | 50.2 |
+| garbage mean / peak, MB | 44.9 / 325 | 38.8 / 216 | 46.4 / 276 | 36.6 / 243 |
+| garbage at the drain's end | 0 | 0 | 0 | 0 |
+| longest disposition CPU, ms | 1.2 | 1.8 | 1.1 | 2.0 |
+| longest application CPU, ms | — | 1.1 | — | 1.4 |
+| sets touched / batches | — | 18 / 4,084 | — | 18 / 4,008 |
+
+`-large` made 166 result sets of 4,000 rows with 64 KiB OS-direct bodies,
+`-slow` 96 slow requests; the garbage of both drained to 0. The OS-direct
+bodies on `-large`: 12,976,128 B granted and 12,779,520 B given back in
+both arms alike, the 192 KiB between them three bodies the stop finds
+[inf: equal in A, which has no held drops]; the leak this load found
+(`dev/DECISIONS.md`, 2026-10-12) left arrays with 64 KiB bodies behind
+after the teardown.
+
+---
+
 ## 2026-10-09 — S68's clauses S68.13 left unread, on `web-heap` at `a85eb88`: B's mutator 30 % under A's; the offer-to-take p99 46 ms under the young cut
 
 **Builds.** A: `main` at `a85eb88`, the default build (`gc-checkpoint`).
