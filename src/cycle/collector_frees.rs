@@ -932,11 +932,12 @@ pub(crate) unsafe fn splice_this_threads() {
 }
 
 /// Move C's drops into S, which a posted set held for its owner's sum, onto
-/// this thread's record as drops like the rest, for the next application:
-/// the set went back unread, or was read and not freed. It runs no user code,
-/// so every path that drops a set may call it — a block return under
-/// `POSTED`, the teardown's refusal among them (the Sage's ruling, item
-/// 8(b)).
+/// this thread's record as drops like the rest, for the next application,
+/// whether the set went back unread or the owner read it, freed or not: a
+/// freed set's reclaim leaves each member these name at the count they stand
+/// for. It runs no user code, so every path that drops a set may call it — a
+/// block return under `POSTED`, the teardown's refusal among them (the Sage's
+/// ruling, item 8(b)).
 ///
 /// # Safety
 /// On the owning thread, `head` the held chain a posted set taken off this
@@ -949,15 +950,6 @@ pub(crate) unsafe fn stand_the_held(head: *mut BlockHeader) {
     // Pushed beside what stands, never over it: the held chain's head carries
     // no chains and no members of its own.
     unsafe { stand(head.cast()) };
-}
-
-/// Give back C's drops into S once the owner freed S whole: every child they
-/// name is gone with it, and the count each stood for went with its member.
-///
-/// # Safety
-/// As [`stand_the_held`].
-pub(crate) unsafe fn release_the_held(head: *mut BlockHeader) {
-    unsafe { release_chain(head.cast()) };
 }
 
 /// The blocks of a held chain, which the posted set's figures count.

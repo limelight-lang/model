@@ -13,7 +13,7 @@ use crate::gc::ll_gc_maybe_collect;
 use crate::memory::arena::Arena;
 use crate::memory::context::LLContext;
 use crate::object::{Object, new_constructed};
-use crate::refcount::{MemoryCategory, RcHeader, ll_release, window_tag};
+use crate::refcount::{MemoryCategory, RcHeader, SlotState, ll_release, slot_state, window_tag};
 use crate::test_support::{prop_offset, store_prop};
 
 unsafe extern "C" fn no_destructor_body(_object: *mut Object) {}
@@ -549,6 +549,35 @@ fn a_clean_ring_is_freed_by_the_collector_and_the_ring_it_holds_by_the_owner() {
         DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
         2
     );
+    reset_lanes();
+}
+
+/// The member of a proved S that C's held drop names is freed with the rest of
+/// its set: the owner's reclaim leaves it at the held count, and the drop's
+/// application at the next poll takes it to zero, its destructor run once.
+#[test]
+fn the_member_a_held_drop_names_dies_at_its_application() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let ring = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+    let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+
+    let _ = served_and_counted();
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 4);
+    let _ = unsafe { ll_gc_maybe_collect() };
+    for member in ring {
+        assert_ne!(
+            unsafe { slot_state(member as *const RcHeader) },
+            SlotState::Live,
+            "every member of both rings freed"
+        );
+    }
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
+        2
+    );
+    assert!(!unsafe { &*record() }.collectors_frees_stand());
     reset_lanes();
 }
 

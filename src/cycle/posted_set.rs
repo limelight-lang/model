@@ -522,17 +522,6 @@ impl PostedSet {
         unsafe { (*self.head).kind }
     }
 
-    /// Give the held drops back once the owner freed the set whole: what they
-    /// name is gone with it.
-    #[cfg(feature = "gc-window")]
-    pub(crate) fn discard_the_held(&mut self) {
-        let held = std::mem::replace(unsafe { &mut (*self.head).held }, std::ptr::null_mut());
-        unsafe { (*self.head).held_count = 0 };
-        if !held.is_null() {
-            unsafe { crate::cycle::collector_frees::release_the_held(held) };
-        }
-    }
-
     /// Every member, in the order the collector listed them.
     pub(crate) fn members(&self) -> impl Iterator<Item = *mut RcHeader> + '_ {
         blocks_from(self.head).flat_map(|block| {
@@ -545,8 +534,12 @@ impl PostedSet {
 
 impl Drop for PostedSet {
     fn drop(&mut self) {
-        // Drops held for a sum nobody confirmed go onto the record for the
-        // next application, which runs them as it runs the rest.
+        // The held drops go onto the record for the next application, which
+        // runs them as it runs the rest. Each names a member that still holds
+        // the count it stands for: a set read and not freed keeps every
+        // count, and a freed set's reclaim takes off the internal edges and
+        // the guards alone, so the member those drops name dies at their
+        // application.
         #[cfg(feature = "gc-window")]
         {
             let held = unsafe { (*self.head).held };
