@@ -279,7 +279,7 @@ notifications, the teardown and the close are the rest. So the steps:
      (the Critic, round 1, finding 1: applied first, a drop can free a member
      of S and a destructor reuse its slot for an entity held from outside,
      which the sum alone would confirm). S confirmed and freed, its held
-     drops are discarded with it; S walked instead, or P given back unread
+     drops are applied by the owner's reclaim as S is freed; S walked instead, or P given back unread
      on any path, the held drops are applied at the next point where
      destructors may run — the poll, the pressure path, the exit — and
      lower S's counts to a release that registers it again. The teardown's
@@ -333,7 +333,8 @@ notifications, the teardown and the close are the rest. So the steps:
      against that.
   6. *Counted.* Members put in S by reason (ineligible, weakly held,
      ownership mark, foreign block, reached), sets split, sets whose split
-     a failed preparation dropped, S's held drops discarded and applied,
+     a failed preparation dropped, S's held drops applied by the owner's
+     reclaim as S is freed and applied at a poll,
      sets re-queued and sets whose roots a second refusal read live; in
      `frees_counts()` (`NOT_FREED` resized), the
      Δ-test's counts and the rig's columns; a journal kind for a split and
@@ -348,7 +349,7 @@ notifications, the teardown and the close are the rest. So the steps:
      preparation failing past the cap after a split sends W the S68.6a way
      whole, unmarked where a member is weakly held; an S that C holds is
      confirmed by the sum with C's edges and freed, its held drops
-     discarded; a walked S gets its held drops at the next poll; the
+     applied by the owner's reclaim as S is freed; a walked S gets its held drops at the next poll; the
      explicit fire applies the frees before it reads P; a touched set is re-queued once,
      its live roots read live, and its roots read live at its second
      refusal while the collector frees the rest.
@@ -397,15 +398,20 @@ notifications, the teardown and the close are the rest. So the steps:
 
   9. *Built* (S68.6c, `crate::cycle::split`), and where the code departs
      from item 8.
-     - The held drops are not simply discarded at the confirmation: the
+     - The held drops are not applied at the confirmation: the
        commit's validations — the debug build's exact one beside the sum,
        and the guarded revalidation after S's destructors — read S's counts,
        which carry C's edges while the drops stand held. So the commit
        allows for them: the validation's sum is the internal edges, the
        guards and the held count (`validation::validate_component_holding`);
        no member reads zero while they stand, each naming a member. Freed
-       whole, S gives them back with it; any other ending leaves them to the
-       posted set's drop, which stands them on the record as drops.
+       whole, S has them applied by the owner's reclaim as S is freed: after
+       the sever and before the guards come off, each is a decrement under
+       its member's guard, which runs no user code
+       (`reclamation::reclaim_before_drops`); a chain naming an entity
+       outside S applies nothing and stands whole. Any other ending leaves
+       them to the posted set's drop, which stands them on the record as
+       drops.
      - Held drops ride only on a set marked proved; an S that goes unmarked,
        or that no root of the batch lands in, gives them to the owner as
        drops like the rest, applied before P is read.

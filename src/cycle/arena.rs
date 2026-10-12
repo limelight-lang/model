@@ -565,6 +565,14 @@ pub(crate) struct TraceScratchArena {
     /// The references held from outside a set proved by its tags
     /// (`take_the_references_held_from_outside`).
     held_from_outside_read: usize,
+    /// The chain of C's drops those references stand for, which the set
+    /// owns: the reclaim of the set applies it ([`Self::take_the_held_chain`])
+    /// and says so ([`Self::take_the_held_applied`]); null where no proof
+    /// stands in this arena.
+    #[cfg(feature = "gc-window")]
+    held_chain: *mut BlockHeader,
+    #[cfg(feature = "gc-window")]
+    held_applied: bool,
     /// The external children a trace within a set read off its drain where
     /// it found the set garbage whole, for the teardown to reserve by in place
     /// of its own walk of the cells (`crate::cycle::reclamation`); `None`
@@ -757,6 +765,10 @@ impl TraceScratchArena {
             external_children_read: None,
             internal_edges_read: None,
             held_from_outside_read: 0,
+            #[cfg(feature = "gc-window")]
+            held_chain: std::ptr::null_mut(),
+            #[cfg(feature = "gc-window")]
+            held_applied: false,
             #[cfg(test)]
             swept: std::time::Duration::ZERO,
             recall_readings: 0,
@@ -1049,6 +1061,11 @@ impl TraceScratchArena {
         self.external_children_read = None;
         self.internal_edges_read = None;
         self.held_from_outside_read = 0;
+        #[cfg(feature = "gc-window")]
+        {
+            self.held_chain = std::ptr::null_mut();
+            self.held_applied = false;
+        }
         // The held entries carry row pointers the same way.
         self.held.rewind();
         self.held_next.rewind();
@@ -1943,10 +1960,39 @@ impl TraceScratchArena {
     /// Keep the references into a set proved by its tags that the collector's
     /// free of the rest left counted, its drops into the set held: what the
     /// members' counts carry besides the edges between them, which the
-    /// commit's validations allow for (`crate::cycle::posted_set`).
+    /// commit's validations allow for (`crate::cycle::posted_set`); and
+    /// `chain`, those drops, which the set keeps and its reclaim applies.
     #[cfg(feature = "gc-window")]
-    pub(crate) fn take_the_references_held_from_outside(&mut self, held: usize) {
+    pub(crate) fn take_the_references_held_from_outside(
+        &mut self,
+        held: usize,
+        chain: *mut BlockHeader,
+    ) {
         self.held_from_outside_read = held;
+        self.held_chain = chain;
+        self.held_applied = false;
+    }
+
+    /// The held chain of the set proved by its tags, for its reclaim to apply,
+    /// which it forgets; null where none.
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn take_the_held_chain(&mut self) -> *mut BlockHeader {
+        std::mem::replace(&mut self.held_chain, std::ptr::null_mut())
+    }
+
+    /// Record that the reclaim applied the held chain and gave its blocks
+    /// back, so that the set must stand nothing at its drop.
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn note_the_held_applied(&mut self) {
+        self.held_applied = true;
+    }
+
+    /// Whether the reclaim applied the held chain of the proof this arena
+    /// took, which it forgets with the chain.
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn take_the_held_applied(&mut self) -> bool {
+        self.held_chain = std::ptr::null_mut();
+        std::mem::take(&mut self.held_applied)
     }
 
     /// The references held from outside a set proved by its tags, which the

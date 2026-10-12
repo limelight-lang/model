@@ -554,32 +554,161 @@ fn a_clean_ring_is_freed_by_the_collector_and_the_ring_it_holds_by_the_owner() {
     reset_lanes();
 }
 
+/// The entity bytes this thread's heap holds, all classes together.
+fn bytes_held() -> usize {
+    crate::memory::heap::entity_bytes_held().iter().sum()
+}
+
+/// [`a_clean_ring_over_a_destructed_one`] with `c2` holding `d1` as well, so
+/// that C holds two edges into S, both into `d1`.
+unsafe fn a_clean_ring_over_a_destructed_one_held_twice(arena: &mut Arena) -> [*mut Object; 4] {
+    let clean = ClassBuilder::new("DeltaTestHolderTwice")
+        .prop("next", true)
+        .prop("held", true)
+        .build();
+    let destructed = ClassBuilder::new("DeltaTestCountedNodeTwice")
+        .prop("next", true)
+        .destructor(count_the_destruction as *const ())
+        .build();
+    let mut context = LLContext { arena: &mut *arena };
+    let c1 = unsafe { new_constructed(&mut context, clean, MemoryCategory::GcHeap) };
+    let c2 = unsafe { new_constructed(&mut context, clean, MemoryCategory::GcHeap) };
+    let d1 = unsafe { new_constructed(&mut context, destructed, MemoryCategory::GcHeap) };
+    let d2 = unsafe { new_constructed(&mut context, destructed, MemoryCategory::GcHeap) };
+    unsafe {
+        store_prop(arena, c1, prop_offset(0), c2);
+        store_prop(arena, c2, prop_offset(0), c1);
+        store_prop(arena, c1, prop_offset(1), d1);
+        store_prop(arena, c2, prop_offset(1), d1);
+        store_prop(arena, d1, prop_offset(0), d2);
+        store_prop(arena, d2, prop_offset(0), d1);
+        for member in [c1, d1, c2, d2] {
+            assert!(!ll_release(member as *mut RcHeader));
+        }
+    }
+    [c1, c2, d1, d2]
+}
+
+/// Serve the batch over a clean ring over a destructed one, and poll once:
+/// the poll applies the collector's frees of the clean ring and frees the
+/// destructed one, the drops C held into it applied by its reclaim, so the
+/// four counted, the heap holding `held_before` again, the two destructors
+/// run once each, and nothing standing on the record.
+fn one_poll_frees_both_rings(held_before: usize, destructed_before: usize) {
+    let held = crate::cycle::collector_frees::frees_counts().held;
+    let _ = served_and_counted();
+    assert!(
+        crate::cycle::collector_frees::frees_counts().held > held,
+        "the collector held C's drops into S"
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 4, "one poll frees both");
+    assert_eq!(bytes_held(), held_before, "every slot returned");
+    assert_eq!(
+        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed_before,
+        2
+    );
+    assert!(!unsafe { &*record() }.collectors_frees_stand());
+}
+
 /// The member of a proved S that C's held drop names is freed with the rest of
-/// its set: the owner's reclaim leaves it at the held count, and the drop's
-/// application at the next poll takes it to zero, its destructor run once.
+/// its set at the one poll that frees the set: the reclaim applies the drop
+/// under the member's guard.
 #[test]
 fn the_member_a_held_drop_names_dies_at_its_application() {
     let _g = test_guard();
     reset_lanes();
     let mut arena = Arena::new();
-    let ring = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+    let held_before = bytes_held();
     let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+
+    one_poll_frees_both_rings(held_before, destructed);
+    reset_lanes();
+}
+
+/// A member two cells of C held is named twice in the held chain, and the
+/// reclaim takes both counts off it.
+#[test]
+fn a_member_held_twice_by_c_is_freed_with_its_set() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let held_before = bytes_held();
+    let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+    let held = crate::cycle::collector_frees::frees_counts().held;
+    let _ = unsafe { a_clean_ring_over_a_destructed_one_held_twice(&mut arena) };
+
+    one_poll_frees_both_rings(held_before, destructed);
+    assert_eq!(
+        crate::cycle::collector_frees::frees_counts().held - held,
+        2,
+        "both of C's edges into d1 held"
+    );
+    reset_lanes();
+}
+
+/// A proved S freed by its owner leaves nothing on the record, so the next
+/// batch the collector proves is freed by the collector rather than refused
+/// for frees standing.
+#[test]
+fn a_batch_after_a_proved_s_is_freed_by_the_collector() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let held_before = bytes_held();
+    let destructed = DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed);
+    let _ = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
+    one_poll_frees_both_rings(held_before, destructed);
+
+    let _ = unsafe { a_garbage_ring(&mut arena) };
+    let freed_before = crate::cycle::collector_frees::frees_counts();
+    let counts = served_and_counted();
+    assert_eq!((counts.proved, counts.touched), (1, 0));
+    let freed = crate::cycle::collector_frees::frees_counts();
+    assert_eq!(
+        freed.not_freed[crate::cycle::collector_frees::NotFreed::FreesStand as usize],
+        freed_before.not_freed[crate::cycle::collector_frees::NotFreed::FreesStand as usize],
+        "no frees stood"
+    );
+    assert_eq!(
+        freed.members - freed_before.members,
+        2,
+        "the collector freed the ring"
+    );
+    assert_eq!(unsafe { ll_gc_maybe_collect() }, 2);
+    assert_eq!(bytes_held(), held_before);
+    reset_lanes();
+}
+
+/// A reclaim refused at its reservation applies none of the held drops: the
+/// set is left whole, the drops stand on the record for the next poll, and
+/// the member they name keeps their count meanwhile.
+#[test]
+fn a_held_drop_stands_where_the_reclaim_refuses() {
+    let _g = test_guard();
+    reset_lanes();
+    let mut arena = Arena::new();
+    let [_, _, d1, _] = unsafe { a_clean_ring_over_a_destructed_one(&mut arena) };
 
     let _ = served_and_counted();
-    assert_eq!(unsafe { ll_gc_maybe_collect() }, 4);
-    let _ = unsafe { ll_gc_maybe_collect() };
-    for member in ring {
-        assert_ne!(
-            unsafe { slot_state(member as *const RcHeader) },
-            SlotState::Live,
-            "every member of both rings freed"
-        );
-    }
+    let refused = crate::cycle::arena::refuse_drop_reservation();
     assert_eq!(
-        DESTRUCTED.load(std::sync::atomic::Ordering::Relaxed) - destructed,
-        2
+        unsafe { ll_gc_maybe_collect() },
+        2,
+        "the clean ring applied, the destructed one refused"
     );
-    assert!(!unsafe { &*record() }.collectors_frees_stand());
+    drop(refused);
+    assert!(unsafe { &*record() }.collectors_frees_stand());
+    assert_eq!(
+        unsafe { slot_state(d1 as *const RcHeader) },
+        SlotState::Live,
+        "d1 held by the standing drop"
+    );
+    let _ = unsafe { ll_gc_maybe_collect() };
+    assert!(
+        !unsafe { &*record() }.collectors_frees_stand(),
+        "the next poll applied it"
+    );
     reset_lanes();
 }
 

@@ -3993,6 +3993,10 @@ impl CellReading {
             ),
             ("frees_arrays", frees_counts()[13].to_string()),
             ("frees_body_bytes_posted", frees_counts()[14].to_string()),
+            (
+                "frees_held_stood_at_a_reclaim",
+                frees_counts()[15].to_string(),
+            ),
             // The backup trace's arm the same way, zeros without
             // `trace-backup-rig` (`crate::cycle::trace_backup::counts`): the
             // traces; their nanoseconds in all, in the fill and subtract, the
@@ -4933,7 +4937,7 @@ fn trace_backup_counts() -> [u64; 11] {
 /// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,
 /// members, drops, held drops, the five refusals, the longest act, the
 /// applications in all and at the longest; zeros without the feature.
-fn frees_counts() -> [u128; 15] {
+fn frees_counts() -> [u128; 16] {
     #[cfg(feature = "gc-window")]
     {
         let counts = crate::cycle::collector_frees::frees_counts();
@@ -4954,10 +4958,11 @@ fn frees_counts() -> [u128; 15] {
             counts.longest_application_cpu.as_micros(),
             counts.arrays as u128,
             counts.body_bytes_posted as u128,
+            counts.held_stood_at_a_reclaim as u128,
         ]
     }
     #[cfg(feature = "gc-checkpoint")]
-    [0; 15]
+    [0; 16]
 }
 
 /// `counts` as one column, `;` between them.

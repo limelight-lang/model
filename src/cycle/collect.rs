@@ -495,7 +495,8 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // The set the collector's batch proved unreachable is the collection
     // over P's to validate, and no other collection reads it
     // (`crate::cycle::posted_set`).
-    let set = match form {
+    #[cfg_attr(feature = "gc-checkpoint", allow(unused_mut))]
+    let mut set = match form {
         BatchForm::Verdicts => {
             let set = crate::cycle::posted_set::take_this_threads();
             #[cfg(all(test, feature = "gc-window"))]
@@ -552,10 +553,16 @@ unsafe fn collection(form: BatchForm, stamps: ReadsStamps) -> Collection {
     // A collection over P read the set alone, so a row it leaves live is no
     // proof of liveness, and it stamps nothing.
     let outcome = unsafe { commit(&members, window.arena(), form == BatchForm::AllRoots) };
-    // A set proved by its tags takes the drops the collector held into it to
-    // the record at its drop, for the next application, freed or not: the
-    // reclaim releases each member's guard, and a member those drops name
-    // stands at their count until they apply (`crate::cycle::posted_set`).
+    // The drops the collector held into a set proved by its tags: applied by
+    // the set's reclaim where it freed the set, so the set forgets them;
+    // otherwise the set takes them to the record at its drop, for the next
+    // application (`crate::cycle::posted_set`).
+    #[cfg(feature = "gc-window")]
+    if window.arena().take_the_held_applied() {
+        set.as_mut()
+            .expect("a held chain is applied only from a posted set")
+            .forget_the_held();
+    }
     #[cfg(test)]
     if form == BatchForm::Verdicts {
         let [confirm, destructors, reclaim, drops] =

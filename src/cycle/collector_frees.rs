@@ -266,6 +266,7 @@ static MEMBERS_FREED: AtomicUsize = AtomicUsize::new(0);
 static DROPS_POSTED: AtomicUsize = AtomicUsize::new(0);
 static NOT_FREED: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
 static HELD_DROPS: AtomicUsize = AtomicUsize::new(0);
+static HELD_STOOD_AT_A_RECLAIM: AtomicUsize = AtomicUsize::new(0);
 static LONGEST_ACT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static APPLICATION_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LONGEST_APPLICATION_NANOS: std::sync::atomic::AtomicU64 =
@@ -289,6 +290,9 @@ pub(crate) struct FreesCounts {
     pub(crate) not_freed: [usize; 5],
     /// Drops into S held with a proved set.
     pub(crate) held: usize,
+    /// Held chains the owner's reclaim of S left standing, a drop naming an
+    /// entity outside S ([`held_children`]).
+    pub(crate) held_stood_at_a_reclaim: usize,
     /// The longest commit, the act a recall waits for, which the cap bounds.
     pub(crate) longest_act: std::time::Duration,
     /// The owner's applications, in all and at the longest: its pause for
@@ -310,6 +314,7 @@ pub(crate) fn frees_counts() -> FreesCounts {
         members: MEMBERS_FREED.load(Ordering::Relaxed),
         drops: DROPS_POSTED.load(Ordering::Relaxed),
         held: HELD_DROPS.load(Ordering::Relaxed),
+        held_stood_at_a_reclaim: HELD_STOOD_AT_A_RECLAIM.load(Ordering::Relaxed),
         longest_act: std::time::Duration::from_nanos(LONGEST_ACT_NANOS.load(Ordering::Relaxed)),
         applications: std::time::Duration::from_nanos(APPLICATION_NANOS.load(Ordering::Relaxed)),
         longest_application: std::time::Duration::from_nanos(
@@ -977,12 +982,12 @@ pub(crate) unsafe fn splice_this_threads() {
 }
 
 /// Move C's drops into S, which a posted set held for its owner's sum, onto
-/// this thread's record as drops like the rest, for the next application,
-/// whether the set went back unread or the owner read it, freed or not: a
-/// freed set's reclaim leaves each member these name at the count they stand
-/// for. It runs no user code, so every path that drops a set may call it — a
-/// block return under `POSTED`, the teardown's refusal among them (the Sage's
-/// ruling, item 8(b)).
+/// this thread's record as drops like the rest, for the next application:
+/// the set went back unread, the owner read it and did not free it, or its
+/// reclaim met a drop naming no member of S and applied none of them
+/// ([`held_children`]). It runs no user code, so every path that drops a set
+/// may call it — a block return under `POSTED`, the teardown's refusal among
+/// them (the Sage's ruling, item 8(b)).
 ///
 /// # Safety
 /// On the owning thread, `head` the held chain a posted set taken off this
@@ -995,6 +1000,37 @@ pub(crate) unsafe fn stand_the_held(head: *mut BlockHeader) {
     // Pushed beside what stands, never over it: the held chain's head carries
     // no chains and no members of its own.
     unsafe { stand(head.cast()) };
+}
+
+/// The entities C's drops into S name, one a drop: a member two cells of C
+/// held is named twice. The owner's reclaim of S applies them as it frees the
+/// set, each the count a dead cell of C left on its member
+/// (`crate::cycle::reclamation::reclaim_before_drops`).
+///
+/// # Safety
+/// `head` is the held chain of a posted set this thread took off its record,
+/// still the set's.
+pub(crate) unsafe fn held_children(head: *mut BlockHeader) -> impl Iterator<Item = *mut RcHeader> {
+    blocks_from(head.cast()).flat_map(|block| {
+        unsafe { entries_of(block) }
+            .iter()
+            .map(|&address| address as *mut RcHeader)
+    })
+}
+
+/// Give back the blocks of a held chain whose drops the owner's reclaim
+/// applied as it freed S, on the thread whose figures hold them.
+///
+/// # Safety
+/// As [`held_children`]; the caller takes the chain off its set, which
+/// stands nothing at its drop.
+pub(crate) unsafe fn release_the_held(head: *mut BlockHeader) {
+    unsafe { release_chain(head.cast()) };
+}
+
+/// Count a held chain the owner's reclaim of S left standing.
+pub(crate) fn note_held_stood_at_a_reclaim() {
+    HELD_STOOD_AT_A_RECLAIM.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The blocks of a held chain, which the posted set's figures count.

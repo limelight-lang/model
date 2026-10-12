@@ -515,6 +515,25 @@ impl PostedSet {
         unsafe { (*self.head).held_count }
     }
 
+    /// C's drops into the set, held for its owner's reading; null where none.
+    /// The set keeps them: its reclaim applies them as it frees the set
+    /// (`crate::cycle::reclamation::reclaim_before_drops`), and any other
+    /// ending stands them at the set's drop.
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn held_chain(&self) -> *mut BlockHeader {
+        unsafe { (*self.head).held }
+    }
+
+    /// Forget the held drops the set's reclaim applied, whose blocks it gave
+    /// back.
+    #[cfg(feature = "gc-window")]
+    pub(crate) fn forget_the_held(&mut self) {
+        unsafe {
+            (*self.head).held = std::ptr::null_mut();
+            (*self.head).held_count = 0;
+        }
+    }
+
     /// Why the set reaches the owner as it does ([`kind`]).
     #[cfg(feature = "gc-window")]
     #[cfg_attr(not(test), allow(dead_code))]
@@ -534,12 +553,9 @@ impl PostedSet {
 
 impl Drop for PostedSet {
     fn drop(&mut self) {
-        // The held drops go onto the record for the next application, which
-        // runs them as it runs the rest. Each names a member that still holds
-        // the count it stands for: a set read and not freed keeps every
-        // count, and a freed set's reclaim takes off the internal edges and
-        // the guards alone, so the member those drops name dies at their
-        // application.
+        // Held drops the set's reclaim did not apply go onto the record for
+        // the next application, which runs them as it runs the rest: each
+        // names an entity that still holds the count it stands for.
         #[cfg(feature = "gc-window")]
         {
             let held = unsafe { (*self.head).held };

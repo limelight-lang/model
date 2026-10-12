@@ -308,6 +308,11 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
         "the sever displaces every child the walk ahead of it counted"
     );
 
+    #[cfg(feature = "gc-window")]
+    unsafe {
+        apply_the_held(members, arena)
+    };
+
     // Every internal edge is off, so each member stands at its guard alone and
     // the release below is its last reference. The ordinary death path is what
     // frees it: phase 1 finds `DESTRUCTOR_RAN` and runs nothing, phase 2's
@@ -329,6 +334,43 @@ pub(crate) unsafe fn reclaim_before_drops<'a>(
         arena,
         drained: false,
     })
+}
+
+/// Apply the drops the collector held into a set proved by its tags, which
+/// this reclaim frees: each is the count a cell of C, freed by the collector,
+/// left on a member, and the member's guard keeps that count above zero, so
+/// each is the narrow decrement the sever makes and no user code runs. Left
+/// standing for the set's drop, they would hold each member they name at
+/// their count past the release of the guards, and the member would outlive
+/// its set. A chain naming an entity outside the set applies nothing and
+/// stands whole, counted (`collector_frees::note_held_stood_at_a_reclaim`).
+///
+/// # Safety
+/// Inside [`reclaim_before_drops`], every internal edge severed and every
+/// guard standing; `arena` is the one that took the set's proof.
+#[cfg(feature = "gc-window")]
+unsafe fn apply_the_held(members: &Membership<'_>, arena: &mut TraceScratchArena) {
+    use crate::cycle::collector_frees::{held_children, note_held_stood_at_a_reclaim};
+
+    let held = arena.take_the_held_chain();
+    if held.is_null() {
+        return;
+    }
+
+    // Each child a held drop names is live, held by the count the drop stands
+    // for, so its header is this thread's to read.
+    let children = || unsafe { held_children(held) };
+    if !children().all(|child| unsafe { members.contains(child) }) {
+        note_held_stood_at_a_reclaim();
+        return;
+    }
+
+    for child in children() {
+        let left = unsafe { severed_edge_release(child) };
+        debug_assert!(left > 0, "a member's guard stands under its held drops");
+    }
+    unsafe { crate::cycle::collector_frees::release_the_held(held) };
+    arena.note_the_held_applied();
 }
 
 /// Whether the owner may free `member` in [`free_whole_before_drops`]'s one
