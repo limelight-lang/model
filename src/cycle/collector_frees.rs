@@ -270,6 +270,13 @@ static LONGEST_ACT_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::Atom
 static APPLICATION_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static LONGEST_APPLICATION_NANOS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+/// Under test only: the longest application by the thread's CPU clock, the
+/// arrays among the members freed, and the bytes of their bodies posted to
+/// their blocks' remote stacks.
+static LONGEST_APPLICATION_CPU_NANOS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static ARRAYS_FREED: AtomicUsize = AtomicUsize::new(0);
+static BODY_BYTES_POSTED: AtomicUsize = AtomicUsize::new(0);
 
 /// The collector's frees since the process started: sets, members, drops,
 /// and the sets that went the owner's way by reason, in [`NotFreed`]'s order.
@@ -288,6 +295,12 @@ pub(crate) struct FreesCounts {
     /// what the collector freed.
     pub(crate) applications: std::time::Duration,
     pub(crate) longest_application: std::time::Duration,
+    /// Under test: the longest application by the thread's CPU clock, which
+    /// leaves out the time the thread stood off the CPU; the arrays among
+    /// `members`; and the bytes of the bodies posted remote with them.
+    pub(crate) longest_application_cpu: std::time::Duration,
+    pub(crate) arrays: usize,
+    pub(crate) body_bytes_posted: usize,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -302,6 +315,11 @@ pub(crate) fn frees_counts() -> FreesCounts {
         longest_application: std::time::Duration::from_nanos(
             LONGEST_APPLICATION_NANOS.load(Ordering::Relaxed),
         ),
+        longest_application_cpu: std::time::Duration::from_nanos(
+            LONGEST_APPLICATION_CPU_NANOS.load(Ordering::Relaxed),
+        ),
+        arrays: ARRAYS_FREED.load(Ordering::Relaxed),
+        body_bytes_posted: BODY_BYTES_POSTED.load(Ordering::Relaxed),
         not_freed: std::array::from_fn(|reason| NOT_FREED[reason].load(Ordering::Relaxed)),
     }
 }
@@ -650,6 +668,8 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
     let mut head: *mut u8 = std::ptr::null_mut();
     let mut tail: *mut u8 = std::ptr::null_mut();
     let mut linked = 0usize;
+    #[cfg(test)]
+    let (mut arrays, mut body_bytes) = (0usize, 0usize);
     let _ = unsafe {
         for_each_member(arena, Of::C, |step| {
             match step {
@@ -660,11 +680,19 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
                 }
                 Step::Member(member) => {
                     let kind = crate::cells::entity_kind(member);
+                    #[cfg(test)]
+                    if kind == EntityKind::Array as u32 {
+                        arrays += 1;
+                    }
                     if kind == EntityKind::Array as u32
                         && let Some((body, capacity)) = crate::array::entity::body_of(
                             member as *mut crate::array::entity::LLArray,
                         )
                     {
+                        #[cfg(test)]
+                        {
+                            body_bytes += capacity;
+                        }
                         crate::memory::buffer_arena::post_a_body_remote(body, capacity);
                     }
                     crate::refcount::set_header_refcount_untagged(member, 0);
@@ -711,6 +739,11 @@ pub(crate) unsafe fn commit(arena: &TraceScratchArena, frees: &mut Frees) {
     LONGEST_ACT_NANOS.fetch_max(from.elapsed().as_nanos() as u64, Ordering::Relaxed);
     SETS_FREED.fetch_add(1, Ordering::Relaxed);
     MEMBERS_FREED.fetch_add(frees.members, Ordering::Relaxed);
+    #[cfg(test)]
+    {
+        ARRAYS_FREED.fetch_add(arrays, Ordering::Relaxed);
+        BODY_BYTES_POSTED.fetch_add(body_bytes, Ordering::Relaxed);
+    }
     HELD_DROPS.fetch_add(frees.held_count, Ordering::Relaxed);
     DROPS_POSTED.fetch_add(
         blocks_from(frees.drops.head)
@@ -773,7 +806,7 @@ pub(crate) unsafe fn apply_this_threads() -> usize {
     let Some(top) = (unsafe { take_this_threads() }) else {
         return 0;
     };
-    let from = std::time::Instant::now();
+    let (from, cpu_from) = (std::time::Instant::now(), thread_cpu_time());
     let members = unsafe { splice_every(top) };
     let mut head = top;
     while !head.is_null() {
@@ -786,7 +819,7 @@ pub(crate) unsafe fn apply_this_threads() -> usize {
         unsafe { release_chain(head) };
         head = below;
     }
-    note_an_application(from);
+    note_an_application(from, cpu_from);
     members
 }
 
@@ -808,7 +841,7 @@ pub(crate) unsafe fn apply_a_slice_of_this_threads() -> (usize, bool) {
     let Some(top) = (unsafe { take_this_threads() }) else {
         return (0, false);
     };
-    let from = std::time::Instant::now();
+    let (from, cpu_from) = (std::time::Instant::now(), thread_cpu_time());
     let members = unsafe { splice_every(top) };
     let mut left = APPLY_STRIDE;
     let mut head = top;
@@ -858,7 +891,7 @@ pub(crate) unsafe fn apply_a_slice_of_this_threads() -> (usize, bool) {
         unsafe { stand(rest) };
         rest = above;
     }
-    note_an_application(from);
+    note_an_application(from, cpu_from);
     let record = crate::cycle::mutator_record::this_thread_record();
     (members, unsafe { (*record).collectors_frees_stand() })
 }
@@ -900,11 +933,23 @@ unsafe fn stand(head: *mut FreesBlock) {
     unsafe { push(&*record, head) };
 }
 
-/// Count one application's wall.
-fn note_an_application(from: std::time::Instant) {
+/// The calling thread's CPU time, which the rig reads an application by;
+/// zero outside a test build.
+fn thread_cpu_time() -> std::time::Duration {
+    #[cfg(test)]
+    return crate::cycle::worker::testing::thread_cpu_time();
+    #[cfg(not(test))]
+    std::time::Duration::ZERO
+}
+
+/// Count one application's wall from `from` and its CPU time from
+/// `cpu_from`, a reading of [`thread_cpu_time`].
+fn note_an_application(from: std::time::Instant, cpu_from: std::time::Duration) {
     let took = from.elapsed().as_nanos() as u64;
     APPLICATION_NANOS.fetch_add(took, Ordering::Relaxed);
     LONGEST_APPLICATION_NANOS.fetch_max(took, Ordering::Relaxed);
+    let cpu = (thread_cpu_time() - cpu_from).as_nanos() as u64;
+    LONGEST_APPLICATION_CPU_NANOS.fetch_max(cpu, Ordering::Relaxed);
 }
 
 /// The part of [`apply_this_threads`] that runs no user code — the chains

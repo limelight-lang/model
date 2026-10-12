@@ -1397,6 +1397,10 @@ pub(crate) struct VerdictCollections {
     /// (`crate::cycle::posted_set::kind`), the last slot a collection that read
     /// none; all in the last slot without `gc-window`.
     pub(crate) longest_by_kind: [std::time::Duration; SET_KINDS + 1],
+    /// The longest one by the thread's CPU clock ([`thread_cpu_time`]): its
+    /// own work, without the time the thread stood off the CPU. Read for the
+    /// dispositions alone, zero for the collections over P.
+    pub(crate) longest_cpu: std::time::Duration,
 }
 
 /// The kinds a posted set carries.
@@ -1466,6 +1470,7 @@ static VERDICT_COLLECTIONS: Mutex<VerdictCollections> = Mutex::new(VerdictCollec
     phases: [std::time::Duration::ZERO; COLLECTION_PHASES],
     phases_of_the_longest: [std::time::Duration::ZERO; COLLECTION_PHASES],
     longest_by_kind: [std::time::Duration::ZERO; SET_KINDS + 1],
+    longest_cpu: std::time::Duration::ZERO,
 });
 
 pub(crate) fn note_verdict_collection(took: std::time::Duration, freed: usize, positions: usize) {
@@ -1505,6 +1510,7 @@ static DISPOSALS: Mutex<VerdictCollections> = Mutex::new(VerdictCollections {
     phases: [std::time::Duration::ZERO; COLLECTION_PHASES],
     phases_of_the_longest: [std::time::Duration::ZERO; COLLECTION_PHASES],
     longest_by_kind: [std::time::Duration::ZERO; SET_KINDS + 1],
+    longest_cpu: std::time::Duration::ZERO,
 });
 
 /// The returns a mutator withheld under a foreign holder, by stack — deaths,
@@ -1560,11 +1566,13 @@ pub(crate) fn take_withheld_readings() -> WithheldReadings {
     std::mem::take(&mut *lock(&WITHHELD_READINGS))
 }
 
-pub(crate) fn note_disposal(took: std::time::Duration) {
+/// Note one disposition of P: its wall and the thread's CPU time inside it.
+pub(crate) fn note_disposal(took: std::time::Duration, cpu: std::time::Duration) {
     let mut disposals = lock(&DISPOSALS);
     disposals.collections += 1;
     disposals.total += took;
     disposals.longest = disposals.longest.max(took);
+    disposals.longest_cpu = disposals.longest_cpu.max(cpu);
 }
 
 /// What the schemes spend on the collector's stamps and the lane, in every

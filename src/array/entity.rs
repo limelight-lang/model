@@ -299,7 +299,7 @@ pub(crate) unsafe fn migrate_to_hash(a: *mut LLArray, category: MemoryCategory) 
 ///
 /// # Safety
 /// `a` is a live array no thread writes.
-#[cfg(feature = "gc-window")]
+#[cfg(any(feature = "gc-window", test))]
 pub(crate) unsafe fn body_of(a: *mut LLArray) -> Option<(*mut u8, usize)> {
     let (body, capacity) = match unsafe { (*a).head.tag() } {
         StorageTag::Hash => {

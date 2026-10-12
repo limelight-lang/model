@@ -132,7 +132,12 @@ pub(crate) unsafe fn body_alloc(
             (p, bytes)
         }
         MemoryCategory::GcHeap | MemoryCategory::LongLived => {
-            crate::memory::buffer_arena::buffer_alloc_longlived_payload(bytes)
+            let (p, granted) = crate::memory::buffer_arena::buffer_alloc_longlived_payload(bytes);
+            #[cfg(test)]
+            if !p.is_null() {
+                body_bytes::note_granted(granted);
+            }
+            (p, granted)
         }
         MemoryCategory::Immortal => (immortal_alloc(bytes), bytes),
     }
@@ -216,9 +221,58 @@ pub(crate) unsafe fn body_free(category: MemoryCategory, ptr: *mut u8, capacity:
         // `buffer_free_longlived_payload` makes it: a retained block's
         // bytes are left alone, a chunk is withheld while a collection reads
         // it, and an OS-direct run is unmapped.
-        MemoryCategory::GcHeap | MemoryCategory::LongLived => unsafe {
-            crate::memory::buffer_arena::buffer_free_longlived_payload(ptr, capacity)
-        },
+        MemoryCategory::GcHeap | MemoryCategory::LongLived => {
+            #[cfg(test)]
+            body_bytes::note_given_back(capacity);
+            unsafe { crate::memory::buffer_arena::buffer_free_longlived_payload(ptr, capacity) }
+        }
+    }
+}
+
+/// The long-lived body bytes [`body_alloc`] granted and [`body_free`] took
+/// back on the calling thread, each with its share past `BLOCK_PAYLOAD`,
+/// which an OS-direct run serves: what the rig's figure of the bodies held
+/// dead starts from (`dev/design/the-web-loads.md`, "`web-heap-arrays`, S68's
+/// array-bearing load"). A body the collector frees itself is posted remote
+/// and counted by `cycle::collector_frees`, not here.
+#[cfg(test)]
+pub(crate) mod body_bytes {
+    use super::BLOCK_PAYLOAD;
+    use std::cell::Cell;
+
+    /// Granted, granted past [`BLOCK_PAYLOAD`], given back, given back past
+    /// it.
+    const GRANTED: usize = 0;
+    const GIVEN_BACK: usize = 2;
+
+    thread_local! {
+        static BODY_BYTES: Cell<[usize; 4]> = const { Cell::new([0; 4]) };
+    }
+
+    fn note(at: usize, bytes: usize) {
+        BODY_BYTES.with(|counts| {
+            let mut read = counts.get();
+            read[at] += bytes;
+            if bytes > BLOCK_PAYLOAD {
+                read[at + 1] += bytes;
+            }
+            counts.set(read);
+        });
+    }
+
+    pub(super) fn note_granted(bytes: usize) {
+        note(GRANTED, bytes);
+    }
+
+    pub(super) fn note_given_back(bytes: usize) {
+        note(GIVEN_BACK, bytes);
+    }
+
+    /// The calling thread's bytes granted and given back, each as (all,
+    /// OS-direct).
+    pub(crate) fn read() -> [(usize, usize); 2] {
+        let read = BODY_BYTES.with(Cell::get);
+        [(read[0], read[1]), (read[2], read[3])]
     }
 }
 

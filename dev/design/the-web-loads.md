@@ -136,6 +136,166 @@ discarded by wall clock: every counter the rule reads is read at its end and
 at the stop and the difference scored, and the peak garbage is reset at its
 end.
 
+## `web-heap-arrays`, S68's array-bearing load
+
+`web-heap` with part of its tree, its ORM collections, its sessions and a
+result set a request held by arrays: the array-bearing load S68's gate
+names (`PLAN.md:123-131`), which the rig did not have (`PLAN.md:350`).
+`web-heap` places objects of three sizes only (`SIZES`,
+`the_web_loads.rs:224`; paths under `src/cycle/worker/tests/` unless named)
+and chains a collection through segment objects, so no array is born.
+Specified 2026-10-12 after two rounds of the Critic and two of the Sage, and
+built the same day in `the_web_loads/in_arrays.rs`. [inf] marks a claim
+inferred from the code, not run.
+
+### What changes against `web-heap`
+
+Everything of `web-heap` stands unless named here: the long-lived state at
+N = 150,000, the drawn count and sizes, the closures, the 10 %
+registrations, the CPU and the silent end. A third `Variant`,
+`HeapArrays(ArrayLoad)` (`the_web_loads.rs:210`), draws what is new from a
+stream of its own, `Purpose::Arrays` = 9 (`:263`), so `Variant::Heap`'s
+path and `web-heap`'s pinned plan digest
+(`a_heap_plan_folds_to_its_pinned_digest`) do not move. The plan lists
+every array as a placement (holder, slot, kind), born straight after its
+holder (`Request::hang_the_arrays`).
+
+- **Array holders.** A tree object holds its children through a vector in
+  its first child slot with `ARRAY_HOLDER_PERCENT` = 50 % [A, set so that
+  arrays are 10 % or more of the garbage made, the validity test below]:
+  the children it would hold in its slots are appended to the vector at
+  their births. The tree, its fan-out and its sizes are `web-heap`'s.
+- **ORM collections.** The head's slot 1 holds a vector of its entities,
+  each with its edge back to the head in slot 0 (`ExtraEdge::BackTo`): the
+  ring head → vector → entity → head in place of the segment chain. The
+  counts stand, 0–3 collections of 10–100 entities (`draw_the_orm`); the
+  segments' positions go back to the tree.
+- **The result set.** One vector a request at a tree position drawn
+  uniformly, its rows the next `RESULT_ROWS` = 15 tree positions in build
+  order (Laravel's default page, `Model::$perPage` [F]; one page a request
+  [A]), clamped to the positions left.
+- **Sessions.** A session's head holds in slot 0 a string-keyed hash in
+  place of the chain: the session's other 19 objects under keys, each
+  holding the head in its slot 0, and an integer under `t`; the core edge
+  stays in slot 1. Keys are a per-mutator table of 1,024 long-lived strings
+  built at setup (`make_the_keys`); a string never registers
+  (`src/refcount.rs:473-482`).
+- **The session write**, the request's last step, as PHP saves a session at
+  the script's end [A]: `SESSION_WRITE_PERCENT` = 30 % of requests write,
+  `SESSION_APPEND_PERCENT` = 50 % of those [A] a new object of a drawn size
+  under the hash's next key, the rest, and every write to a hash at
+  `SESSION_ENTRIES_MOST`, the request number into `t`. The new object is in
+  the directory's bytes before any later step can replace the session, and
+  is reported born at the request's end (`Ended::born`). At setup each
+  session takes its prior appends, a geometric count of mean 15
+  (`PRIOR_APPENDS_END`, the model of `SESSION_WRITE_STEADY_SHARE`).
+
+### Element writes
+
+Every element write moves the child's creation reference into the array,
+through `array::testing::push` on a vector or `testing::raw_insert` under a
+fresh key on the hash (`src/array/testing.rs:177-196`), the key's reference
+retained for the table before the insert; or stores an integer. These are
+the crate's test-only writes to the representation, not the element layer's
+`write_through`, which a program's stores take; both arms run the same path,
+and under B the mutable view tags the array as the holder
+(`src/array/entity.rs:184-193`). No release follows a write, so a write
+registers no root and `Request::advance_at_most` counts the events it
+counted for `web-heap`. Every write is asserted, since a refused one would
+lose its reference. No write overwrites or unsets a counted element; every
+array is held by one slot at a count of 1; none is shared, nested or holds
+itself.
+
+A body of at most `BLOCK_PAYLOAD` = 65,280 B
+(`src/memory/block_pool.rs:30-34`) is a buffer-arena chunk, a larger one an
+OS-direct run, and an array with an OS-direct body is ineligible for the
+collector's frees (`collector_frees::eligible`). The lengths stay below it:
+
+| constant | value | basis |
+| --- | --- | --- |
+| `VECTOR_MOST` | 2,048 elements | [code]: 16 B a `Value`, capacity 8 doubling: 2,048 is 32 KiB, 2,049 grows to 65,536 B (const assertions in `in_arrays.rs`) |
+| `SESSION_ENTRIES_MOST` | 1,024 entries | [code]: 32 B an entry and 4 B a slot at 2,048 slots: 40,960 B |
+
+A holder's vector holds at most `FAN_OUT` = 8, a collection 100, the result
+set 15.
+
+### What the rig reports
+
+- **Garbage by class.** `CLASSES` = 4: 64, 128 and 512 B objects and
+  `ARRAY_BYTES` = `size_of::<LLArray>()` = 112 B arrays (`CLASS_BYTES`,
+  `the_web_loads.rs:229-235`). `Plan::bytes`, `held_by_size`, `Ended`,
+  `Advanced` and `Garbage` answer the four, an array's 112 B born at the
+  step that creates it; `web_garbage_mean_bytes_112` and
+  `web_garbage_peak_bytes_112` read the fourth. `LongLived::new` asserts
+  that the 112 B class holds arrays only (a key is a 24 B string).
+- **Bodies**, reported apart and not added (the Sage), by test-only
+  counters a thread at `body_alloc` and `body_free`
+  (`memory::routing::body_bytes`), each with its OS-direct share:
+  `web_body_bytes_granted`, `_given_back`, `_os_direct_granted`,
+  `_os_direct_given_back`; under B the bodies the collector posts remote,
+  `frees_body_bytes_posted`; the sessions' live bodies,
+  `web_body_bytes_live_at_the_stop`; and `web_body_bytes_dead_at_the_stop`,
+  the outstanding less the posted and the live.
+- **Validity, every cell.** `web_array_share_percent`: array entities and
+  bodies made over the garbage made with the bodies, both sides counting
+  bodies; a cell under 10 % is not array-bearing and is reported so. B only:
+  `frees_arrays` over `frees_members`, the arrays among the members the
+  collector freed.
+- **Refusals.** `tag_sets_touched_in_an_array`, the sets
+  `tag_sets_touched` counts whose touched member is an array; the split by
+  the origin of the batch's root is deferred. Reporting only (the Sage; the
+  denominator is Edmond's, `PLAN.md:348-350`).
+- **Counts.** `web_session_writes`, `web_slow_requests`,
+  `web_large_result_sets`, `web_array_bytes_made`, `web_body_bytes_made`,
+  and `frees_not_ineligible`.
+
+### The cells
+
+`web-heap`'s protocol as S68 reads it (`dev/BENCHMARKS.md:13-18`): A, the
+default `gc-checkpoint`, against B, `gc-window`
+(`dev/design/gc-kinds.md:9-12`); `dev/tools/arms.sh <out> 5 web` with
+`ARMS="A B" WEB_MUTATORS=1,2 WEB_COLLECTORS_CAP1=3 CAPS=1`, two mutators
+on CPUs 1–2 and cap 1 on CPU 3; 116 s with a 20 s warm-up and a 12 s
+drain (`arms.sh:91-99`); five cells an arm, interleaved, the order rotated
+a repeat (`:107-114`); a void cell run again once (`:17-19`). The
+interarrival comes from a pilot by this document's rule (the arrivals row,
+"Common to both"): one A cell at `web-heap`'s 46.78 ms, then
+46.78 ms × `arrival_busy_share` / 0.6 (`BUSY_SHARE`) [inf: the share
+scales as the inverse of the interarrival below saturation]. `WEB_LOADS`
+runs `web-heap` at the same interarrival beside it, interleaved
+(`arms.sh:15`, `:120`), as the control: the arrays' effect is B's margin
+over A on `web-heap-arrays` less B's margin over A on `web-heap`.
+
+| S68 clause (`PLAN.md:127-129`) | column (`the_rig.rs`) | met when |
+| --- | --- | --- |
+| mutator CPU within +3 % of the default build | `mutator_cpu_us`, the load's own, A against B; no microbenchmark (the Sage) | B's median ≤ 1.03 × A's |
+| longest owner pause under 5 ms in every cell | `disposal_longest_cpu_us` and `frees_longest_application_cpu_us`, the thread's CPU time (`CLOCK_THREAD_CPUTIME_ID`) of the longest disposition and of the longest application of the collector's frees, beside the walls `disposal_longest_us` and `frees_longest_application_us`; S68.13 closed reading the pause so (`dev/DECISIONS.md:25-45`) | each B cell's CPU times under 5,000 µs; the walls and A's `verdict_collection_longest_us` reported |
+| held garbage no worse | `web_garbage_mean_bytes`, `web_garbage_peak_bytes`, the 112 B class included; `web_garbage_at_the_drain_end_bytes` | B's median ≤ 1.10 × A's + 64 KiB (mean) and 1.25 × A's + 256 KiB (peak), the floors of "Gates" below; 0 at the drain's end |
+| Δ-refusals under 10 % of batches | `tag_sets_touched` over `batches` | under 0.10 in each B cell |
+
+`tag_sets_touched` counts over the whole process and `batches` from the
+cell's start to its end (`take_outcomes`) [inf]; the ratio is read over
+that span, as on `web-heap`.
+
+**Side loads, outside the gate.** Two loads of their own, read by the same
+columns and reported beside the gated one, so that their requests mix into
+no gated cell; the gated `web-heap-arrays` and the `web-heap` control have
+neither. Both draw from `Purpose::Arrays`.
+
+- `web-heap-arrays-large`, `web_large_result_percent` 5 [A] (the Sage): a
+  request so drawn gives its result set `LARGE_RESULT_ROWS` = 4,000 rows
+  [A], capacity 4,096, a 64 KiB body, the smallest past the block payload.
+  The rows are leaves, with no extra edge and no free slot, and the
+  vector's position is drawn uniformly in [0, tree − rows], so the
+  OS-direct body seeds a set of its own rows and little else (the Critic);
+  read by `frees_not_ineligible` and the OS-direct body columns.
+- `web-heap-arrays-slow`, `web_slow_percent` 2 [A] (ruled
+  2026-10-12): a request so drawn waits first uniform in 150–300 ms
+  (`SLOW_WAIT`) [A] instead of the lognormal, past the window's young cut
+  of 100 ms (`dev/DECISIONS.md:47-52`), so its roots can be offered while
+  it sleeps and its later births append into vectors born before the wait
+  [inf].
+
 ## The protocol (fixed before any run, 2026-09-28)
 
 - **Arms.** Four: D and HG, and the best build of each as S65.42 left it
@@ -223,6 +383,7 @@ end.
 - Discord, "Why Discord is switching from Go to Rust" (the LRU scan)
 - Twitch, "Go memory ballast"; Instagram, "Dismissing Python Garbage Collection"
 - Laravel Octane: the documentation, `Worker.php`, `CollectGarbage.php`, `octane.php`
+- Laravel, `Illuminate\Database\Eloquent\Model::$perPage` (15)
 - Express issue #2560 (`req.res`, `res.req`)
 - Sam Saffron, "Demystifying the Ruby GC"
 - Shahriyar, Blackburn, Frampton, "Down for the Count?" (ISMM 2012)

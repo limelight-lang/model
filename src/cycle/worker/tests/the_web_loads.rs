@@ -43,9 +43,17 @@
 //! into arena slots that the store barrier logs, released at the reset, and
 //! 30 % of its requests write an object into the session, which escapes and
 //! is promoted into a block the reset retains (`dev/design/the-web-loads.md`,
-//! "`web-arena`, a request").
+//! "`web-arena`, a request"). `web-heap-arrays` is `web-heap` with part of its
+//! tree, its ORM collections, a result set and its sessions held by arrays
+//! ([`in_arrays`]).
+
+mod in_arrays;
+
+use in_arrays::ArrayPlacement;
+pub(super) use in_arrays::{ARRAY_BYTES, ArrayLoad};
 
 use super::*;
+use crate::array::entity::LLArray;
 use crate::class::{Class, ClassBuilder};
 use crate::cycle::queue::POLL_STRIDE;
 use crate::cycle::testing::move_prop;
@@ -197,6 +205,16 @@ impl Arrivals {
 pub(super) enum Variant {
     Heap,
     Arena,
+    /// `web-heap` with arrays (`dev/design/the-web-loads.md`,
+    /// "`web-heap-arrays`, S68's array-bearing load").
+    HeapArrays(ArrayLoad),
+}
+
+impl Variant {
+    /// Whether a request's objects are GC heap objects.
+    pub(super) fn in_the_heap(self) -> bool {
+        !matches!(self, Self::Arena)
+    }
 }
 
 /// The entries of one directory object: every slot of the largest class.
@@ -205,6 +223,16 @@ const DIRECTORY_FAN_OUT: usize = slots(LARGEST);
 /// The three object sizes, in bytes, and their shares in percent.
 pub(super) const SIZES: [usize; 3] = [64, 128, 512];
 const SHARES_PERCENT: [usize; 3] = [50, 35, 15];
+
+/// The classes the loads count bytes in: the three of [`SIZES`], by size
+/// index, then an array's entity.
+pub(super) const CLASSES: usize = 4;
+
+/// The index of an array's entity among the [`CLASSES`].
+pub(super) const ARRAY_CLASS: usize = 3;
+
+/// The bytes of a slot of each of the [`CLASSES`].
+pub(super) const CLASS_BYTES: [usize; CLASSES] = [SIZES[0], SIZES[1], SIZES[2], ARRAY_BYTES];
 
 /// The index of the largest of [`SIZES`], which an ORM head and its segments
 /// take.
@@ -230,6 +258,9 @@ pub(super) enum Purpose {
     Core = 7,
     /// A request's drawn CPU and its two waits' durations.
     Timing = 8,
+    /// What `web-heap-arrays` draws beyond `web-heap`'s plan: which objects
+    /// hold arrays, the result set, the session's write, a slow wait.
+    Arrays = 9,
 }
 
 /// The streams a mutator's plans are drawn from, one a purpose.
@@ -239,6 +270,7 @@ pub(super) struct Streams {
     pub(super) cache: Draws,
     pub(super) sessions: Draws,
     pub(super) timing: Draws,
+    pub(super) arrays: Draws,
 }
 
 impl Streams {
@@ -249,10 +281,12 @@ impl Streams {
             cache: Draws::new(mutator, repeat, Purpose::Cache),
             sessions: Draws::new(mutator, repeat, Purpose::Sessions),
             timing: Draws::new(mutator, repeat, Purpose::Timing),
+            arrays: Draws::new(mutator, repeat, Purpose::Arrays),
         }
     }
 
-    /// The four streams' checksums, folded.
+    /// The four streams' checksums, folded, and the arrays' stream's, which
+    /// draws nothing outside `web-heap-arrays`.
     pub(super) fn checksum(&self) -> u64 {
         [
             &self.shape,
@@ -261,7 +295,8 @@ impl Streams {
             &self.sessions,
         ]
         .iter()
-        .fold(0, |sum, draws| sum.rotate_left(13) ^ draws.checksum())
+        .fold(0u64, |sum, draws| sum.rotate_left(13) ^ draws.checksum())
+            ^ self.arrays.checksum()
     }
 }
 
@@ -316,7 +351,7 @@ impl Draws {
     }
 
     /// Whether a draw falls under `percent` of 100.
-    fn percent(&mut self, percent: f64) -> bool {
+    pub(super) fn percent(&mut self, percent: f64) -> bool {
         self.unit() * 100.0 < percent
     }
 
@@ -430,8 +465,19 @@ pub(super) struct Plan {
     pub(super) waits: [Duration; 2],
     pub(super) silent_end: bool,
     /// The size index of the object a `web-arena` request writes into its
-    /// session, none where it writes nothing.
+    /// session, or a `web-heap-arrays` request appends to it, none where it
+    /// writes no object.
     pub(super) session_write: Option<u8>,
+    /// Whether a `web-heap-arrays` request stores a scalar into its session
+    /// in place of an object.
+    pub(super) session_scalar: bool,
+    /// A `web-heap-arrays` request's arrays, by the order of their holders,
+    /// each born with its holder; none in the other variants.
+    pub(super) arrays: Vec<ArrayPlacement>,
+    /// Whether the result set among them is a large one.
+    pub(super) large_result_set: bool,
+    /// Whether the first wait is a slow request's ([`in_arrays::SLOW_WAIT`]).
+    pub(super) slow: bool,
 }
 
 /// What a plan draws its long-lived targets over: the core's objects and
@@ -473,17 +519,32 @@ impl Plan {
 
     fn shaped(streams: &mut Streams, targets: &Targets, orm: Vec<usize>, count: usize) -> Self {
         let variant = targets.variant;
-        let mut objects =
-            place_the_objects(&mut streams.shape, &targets.core, &orm, count, variant);
+        let (mut objects, arrays, large_result_set) = match variant {
+            Variant::HeapArrays(load) => in_arrays::place_the_objects(
+                &mut streams.shape,
+                &mut streams.arrays,
+                &targets.core,
+                &orm,
+                count,
+                load,
+            ),
+            Variant::Heap | Variant::Arena => (
+                place_the_objects(&mut streams.shape, &targets.core, &orm, count, variant),
+                Vec::new(),
+                false,
+            ),
+        };
         draw_the_births(&mut streams.shape, &mut objects);
         let registrations = match variant {
-            Variant::Heap => draw_the_registrations(&mut streams.registrations, &objects),
+            Variant::Heap | Variant::HeapArrays(_) => {
+                draw_the_registrations(&mut streams.registrations, &objects)
+            }
             Variant::Arena => Vec::new(),
         };
         let mut waits_at = [streams.shape.unit(), streams.shape.unit()];
         waits_at.sort_unstable_by(f64::total_cmp);
         let (silent_end, session_write) = match variant {
-            Variant::Heap => (streams.shape.percent(50.0), None),
+            Variant::Heap | Variant::HeapArrays(_) => (streams.shape.percent(50.0), None),
             Variant::Arena => (
                 false,
                 streams
@@ -499,7 +560,7 @@ impl Plan {
             })
             .collect();
         lookups.sort_unstable_by(|a, b| a.0.total_cmp(&b.0));
-        Self {
+        let mut plan = Self {
             variant,
             objects,
             registrations,
@@ -514,16 +575,26 @@ impl Plan {
             ],
             silent_end,
             session_write,
+            session_scalar: false,
+            arrays,
+            large_result_set,
+            slow: false,
+        };
+        if let Variant::HeapArrays(load) = variant {
+            in_arrays::draw_the_rest(&mut streams.arrays, &mut plan, load);
         }
+
+        plan
     }
 
-    /// The bytes the plan's objects take, by size index.
-    pub(super) fn bytes(&self) -> [usize; 3] {
-        let mut bytes = [0; 3];
+    /// The bytes the plan's objects and arrays take, by class.
+    pub(super) fn bytes(&self) -> [usize; CLASSES] {
+        let mut bytes = [0; CLASSES];
         for object in &self.objects {
             bytes[object.size_index as usize] += SIZES[object.size_index as usize];
         }
 
+        bytes[ARRAY_CLASS] = self.arrays.len() * ARRAY_BYTES;
         bytes
     }
 }
@@ -561,7 +632,7 @@ fn place_the_objects(
 
     let tree = count - CONTEXT - orm_objects(orm);
     let mut core_edges_left = match variant {
-        Variant::Heap => 0,
+        Variant::Heap | Variant::HeapArrays(_) => 0,
         Variant::Arena => ARENA_CORE_EDGES.min(tree),
     };
     // The tree's positions at which each collection's head is placed.
@@ -578,7 +649,7 @@ fn place_the_objects(
 
         let size_index = draw_a_size_index(shape);
         let extra = match variant {
-            Variant::Heap => draw_an_extra_edge(shape, core),
+            Variant::Heap | Variant::HeapArrays(_) => draw_an_extra_edge(shape, core),
             Variant::Arena => {
                 draw_an_arena_extra_edge(shape, core, tree - position, &mut core_edges_left)
             }
@@ -765,7 +836,7 @@ impl RequestBuild<'_> {
     /// As [`Request::start`].
     unsafe fn new_object(&mut self, size_index: usize, variant: Variant) -> *mut Object {
         let category = match variant {
-            Variant::Heap => MemoryCategory::GcHeap,
+            Variant::Heap | Variant::HeapArrays(_) => MemoryCategory::GcHeap,
             Variant::Arena => MemoryCategory::RequestArena,
         };
         unsafe {
@@ -778,39 +849,43 @@ impl RequestBuild<'_> {
     }
 
     /// Put `child`, just built, into `holder`'s empty slot `slot`: in the
-    /// heap its creation reference moves into the slot, and in the arena a
-    /// store counts and logs nothing.
+    /// heap its creation reference moves into the slot, or with arrays onto
+    /// the end of the array the slot holds ([`in_arrays::link`]), and in the
+    /// arena a store counts and logs nothing.
     ///
     /// # Safety
     /// As [`Request::start`]; both are of `variant`.
     unsafe fn link(&self, holder: *mut Object, slot: u32, child: *mut Object, variant: Variant) {
         match variant {
             Variant::Heap => unsafe { move_prop(holder, prop_offset(slot), child) },
+            Variant::HeapArrays(_) => unsafe { in_arrays::link(holder, slot, child) },
             Variant::Arena => unsafe { store_prop(self.arena, holder, prop_offset(slot), child) },
         }
     }
 }
 
 /// What one step of a request did: the bytes born and the bytes that stopped
-/// being reachable, by size index, the registrations made and the lookups
-/// done.
+/// being reachable, by class, the registrations made, the lookups done, and
+/// the bytes of array bodies that stopped being reachable.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
 pub(super) struct Advanced {
-    pub(super) born: [usize; 3],
-    pub(super) ended: [usize; 3],
+    pub(super) born: [usize; CLASSES],
+    pub(super) ended: [usize; CLASSES],
     pub(super) registered: usize,
     pub(super) looked_up: usize,
+    pub(super) bodies_ended: usize,
 }
 
 impl Advanced {
     fn add(&mut self, other: Advanced) {
-        for size_index in 0..3 {
-            self.born[size_index] += other.born[size_index];
-            self.ended[size_index] += other.ended[size_index];
+        for class in 0..CLASSES {
+            self.born[class] += other.born[class];
+            self.ended[class] += other.ended[class];
         }
 
         self.registered += other.registered;
         self.looked_up += other.looked_up;
+        self.bodies_ended += other.bodies_ended;
     }
 }
 
@@ -872,14 +947,19 @@ pub(super) enum Stop {
 
 /// What a request's end did: whether the external reference landed on a
 /// registered object, read before the release — the silent death — the
-/// request's heap bytes by size index, garbage from here on, and the roots
+/// request's heap bytes by class, garbage from here on, and the roots
 /// the end registered. A `web-arena` request's end is its reset: never
 /// silent, no heap bytes, and its registrations those of the reset's logged
 /// releases.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Ended {
     pub(super) silent: bool,
-    pub(super) bytes: [usize; 3],
+    pub(super) bytes: [usize; CLASSES],
+    /// Bytes the end made reachable from the long-lived state: a
+    /// `web-heap-arrays` session's appended object.
+    pub(super) born: [usize; CLASSES],
+    /// The bytes of the request's array bodies, unreachable from here on.
+    pub(super) bodies: usize,
     pub(super) registered: usize,
     /// Of a `web-arena` reset's registrations, the cache values: the
     /// distinct value heads its lookups stored standing no candidate before
@@ -907,6 +987,8 @@ pub(super) struct Request {
     /// whose slot 0 holds the session and whose slots from 1 the lookups'
     /// values, each a logged heap reference; null in the heap variant.
     locals: *mut Object,
+    /// The arrays born so far, in the order of [`Plan::arrays`].
+    arrays: Vec<*mut LLArray>,
 }
 
 /// The next thing a request does on its timeline.
@@ -938,7 +1020,7 @@ impl Request {
         for object in &plan.objects[..CONTEXT] {
             let size_index = object.size_index as usize;
             objects.push(unsafe { build.new_object(size_index, variant) });
-            if variant == Variant::Heap {
+            if variant.in_the_heap() {
                 advanced.born[size_index] += SIZES[size_index];
             }
         }
@@ -948,7 +1030,7 @@ impl Request {
         }
 
         let (externally_held, locals) = match variant {
-            Variant::Heap => {
+            Variant::Heap | Variant::HeapArrays(_) => {
                 let externally_held = objects[usize::from(!plan.silent_end)];
                 unsafe {
                     ll_retain(session as *mut RcHeader);
@@ -966,6 +1048,7 @@ impl Request {
             }
         };
         let request = Self {
+            arrays: Vec::with_capacity(plan.arrays.len()),
             plan,
             objects,
             registrations_done: 0,
@@ -1026,9 +1109,11 @@ impl Request {
             match event {
                 Event::Birth => {
                     let size_index = unsafe { self.give_birth(build) };
-                    if self.plan.variant == Variant::Heap {
+                    if self.plan.variant.in_the_heap() {
                         advanced.born[size_index] += SIZES[size_index];
                     }
+
+                    advanced.born[ARRAY_CLASS] += unsafe { self.hang_the_arrays() } * ARRAY_BYTES;
                 }
                 Event::Registration(index) => {
                     let object = *self
@@ -1133,14 +1218,16 @@ impl Request {
         &self.plan
     }
 
-    /// End the request: in the heap variant [`Request::end`], in the arena
-    /// variant [`Request::reset`].
+    /// End the request: in the heap variant [`Request::end`], with arrays
+    /// after the session's write ([`Request::end_with_arrays`]), in the
+    /// arena variant [`Request::reset`].
     ///
     /// # Safety
     /// As [`Request::start`], on the same `build`; the request is complete.
     pub(super) unsafe fn finish(self, build: &mut RequestBuild) -> Ended {
         match self.plan.variant {
             Variant::Heap => unsafe { self.end() },
+            Variant::HeapArrays(_) => unsafe { self.end_with_arrays(build) },
             Variant::Arena => unsafe { self.reset(build) },
         }
     }
@@ -1148,11 +1235,11 @@ impl Request {
     /// Release the session and the external reference.
     ///
     /// # Safety
-    /// As [`Request::start`]; the request is complete and of the heap
-    /// variant.
+    /// As [`Request::start`]; the request is complete and its objects are in
+    /// the heap.
     pub(super) unsafe fn end(self) -> Ended {
         assert!(self.is_complete(), "a request ends after its last event");
-        assert_eq!(self.plan.variant, Variant::Heap);
+        assert!(self.plan.variant.in_the_heap());
         let silent = is_a_candidate(self.externally_held);
         let session_registers = !is_a_candidate(self.session);
         unsafe {
@@ -1169,6 +1256,8 @@ impl Request {
         Ended {
             silent,
             bytes: self.plan.bytes(),
+            born: [0; CLASSES],
+            bodies: 0,
             registered: usize::from(!silent) + usize::from(session_registers),
             values_registered: 0,
         }
@@ -1205,7 +1294,9 @@ impl Request {
         unsafe { reset_the_arena(build.arena) };
         Ended {
             silent: false,
-            bytes: [0; 3],
+            bytes: [0; CLASSES],
+            born: [0; CLASSES],
+            bodies: 0,
             registered: crate::refcount::admissions() - before,
             values_registered: values.len(),
         }
@@ -1375,7 +1466,7 @@ impl KeyedLru {
 /// slot `i % DIRECTORY_FAN_OUT` of leaf `i / DIRECTORY_FAN_OUT`.
 struct Directory {
     leaves: Vec<*mut Object>,
-    bytes: Vec<[u32; 3]>,
+    bytes: Vec<[u32; CLASSES]>,
 }
 
 impl Directory {
@@ -1417,7 +1508,7 @@ impl Directory {
 
         let directory = Self {
             leaves,
-            bytes: vec![[0; 3]; entries],
+            bytes: vec![[0; CLASSES]; entries],
         };
         (directory, below[0], objects)
     }
@@ -1490,9 +1581,13 @@ pub(super) struct LongLived {
     built_after_the_setup: Draws,
     /// The checksum of every draw the setup made.
     setup_checksum: u64,
-    /// The bytes the state holds reachable, by size index.
-    held: [usize; 3],
+    /// The bytes the state holds reachable, by class.
+    held: [usize; CLASSES],
     pub(super) counts: CacheCounts,
+    /// In `web-heap-arrays`, the strings its sessions' hashes are keyed by,
+    /// each holding its creation reference ([`in_arrays::make_the_keys`]);
+    /// none in the other variants.
+    keys: Vec<*mut crate::string::LLString>,
 }
 
 /// The request count the setup stands at, above any drawn idle age.
@@ -1523,6 +1618,7 @@ impl LongLived {
         arena: *mut Arena,
     ) -> Self {
         assert!(shape.core > 0 && shape.values > 0 && shape.sessions > 0);
+        let arrays_before = held_by_size()[ARRAY_CLASS];
         let mut context = LLContext { arena };
         let mut setup = Draws::new(mutator, repeat, Purpose::Core);
         let targets = Targets::new(&shape, variant);
@@ -1549,6 +1645,10 @@ impl LongLived {
             setup_checksum: 0,
             held,
             counts: CacheCounts::default(),
+            keys: match variant {
+                Variant::HeapArrays(_) => unsafe { in_arrays::make_the_keys(&mut context) },
+                Variant::Heap | Variant::Arena => Vec::new(),
+            },
             targets,
         };
         state.held[LARGEST as usize] +=
@@ -1569,6 +1669,16 @@ impl LongLived {
         if variant == Variant::Arena {
             unsafe { state.write_the_steady_sessions(arena, &mut setup) };
         }
+
+        if let Variant::HeapArrays(_) = variant {
+            unsafe { state.write_the_prior_appends(arena, &mut setup) };
+        }
+
+        assert_eq!(
+            held_by_size()[ARRAY_CLASS] - arrays_before,
+            state.held[ARRAY_CLASS],
+            "the class of an array's entity holds the state's arrays and nothing else"
+        );
 
         state.setup_checksum = setup.checksum();
         state
@@ -1783,9 +1893,10 @@ impl LongLived {
         let (holder, slot) = directory.slot(entry);
         let registers = !is_a_candidate(slot_of(holder, slot));
         let ended = to_usize(directory.bytes[entry as usize]);
+        let bodies_ended = unsafe { in_arrays::session_body_bytes(slot_of(holder, slot)) };
         unsafe { store_prop(arena, holder, prop_offset(slot), std::ptr::null_mut()) };
-        for size_index in 0..3 {
-            self.held[size_index] -= ended[size_index];
+        for class in 0..CLASSES {
+            self.held[class] -= ended[class];
         }
 
         let born = to_usize(unsafe { self.fill(arena, of, entry, None) });
@@ -1794,12 +1905,13 @@ impl LongLived {
             ended,
             registered: usize::from(registers),
             looked_up: 0,
+            bodies_ended,
         }
     }
 
     /// Build a cycle into the empty slot of `entry` in `of`, its sizes and
     /// its core edge drawn from `setup`, or from the stream of what is built
-    /// after the setup where it is none. Answers its bytes by size index.
+    /// after the setup where it is none. Answers its bytes by class.
     ///
     /// # Safety
     /// `arena` is the calling mutator's, at a point where it may allocate.
@@ -1809,11 +1921,15 @@ impl LongLived {
         of: DirectoryOf,
         entry: u32,
         setup: Option<&mut Draws>,
-    ) -> [u32; 3] {
+    ) -> [u32; CLASSES] {
         let draws = setup.unwrap_or(&mut self.built_after_the_setup);
         let core = self.core[self.targets.core.draw(draws)];
-        let (head, bytes) =
-            unsafe { build_a_cycle(arena, &self.classes, draws, of.cycle_objects(), core) };
+        let (head, bytes) = match (of, self.targets.variant) {
+            (DirectoryOf::Sessions, Variant::HeapArrays(_)) => unsafe {
+                in_arrays::build_a_session(arena, &self.classes, draws, &self.keys, core)
+            },
+            _ => unsafe { build_a_cycle(arena, &self.classes, draws, of.cycle_objects(), core) },
+        };
         let directory = match of {
             DirectoryOf::Values => &mut self.values,
             DirectoryOf::Sessions => &mut self.sessions,
@@ -1821,8 +1937,8 @@ impl LongLived {
         let (holder, slot) = directory.slot(entry);
         unsafe { move_prop(holder, prop_offset(slot), head) };
         directory.bytes[entry as usize] = bytes;
-        for size_index in 0..3 {
-            self.held[size_index] += bytes[size_index] as usize;
+        for class in 0..CLASSES {
+            self.held[class] += bytes[class] as usize;
         }
 
         bytes
@@ -1833,8 +1949,8 @@ impl LongLived {
         &self.targets
     }
 
-    /// The bytes the state holds reachable, by size index.
-    pub(super) fn held(&self) -> [usize; 3] {
+    /// The bytes the state holds reachable, by class.
+    pub(super) fn held(&self) -> [usize; CLASSES] {
         self.held
     }
 
@@ -1844,12 +1960,15 @@ impl LongLived {
     ///
     /// # Safety
     /// As [`LongLived::new`]; no request is in flight.
-    pub(super) unsafe fn let_go(self) -> [usize; 3] {
+    pub(super) unsafe fn let_go(self) -> [usize; CLASSES] {
         unsafe {
             assert!(
                 !ll_release(self.core[0] as *mut RcHeader),
                 "the core's ring holds its first object"
             );
+            for &key in &self.keys {
+                crate::memory::barrier::drop_ref(MemoryCategory::GcHeap, key as *mut RcHeader);
+            }
         }
 
         self.held
@@ -1858,7 +1977,7 @@ impl LongLived {
 
 /// A core of `objects` ([`LongLived`]'s "The core" less the directories),
 /// its sizes and its other edges drawn from `setup`. Answers the objects,
-/// the first holding its creation reference, and their bytes by size index.
+/// the first holding its creation reference, and their bytes by class.
 ///
 /// # Safety
 /// `arena` is the calling mutator's, at a point where it may allocate.
@@ -1867,9 +1986,9 @@ unsafe fn build_the_core(
     classes: &WebClasses,
     setup: &mut Draws,
     objects: usize,
-) -> (Vec<*mut Object>, [usize; 3]) {
+) -> (Vec<*mut Object>, [usize; CLASSES]) {
     let mut context = LLContext { arena };
-    let mut held = [0; 3];
+    let mut held = [0; CLASSES];
     let core: Vec<*mut Object> = (0..objects)
         .map(|index| {
             let size_index = if index == 0 {
@@ -1918,7 +2037,7 @@ fn run_to_the_steady_state(values: usize, keys: &Zipf, setup: &mut Draws) -> Key
 /// Build a cycle of `objects` objects of drawn sizes: a chain through slot
 /// 0 from the head, the last object's slot 1 holding the head, and the
 /// head's slot 1 holding `core`. Answers the head, holding its creation
-/// reference, and the bytes by size index.
+/// reference, and the bytes by class.
 ///
 /// # Safety
 /// `arena` is the calling mutator's, at a point where it may allocate; `core`
@@ -1929,13 +2048,13 @@ unsafe fn build_a_cycle(
     draws: &mut Draws,
     objects: usize,
     core: *mut Object,
-) -> (*mut Object, [u32; 3]) {
+) -> (*mut Object, [u32; CLASSES]) {
     assert!(
         objects >= 2,
         "the back-edge and the core edge take two objects"
     );
     let mut context = LLContext { arena };
-    let mut bytes = [0; 3];
+    let mut bytes = [0; CLASSES];
     let chain: Vec<*mut Object> = (0..objects)
         .map(|_| {
             let size_index = draw_a_size_index(draws) as usize;
@@ -1976,19 +2095,19 @@ fn slot_of(object: *mut Object, slot: u32) -> *mut Object {
     unsafe { entity_checked(&*Object::prop_at(object, prop_offset(slot))) as *mut Object }
 }
 
-fn to_usize(bytes: [u32; 3]) -> [usize; 3] {
+fn to_usize(bytes: [u32; CLASSES]) -> [usize; CLASSES] {
     bytes.map(|bytes| bytes as usize)
 }
 
-/// The bytes this thread's entity heap holds for it in the classes of
-/// [`SIZES`]. O(1).
-pub(super) fn held_by_size() -> [usize; 3] {
+/// The bytes this thread's entity heap holds for it in the [`CLASSES`].
+/// O(1).
+pub(super) fn held_by_size() -> [usize; CLASSES] {
     let held = entity_bytes_held();
-    SIZES.map(|size| held[size_class_index(size).expect("a small size")])
+    CLASS_BYTES.map(|size| held[size_class_index(size).expect("a small size")])
 }
 
 /// A mutator's garbage: the bytes its entity heap holds less what it keeps
-/// reachable, by size index, integrated over time at the events that change
+/// reachable, by class, integrated over time at the events that change
 /// it. Garbage moves at this mutator's polls, where the collections and their
 /// teardowns free; at a request's end, where its bytes stop being reachable;
 /// and at a step of a request that ends bytes of the long-lived state, an
@@ -2000,64 +2119,73 @@ pub(super) fn held_by_size() -> [usize; 3] {
 /// long-lived state is built, whose bytes are then born into it.
 pub(super) struct Garbage {
     /// What the heap held when the count began, taken as reachable.
-    baseline: [usize; 3],
-    reachable: [usize; 3],
-    current: [usize; 3],
+    baseline: [usize; CLASSES],
+    reachable: [usize; CLASSES],
+    current: [usize; CLASSES],
     /// The window's start and the last reading's instant.
     from: Instant,
     since: Instant,
-    /// Bytes times nanoseconds since the window's start, by size index.
-    integral: [u128; 3],
-    /// The window's highest reading by size index, and of the sum over them.
-    peak: [usize; 3],
+    /// Bytes times nanoseconds since the window's start, by class.
+    integral: [u128; CLASSES],
+    /// The window's highest reading by class, and of the sum over them.
+    peak: [usize; CLASSES],
     peak_sum: usize,
-    /// Bytes that stopped being reachable over the window: the garbage made,
-    /// the flow the frees answer.
-    made: usize,
+    /// Bytes that stopped being reachable over the window, by class: the
+    /// garbage made, the flow the frees answer.
+    made: [usize; CLASSES],
+    /// Bytes of array bodies that stopped being reachable over the window,
+    /// counted apart from the classes.
+    bodies_made: usize,
 }
 
 impl Garbage {
     /// Begin at `now` with the heap holding `held`, all of it reachable.
-    pub(super) fn new(now: Instant, held: [usize; 3]) -> Self {
+    pub(super) fn new(now: Instant, held: [usize; CLASSES]) -> Self {
         Self {
             baseline: held,
-            reachable: [0; 3],
-            current: [0; 3],
+            reachable: [0; CLASSES],
+            current: [0; CLASSES],
             from: now,
             since: now,
-            integral: [0; 3],
-            peak: [0; 3],
+            integral: [0; CLASSES],
+            peak: [0; CLASSES],
             peak_sum: 0,
-            made: 0,
+            made: [0; CLASSES],
+            bodies_made: 0,
         }
     }
 
     /// `bytes` were born reachable.
-    pub(super) fn born(&mut self, bytes: [usize; 3]) {
-        for size_index in 0..3 {
-            self.reachable[size_index] += bytes[size_index];
+    pub(super) fn born(&mut self, bytes: [usize; CLASSES]) {
+        for class in 0..CLASSES {
+            self.reachable[class] += bytes[class];
         }
     }
 
     /// `bytes` stopped being reachable: a request ended, or the long-lived
     /// state let a value or a session go.
-    pub(super) fn ended(&mut self, bytes: [usize; 3]) {
-        for size_index in 0..3 {
-            self.reachable[size_index] -= bytes[size_index];
+    pub(super) fn ended(&mut self, bytes: [usize; CLASSES]) {
+        for class in 0..CLASSES {
+            self.reachable[class] -= bytes[class];
+            self.made[class] += bytes[class];
         }
-        self.made += bytes.iter().sum::<usize>();
+    }
+
+    /// Array bodies of `bytes` stopped being reachable.
+    pub(super) fn bodies_ended(&mut self, bytes: usize) {
+        self.bodies_made += bytes;
     }
 
     /// The heap holds `held` at `now`: the garbage since the last reading is
     /// integrated at its value then, and read anew.
-    pub(super) fn read(&mut self, now: Instant, held: [usize; 3]) {
+    pub(super) fn read(&mut self, now: Instant, held: [usize; CLASSES]) {
         let elapsed = now.saturating_duration_since(self.since).as_nanos();
-        for size_index in 0..3 {
-            self.integral[size_index] += self.current[size_index] as u128 * elapsed;
-            self.current[size_index] = held[size_index]
-                .checked_sub(self.baseline[size_index] + self.reachable[size_index])
+        for class in 0..CLASSES {
+            self.integral[class] += self.current[class] as u128 * elapsed;
+            self.current[class] = held[class]
+                .checked_sub(self.baseline[class] + self.reachable[class])
                 .expect("the heap holds what is reachable");
-            self.peak[size_index] = self.peak[size_index].max(self.current[size_index]);
+            self.peak[class] = self.peak[class].max(self.current[class]);
         }
 
         self.peak_sum = self.peak_sum.max(self.current.iter().sum());
@@ -2067,8 +2195,9 @@ impl Garbage {
     /// Start the window anew at `now`, the warm-up's end: the integral from
     /// zero and the peaks from the current reading.
     pub(super) fn restart(&mut self, now: Instant) {
-        self.integral = [0; 3];
-        self.made = 0;
+        self.integral = [0; CLASSES];
+        self.made = [0; CLASSES];
+        self.bodies_made = 0;
         self.peak = self.current;
         self.peak_sum = self.current.iter().sum();
         self.from = now;
@@ -2077,21 +2206,31 @@ impl Garbage {
 
     /// Bytes made garbage over the window.
     pub(super) fn made(&self) -> usize {
+        self.made.iter().sum()
+    }
+
+    /// Bytes made garbage over the window, by class.
+    pub(super) fn made_by_class(&self) -> [usize; CLASSES] {
         self.made
     }
 
-    /// The garbage now, by size index.
-    pub(super) fn current(&self) -> [usize; 3] {
+    /// Bytes of array bodies made garbage over the window.
+    pub(super) fn bodies_made(&self) -> usize {
+        self.bodies_made
+    }
+
+    /// The garbage at the last reading, by class.
+    pub(super) fn current(&self) -> [usize; CLASSES] {
         self.current
     }
 
-    /// Bytes times nanoseconds over the window, by size index.
-    pub(super) fn integral(&self) -> [u128; 3] {
+    /// Bytes times nanoseconds over the window, by class.
+    pub(super) fn integral(&self) -> [u128; CLASSES] {
         self.integral
     }
 
-    /// The mean over the window up to the last reading, by size index.
-    pub(super) fn mean(&self) -> [f64; 3] {
+    /// The mean over the window up to the last reading, by class.
+    pub(super) fn mean(&self) -> [f64; CLASSES] {
         let window = self
             .since
             .saturating_duration_since(self.from)
@@ -2100,8 +2239,8 @@ impl Garbage {
         self.integral.map(|integral| integral as f64 / window)
     }
 
-    /// The window's peaks: by size index, and of the sum over them.
-    pub(super) fn peak(&self) -> ([usize; 3], usize) {
+    /// The window's peaks: by class, and of the sum over them.
+    pub(super) fn peak(&self) -> ([usize; CLASSES], usize) {
         (self.peak, self.peak_sum)
     }
 }
@@ -2572,26 +2711,26 @@ fn a_build_to_a_point_ends_where_one_advance_ends() {
 fn garbage_integrates_at_its_events() {
     let t0 = Instant::now();
     let at = |millis: u64| t0 + Duration::from_millis(millis);
-    let mut garbage = Garbage::new(t0, [1_000, 0, 0]);
-    garbage.born([640, 0, 512]);
-    garbage.read(at(1), [1_640, 0, 512]);
-    assert_eq!(garbage.current(), [0, 0, 0]);
-    garbage.ended([640, 0, 512]);
-    garbage.read(at(3), [1_640, 0, 512]);
-    assert_eq!(garbage.current(), [640, 0, 512]);
-    garbage.read(at(7), [1_320, 0, 0]);
-    assert_eq!(garbage.current(), [320, 0, 0]);
-    garbage.read(at(10), [1_000, 0, 0]);
+    let mut garbage = Garbage::new(t0, [1_000, 0, 0, 0]);
+    garbage.born([640, 0, 512, 0]);
+    garbage.read(at(1), [1_640, 0, 512, 0]);
+    assert_eq!(garbage.current(), [0, 0, 0, 0]);
+    garbage.ended([640, 0, 512, 0]);
+    garbage.read(at(3), [1_640, 0, 512, 0]);
+    assert_eq!(garbage.current(), [640, 0, 512, 0]);
+    garbage.read(at(7), [1_320, 0, 0, 0]);
+    assert_eq!(garbage.current(), [320, 0, 0, 0]);
+    garbage.read(at(10), [1_000, 0, 0, 0]);
     // 640 B for 4 ms and 320 B for 3 ms; 512 B for 4 ms.
     assert_eq!(
         garbage.integral(),
-        [640 * 4_000_000 + 320 * 3_000_000, 0, 512 * 4_000_000]
+        [640 * 4_000_000 + 320 * 3_000_000, 0, 512 * 4_000_000, 0]
     );
-    assert_eq!(garbage.peak(), ([640, 0, 512], 1_152));
+    assert_eq!(garbage.peak(), ([640, 0, 512, 0], 1_152));
     let mean = garbage.mean();
     assert!((mean[0] - (640.0 * 4.0 + 320.0 * 3.0) / 10.0).abs() < 1e-6);
     garbage.restart(at(10));
-    assert_eq!(garbage.peak(), ([0, 0, 0], 0));
+    assert_eq!(garbage.peak(), ([0, 0, 0, 0], 0));
 
     let _g = test_guard();
     let mut fixture = Fixture::with_core("Integrated", 10);
@@ -2600,14 +2739,14 @@ fn garbage_integrates_at_its_events() {
     let (request, advanced) = unsafe { build_whole(&mut fixture.build(), plan) };
     garbage.born(advanced.born);
     garbage.read(at(1), held_by_size());
-    assert_eq!(garbage.current(), [0, 0, 0]);
+    assert_eq!(garbage.current(), [0; CLASSES]);
     let bytes = unsafe { request.end() }.bytes;
     garbage.ended(bytes);
     garbage.read(at(2), held_by_size());
     assert_eq!(garbage.current(), bytes);
     unsafe { crate::gc::ll_gc_collect_cycles() };
     garbage.read(at(12), held_by_size());
-    assert_eq!(garbage.current(), [0, 0, 0]);
+    assert_eq!(garbage.current(), [0; CLASSES]);
     assert_eq!(
         garbage.integral(),
         bytes.map(|bytes| bytes as u128 * 10_000_000)
@@ -2777,7 +2916,7 @@ fn a_hit_registers_and_an_eviction_is_silent_only_after_one() {
     );
     garbage.born(fixture.long_lived.held());
     garbage.read(at(1), held_by_size());
-    assert_eq!(garbage.current(), [0, 0, 0]);
+    assert_eq!(garbage.current(), [0; CLASSES]);
     let arena: *mut Arena = &mut *fixture.arena;
     let resident = fixture.long_lived.lru.keys_by_recency();
     let absent: Vec<u32> = (0..(3 * KEYS_A_VALUE) as u32)
@@ -2795,8 +2934,8 @@ fn a_hit_registers_and_an_eviction_is_silent_only_after_one() {
     // A miss evicts the oldest, which no hit registered.
     let (miss, registered) = look_up(&mut fixture.long_lived, absent[0]);
     assert_eq!(registered, 1);
-    assert_ne!(miss.ended, [0, 0, 0]);
-    assert_ne!(miss.born, [0, 0, 0]);
+    assert_ne!(miss.ended, [0; CLASSES]);
+    assert_ne!(miss.born, [0; CLASSES]);
     garbage.born(miss.born);
     garbage.ended(miss.ended);
     garbage.read(at(2), held_by_size());
@@ -2805,7 +2944,7 @@ fn a_hit_registers_and_an_eviction_is_silent_only_after_one() {
     garbage.read(at(3), held_by_size());
     assert_eq!(
         garbage.current(),
-        [0, 0, 0],
+        [0; CLASSES],
         "the collection freed the value"
     );
     let held = held_by_size();
@@ -3047,7 +3186,10 @@ fn a_request_holds_its_session_and_its_end_registers_a_new_one() {
     fixture.long_lived.last_touch[slot as usize] =
         fixture.long_lived.requests - SESSION_IDLE_REQUESTS;
     let (request, advanced) = unsafe { build_whole(&mut fixture.build(), plan) };
-    assert_ne!(advanced.ended, [0, 0, 0], "the idle session was replaced");
+    assert_ne!(
+        advanced.ended, [0; CLASSES],
+        "the idle session was replaced"
+    );
     let head = fixture.long_lived.sessions.head(slot);
     let count = || unsafe { crate::refcount::header_refcount(head as *const RcHeader) };
     assert_eq!(count(), 3, "its slot, its back-edge and the request");

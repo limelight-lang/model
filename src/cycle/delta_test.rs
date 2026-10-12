@@ -71,6 +71,9 @@ pub(crate) struct TagTest {
 static PROVED: AtomicUsize = AtomicUsize::new(0);
 static TOUCHED: AtomicUsize = AtomicUsize::new(0);
 static WEAKLY_HELD: AtomicUsize = AtomicUsize::new(0);
+/// Under test only: the sets read touched in an array, a member whose tag
+/// carried the frame's number being an array.
+static TOUCHED_IN_AN_ARRAY: AtomicUsize = AtomicUsize::new(0);
 
 /// The counts [`test_the_set_by_its_tags`] keeps.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -79,6 +82,9 @@ pub(crate) struct TagReadingCounts {
     pub(crate) proved: usize,
     pub(crate) touched: usize,
     pub(crate) weakly_held: usize,
+    /// Of `touched`, under test, the sets a touched member of which is an
+    /// array.
+    pub(crate) touched_in_an_array: usize,
 }
 
 /// The counts since the process started; the runs' probes read them.
@@ -88,6 +94,7 @@ pub(crate) fn tag_reading_counts() -> TagReadingCounts {
         proved: PROVED.load(Ordering::Relaxed),
         touched: TOUCHED.load(Ordering::Relaxed),
         weakly_held: WEAKLY_HELD.load(Ordering::Relaxed),
+        touched_in_an_array: TOUCHED_IN_AN_ARRAY.load(Ordering::Relaxed),
     }
 }
 
@@ -115,6 +122,8 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
     let mut touched = false;
     let mut weakly_held = false;
     let mut unreadable = false;
+    #[cfg(test)]
+    let mut touched_in_an_array = false;
     let mut array = arena.touched_head();
     while !array.is_null() {
         let (block, population) = unsafe { ((*array).block, (*array).population) };
@@ -132,6 +141,11 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
                 let tag = crate::refcount::window_tag(member);
                 if tag == window {
                     touched = true;
+                    #[cfg(test)]
+                    {
+                        touched_in_an_array |= crate::cells::entity_kind(member)
+                            == crate::refcount::EntityKind::Array as u32;
+                    }
                     crate::cycle::split::mark(row);
                 } else if tag != 0 {
                     #[cfg(test)]
@@ -153,6 +167,10 @@ pub(crate) unsafe fn test_the_set_by_its_tags(
 
     if weakly_held {
         WEAKLY_HELD.fetch_add(1, Ordering::Relaxed);
+    }
+    #[cfg(test)]
+    if touched_in_an_array {
+        TOUCHED_IN_AN_ARRAY.fetch_add(1, Ordering::Relaxed);
     }
     let reading = if touched {
         TOUCHED.fetch_add(1, Ordering::Relaxed);

@@ -52,6 +52,7 @@ fn served_and_counted() -> crate::cycle::delta_test::TagReadingCounts {
         proved: after.proved - before.proved,
         touched: after.touched - before.touched,
         weakly_held: after.weakly_held - before.weakly_held,
+        touched_in_an_array: after.touched_in_an_array - before.touched_in_an_array,
     }
 }
 
@@ -306,6 +307,7 @@ fn served_after(before_the_take: impl FnOnce()) -> crate::cycle::delta_test::Tag
         proved: after.proved - before.proved,
         touched: after.touched - before.touched,
         weakly_held: after.weakly_held - before.weakly_held,
+        touched_in_an_array: after.touched_in_an_array - before.touched_in_an_array,
     }
 }
 

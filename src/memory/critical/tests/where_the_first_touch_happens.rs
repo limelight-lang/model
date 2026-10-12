@@ -96,6 +96,7 @@ fn the_crate_declares_these_thread_locals_and_no_others() {
         ("BLOCKS_CARVED", false), // test-only const Cell, no drop glue
         ("BLOCKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("BLOCK_BUDGET", false),
+        ("BODY_BYTES", false), // test-only const Cell of an array, no drop glue
         ("CHUNKS_WITHHELD_UNDER_A_FOREIGN_TRACE", false), // const pair of Cells, a pointer and a count, no drop glue
         ("CLOSED", false),                                // const Cell<bool>, no drop glue
         ("COLLECTION_ARMED", false),

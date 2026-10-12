@@ -143,9 +143,9 @@
 //! cycle::worker::tests::the_rig::a_cell_of_the_rig --test-threads=1 --nocapture`.
 
 use super::the_web_loads::{
-    Advanced, Arrivals, CORE_OBJECTS, CacheCounts, Garbage, LongLived, LongLivedShape, Plan,
-    Request, RequestBuild, Streams, VALUE_OBJECTS, Variant, WebClasses, build_to, held_by_size,
-    longest_build_step, specified_interarrival,
+    ARRAY_CLASS, Advanced, ArrayLoad, Arrivals, CLASSES, CORE_OBJECTS, CacheCounts, Garbage,
+    LongLived, LongLivedShape, Plan, Request, RequestBuild, Streams, VALUE_OBJECTS, Variant,
+    WebClasses, build_to, held_by_size, longest_build_step, specified_interarrival,
 };
 use super::what_a_take_costs::{MEMBER_CLASS_BYTES, member_class};
 use super::*;
@@ -328,7 +328,7 @@ const fn mixed(name: &'static str, garbage_rings: usize) -> Load {
 /// 2026-09-28)", its deciding cells. Change a name or add a ring load, and
 /// change `LOADS` in `dev/tools/rig.sh` with it; the web loads are not in its
 /// sweep.
-const LOADS: [Load; 23] = [
+const LOADS: [Load; 26] = [
     // Garbage at 0, 25, 50, 75 and 100 % of the roots, rounded to whole
     // rings of 63.
     mixed("garbage-0", 0),
@@ -606,6 +606,24 @@ const LOADS: [Load; 23] = [
     web("web-heap-40k", Variant::Heap, 40_000),
     web("web-arena-40k", Variant::Arena, 40_000),
     web("web-arena-150k", Variant::Arena, 150_000),
+    // S68's array-bearing load, gated, and its two side loads, read and
+    // reported beside it (`dev/design/the-web-loads.md`, "`web-heap-arrays`,
+    // S68's array-bearing load").
+    web(
+        "web-heap-arrays",
+        Variant::HeapArrays(ArrayLoad::GATED),
+        150_000,
+    ),
+    web(
+        "web-heap-arrays-large",
+        Variant::HeapArrays(ArrayLoad::LARGE),
+        150_000,
+    ),
+    web(
+        "web-heap-arrays-slow",
+        Variant::HeapArrays(ArrayLoad::SLOW),
+        150_000,
+    ),
 ];
 
 /// Iterations a ring of `live-churn` is held for: at a 1 ms pace about a
@@ -1438,8 +1456,25 @@ struct WebReading {
     requests: usize,
     /// The garbage's mean, in bytes by size index, and its peaks, by size
     /// index and of the sum, over the window.
-    garbage_mean: [f64; 3],
-    garbage_peak: ([usize; 3], usize),
+    garbage_mean: [f64; CLASSES],
+    garbage_peak: ([usize; CLASSES], usize),
+    /// Over the window: the bytes made garbage, of them the arrays'
+    /// entities', and the bytes of array bodies made garbage, apart.
+    garbage_made: usize,
+    array_bytes_made: usize,
+    bodies_made: usize,
+    /// At the stop: the bytes of the state's live array bodies, and this
+    /// thread's body bytes granted and given back, each as (all, OS-direct)
+    /// (`memory::routing::body_bytes`).
+    live_body_bytes: usize,
+    body_bytes_at_the_stop: [(usize, usize); 2],
+    /// The bodies' bytes the collector had posted remote at the stop, over
+    /// the process (`frees_body_bytes_posted`).
+    posted_at_the_stop: usize,
+    /// Requests with a slow wait and with a large result set, over the
+    /// window.
+    slow_requests: usize,
+    large_result_sets: usize,
     /// The garbage at the drain's end, in bytes.
     garbage_at_the_drain_end: usize,
     /// The roots standing in the deferred lane and in R at the drain's end:
@@ -1536,7 +1571,7 @@ struct WebLoop {
     streams: Streams,
     /// What the heap held for the thread before the setup, taken as the
     /// thread's own.
-    baseline: [usize; 3],
+    baseline: [usize; CLASSES],
     garbage: Garbage,
     reading: WebReading,
     counts_from: CacheCounts,
@@ -1615,6 +1650,8 @@ impl WebLoop {
     fn run_a_request(&mut self) {
         let plan = self.draw_a_plan(None);
         let variant = plan.variant;
+        self.reading.slow_requests += usize::from(plan.slow);
+        self.reading.large_result_sets += usize::from(plan.large_result_set);
         let garbage = &mut self.garbage;
         let mut build = RequestBuild {
             context: LLContext { arena: self.arena },
@@ -1640,7 +1677,9 @@ impl WebLoop {
 
         testing::enter_the_rig_section(testing::RigSection::End);
         let ended = unsafe { request.finish(&mut build) };
+        garbage.born(ended.born);
         garbage.ended(ended.bytes);
+        garbage.bodies_ended(ended.bodies);
         self.freed_by_polls += poll_and_read(garbage);
         self.reading.silent_ends += usize::from(ended.silent);
         if variant == Variant::Arena {
@@ -1820,6 +1859,8 @@ impl WebLoop {
     /// build and the polls outran the drawn CPU.
     fn serve(&mut self, plan: Plan, figures: &mut ArrivalFigures) -> bool {
         let variant = plan.variant;
+        self.reading.slow_requests += usize::from(plan.slow);
+        self.reading.large_result_sets += usize::from(plan.large_result_set);
         let (cpu, waits, bounds) = (
             plan.cpu,
             plan.waits,
@@ -1868,7 +1909,9 @@ impl WebLoop {
 
         testing::enter_the_rig_section(testing::RigSection::End);
         let ended = unsafe { request.finish(&mut build) };
+        garbage.born(ended.born);
         garbage.ended(ended.bytes);
+        garbage.bodies_ended(ended.bodies);
         self.freed_by_polls += poll_and_read(garbage);
         self.reading.silent_ends += usize::from(ended.silent);
         if variant == Variant::Arena {
@@ -1895,6 +1938,12 @@ impl WebLoop {
         self.garbage.read(Instant::now(), held_by_size());
         self.reading.garbage_mean = self.garbage.mean();
         self.reading.garbage_peak = self.garbage.peak();
+        self.reading.garbage_made = self.garbage.made();
+        self.reading.array_bytes_made = self.garbage.made_by_class()[ARRAY_CLASS];
+        self.reading.bodies_made = self.garbage.bodies_made();
+        self.reading.live_body_bytes = self.long_lived.live_body_bytes();
+        self.reading.body_bytes_at_the_stop = crate::memory::routing::body_bytes::read();
+        self.reading.posted_at_the_stop = frees_counts()[14] as usize;
         self.reading.counts = counts_since(self.long_lived.counts, self.counts_from);
         self.reading.registrations = crate::refcount::admissions() - self.admissions_from;
         self.reading.standing_at_the_stop = self.long_lived.standing_candidate();
@@ -2053,6 +2102,7 @@ impl<I: Iterator<Item = Duration>> ArrivalQueue<I> {
 fn account(garbage: &mut Garbage, advanced: Advanced) {
     garbage.born(advanced.born);
     garbage.ended(advanced.ended);
+    garbage.bodies_ended(advanced.bodies_ended);
 }
 
 /// Poll, then read the garbage the poll left. Answers the members the poll
@@ -2439,6 +2489,36 @@ fn a_drawn_plan_stands_in_a_section_of_its_own() {
     web_loop.run_a_request();
     assert_eq!(testing::this_threads_rig_section(), other);
     let _ = web_loop.tear_down(&mut MutatorReading::default());
+}
+
+/// Each array-bearing load of the rig runs requests through the mutator's own
+/// loop at a small cache, makes arrays, and gives the heap back whole at its
+/// teardown.
+#[test]
+fn each_array_load_runs_its_requests_and_tears_down_whole() {
+    const REQUESTS: usize = 6;
+    let _g = test_guard();
+    for name in [
+        "web-heap-arrays",
+        "web-heap-arrays-large",
+        "web-heap-arrays-slow",
+    ] {
+        let mut arena = Arena::new();
+        let web = Web {
+            values: 200,
+            ..load_named(name).web.expect("a web load")
+        };
+        let mut web_loop =
+            unsafe { WebLoop::set_up(web, 0, WebClasses::new("ArraySmoke"), 0, &mut arena) };
+        for _ in 0..REQUESTS {
+            web_loop.run_a_request();
+        }
+
+        web_loop.read_at_the_stop();
+        let reading = web_loop.tear_down(&mut MutatorReading::default());
+        assert!(reading.array_bytes_made > 0, "{name} made no array");
+        assert_eq!(reading.held_after_the_teardown, 0, "{name}");
+    }
 }
 
 /// A phase spins its drawn CPU with the work inside it, and the polls' walls
@@ -3434,6 +3514,10 @@ impl CellReading {
                 self.disposals.longest.as_micros().to_string(),
             ),
             (
+                "disposal_longest_cpu_us",
+                self.disposals.longest_cpu.as_micros().to_string(),
+            ),
+            (
                 "stamped_registered",
                 self.scheme.stamped_registered.to_string(),
             ),
@@ -3872,6 +3956,7 @@ impl CellReading {
             ("tag_sets_proved", tag_counts().0.to_string()),
             ("tag_sets_touched", tag_counts().1.to_string()),
             ("tag_sets_weakly_held", tag_counts().2.to_string()),
+            ("tag_sets_touched_in_an_array", tag_counts().3.to_string()),
             // The mutators' offers the same way: taken, the standing of a
             // taken offer from the offer to the take at the median, the 99th
             // centile and the longest in microseconds, and offers withdrawn
@@ -3898,6 +3983,16 @@ impl CellReading {
                 "frees_longest_application_us",
                 frees_counts()[11].to_string(),
             ),
+            // The same application by the thread's CPU clock, the pause
+            // S68's gate reads (`dev/DECISIONS.md`, "S68.13 closed with its
+            // owner pause read as the thread's own time"); the arrays among
+            // the members freed and their bodies' bytes posted remote.
+            (
+                "frees_longest_application_cpu_us",
+                frees_counts()[12].to_string(),
+            ),
+            ("frees_arrays", frees_counts()[13].to_string()),
+            ("frees_body_bytes_posted", frees_counts()[14].to_string()),
             // The backup trace's arm the same way, zeros without
             // `trace-backup-rig` (`crate::cycle::trace_backup::counts`): the
             // traces; their nanoseconds in all, in the fill and subtract, the
@@ -4042,6 +4137,31 @@ impl CellReading {
             .iter()
             .map(|reading| reading.blocks_the_writes_hold)
             .sum();
+        let (large_result_percent, slow_percent) = match load.web.map(|web| web.variant) {
+            Some(Variant::HeapArrays(arrays)) => (arrays.large_result_percent, arrays.slow_percent),
+            _ => (0, 0),
+        };
+        // The validity test of `web-heap-arrays`: the arrays' entities and
+        // bodies over the garbage made, bodies on both sides.
+        let total = |field: &dyn Fn(&WebReading) -> usize| -> usize {
+            web.mutators.iter().map(field).sum()
+        };
+        let bodies_made = total(&|reading| reading.bodies_made);
+        let array_share = (total(&|reading| reading.array_bytes_made) + bodies_made) as f64 * 100.0
+            / (total(&|reading| reading.garbage_made) + bodies_made).max(1) as f64;
+        // The bodies outstanding at the stop less those the collector posted
+        // and those the live state holds.
+        let dead_bodies = total(&|reading| {
+            reading.body_bytes_at_the_stop[0].0 - reading.body_bytes_at_the_stop[1].0
+        })
+        .saturating_sub(
+            web.mutators
+                .iter()
+                .map(|reading| reading.posted_at_the_stop)
+                .max()
+                .unwrap_or(0),
+        )
+        .saturating_sub(total(&|reading| reading.live_body_bytes));
         let mut fields = vec![
             (
                 "web_values",
@@ -4062,6 +4182,7 @@ impl CellReading {
             ("web_garbage_mean_bytes_64", mean(Some(0))),
             ("web_garbage_mean_bytes_128", mean(Some(1))),
             ("web_garbage_mean_bytes_512", mean(Some(2))),
+            ("web_garbage_mean_bytes_112", mean(Some(ARRAY_CLASS))),
             (
                 "web_garbage_peak_bytes",
                 sum(&|reading| reading.garbage_peak.1),
@@ -4077,6 +4198,10 @@ impl CellReading {
             (
                 "web_garbage_peak_bytes_512",
                 sum(&|reading| reading.garbage_peak.0[2]),
+            ),
+            (
+                "web_garbage_peak_bytes_112",
+                sum(&|reading| reading.garbage_peak.0[ARRAY_CLASS]),
             ),
             (
                 "web_garbage_at_the_drain_end_bytes",
@@ -4121,6 +4246,40 @@ impl CellReading {
                 "web_session_writes",
                 sum(&|reading| reading.counts.session_writes),
             ),
+            ("web_large_result_percent", large_result_percent.to_string()),
+            ("web_slow_percent", slow_percent.to_string()),
+            ("web_slow_requests", sum(&|reading| reading.slow_requests)),
+            (
+                "web_large_result_sets",
+                sum(&|reading| reading.large_result_sets),
+            ),
+            (
+                "web_array_bytes_made",
+                sum(&|reading| reading.array_bytes_made),
+            ),
+            ("web_body_bytes_made", sum(&|reading| reading.bodies_made)),
+            ("web_array_share_percent", format!("{array_share:.1}")),
+            (
+                "web_body_bytes_live_at_the_stop",
+                sum(&|reading| reading.live_body_bytes),
+            ),
+            (
+                "web_body_bytes_granted",
+                sum(&|reading| reading.body_bytes_at_the_stop[0].0),
+            ),
+            (
+                "web_body_bytes_given_back",
+                sum(&|reading| reading.body_bytes_at_the_stop[1].0),
+            ),
+            (
+                "web_body_bytes_os_direct_granted",
+                sum(&|reading| reading.body_bytes_at_the_stop[0].1),
+            ),
+            (
+                "web_body_bytes_os_direct_given_back",
+                sum(&|reading| reading.body_bytes_at_the_stop[1].1),
+            ),
+            ("web_body_bytes_dead_at_the_stop", dead_bodies.to_string()),
             ("web_silent_ends", sum(&|reading| reading.silent_ends)),
             ("web_registrations", sum(&|reading| reading.registrations)),
             (
@@ -4718,15 +4877,21 @@ fn write_the_requests(path: &str, mutators: &[WebReading]) {
         .unwrap_or_else(|error| panic!("the requests were written to {path}: {error}"));
 }
 
-/// The Δ-test's counts: sets proved, touched and weakly held.
-fn tag_counts() -> (usize, usize, usize) {
+/// The Δ-test's counts: sets proved, touched and weakly held, and of the
+/// touched those touched in an array.
+fn tag_counts() -> (usize, usize, usize, usize) {
     #[cfg(feature = "gc-window")]
     {
         let counts = crate::cycle::delta_test::tag_reading_counts();
-        (counts.proved, counts.touched, counts.weakly_held)
+        (
+            counts.proved,
+            counts.touched,
+            counts.weakly_held,
+            counts.touched_in_an_array,
+        )
     }
     #[cfg(feature = "gc-checkpoint")]
-    (0, 0, 0)
+    (0, 0, 0, 0)
 }
 
 /// The offers since the last call, taken: those taken, the standing of a
@@ -4768,7 +4933,7 @@ fn trace_backup_counts() -> [u64; 11] {
 /// [`crate::cycle::collector_frees::frees_counts`] flat, times in µs: sets,
 /// members, drops, held drops, the five refusals, the longest act, the
 /// applications in all and at the longest; zeros without the feature.
-fn frees_counts() -> [u128; 12] {
+fn frees_counts() -> [u128; 15] {
     #[cfg(feature = "gc-window")]
     {
         let counts = crate::cycle::collector_frees::frees_counts();
@@ -4786,10 +4951,13 @@ fn frees_counts() -> [u128; 12] {
             counts.longest_act.as_micros(),
             counts.applications.as_micros(),
             counts.longest_application.as_micros(),
+            counts.longest_application_cpu.as_micros(),
+            counts.arrays as u128,
+            counts.body_bytes_posted as u128,
         ]
     }
     #[cfg(feature = "gc-checkpoint")]
-    [0; 12]
+    [0; 15]
 }
 
 /// `counts` as one column, `;` between them.

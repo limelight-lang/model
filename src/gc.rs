@@ -486,10 +486,16 @@ unsafe fn fire(arming: Arming) -> usize {
             #[cfg(test)]
             DISPOSALS.with(|count| count.set(count.get() + 1));
             #[cfg(test)]
-            let from = std::time::Instant::now();
+            let (from, cpu_from) = (
+                std::time::Instant::now(),
+                crate::cycle::worker::testing::thread_cpu_time(),
+            );
             unsafe { crate::cycle::collect::dispose_of_p() };
             #[cfg(test)]
-            crate::cycle::worker::testing::note_disposal(from.elapsed());
+            crate::cycle::worker::testing::note_disposal(
+                from.elapsed(),
+                crate::cycle::worker::testing::thread_cpu_time() - cpu_from,
+            );
             0
         }
         Arming::Verdicts => {
