@@ -8,6 +8,62 @@ pay" saves the next attempt and is usually worth more than a win.
 comparison against other allocators. This file holds the *change log*:
 what was tried, measured, and accepted or rejected.
 
+## 2026-10-12 — a sleeping owner's garbage: a call every 50 ms of a wait frees 90 % of it at 1,000 ms for 14 % more collector; the ceiling beside it
+
+**Builds.** B: `gc-window` at `4eaffcf` (local branch `before-blocking`:
+`ll_gc_before_blocking` of the entry above, plus the rig's modes). One
+binary per run; the arm sets `LL_RIG_BEFORE_BLOCKING`: `Bc` (`1`) calls
+before every wait it sleeps without a poll and reads the garbage after the
+call; `Bp` (`poll`) polls every 1 ms of such a wait, the ceiling of an
+owner woken at once; `Bt` (`timer`) sleeps in 50 ms pieces and calls after
+each whole piece, nothing before the wait, the model of a reactor's timer.
+Two mutators on CPUs 1–2, cap 1 on CPU 3, 116 s a cell, five cells an arm
+and load, interleaved; two runs, B in each (B/`Bc`/`Bp`: 45 cells;
+B/`Bt`: 30 cells).
+No void cell. Medians, min–max in brackets.
+
+| run 1 | B | `Bc` | `Bp` |
+|---|---|---|---|
+| `web-heap` 1,000 ms: garbage mean, MB | 23.2 [17.0–26.8] | 16.6 [14.7–28.0] | 1.0 [1.0–1.4] |
+| mutator CPU, s | 3.2 [2.8–3.4] | 3.3 [2.8–3.4] | 10.5 [9.8–10.7] |
+| collector CPU, s | 12.6 [12.2–13.5] | 12.9 [12.1–13.7] | 14.1 [13.6–14.5] |
+| `web-heap` 46.78 ms: garbage mean, MB | 26.3 [25.1–28.6] | 23.3 [20.8–25.8] | 17.8 [16.8–18.0] |
+| mutator CPU, s | 50.5 [49.3–52.5] | 51.0 [49.4–52.1] | 55.9 [55.1–58.1] |
+| collector CPU, s | 41.5 [40.2–45.0] | 43.0 [42.0–46.0] | 43.8 [42.2–48.8] |
+| `web-heap-arrays-slow`: garbage mean, MB | 37.8 [36.6–39.4] | 34.2 [31.7–36.2] | 28.8 [25.4–33.1] |
+| mutator CPU, s | 56.1 [55.3–56.3] | 55.8 [55.1–56.5] | 60.9 [59.9–63.4] |
+| collector CPU, s | 54.3 [53.0–55.9] | 55.6 [54.4–58.4] | 57.5 [55.4–60.4] |
+
+| run 2 | B | `Bt` |
+|---|---|---|
+| `web-heap` 1,000 ms: garbage mean, MB | 24.8 [16.0–29.8] | 2.3 [1.8–2.8] |
+| mutator CPU, s | 3.0 [2.8–3.3] | 3.5 [3.3–3.7] |
+| collector CPU, s | 12.1 [11.9–12.8] | 13.8 [13.6–14.5] |
+| `web-heap` 46.78 ms: garbage mean, MB | 26.1 [24.6–27.2] | 23.5 [21.9–24.8] |
+| mutator CPU, s | 50.3 [49.1–50.7] | 49.5 [49.1–50.8] |
+| collector CPU, s | 41.0 [39.1–42.1] | 40.6 [39.6–42.6] |
+| `web-heap-arrays-slow`: garbage mean, MB | 39.8 [34.4–42.0] | 34.8 [32.8–39.0] |
+| mutator CPU, s | 54.8 [52.4–55.3] | 54.9 [52.8–55.8] |
+| collector CPU, s | 52.6 [48.4–53.1] | 52.2 [49.8–54.2] |
+
+`Bt` made 4,380 calls a cell at 1,000 ms and 189 offers by them; 1,460 and
+262 at 46.78 ms; 1,590 and 243 on `-slow`. Its sets touched by a write stay
+at B's (1–26 a cell); `Bp`'s rise to 15–215. The p999 of the arrivals'
+latency is B's within its spread in every arm.
+
+Read: at 1,000 ms the timer reaches 2.3 MB of the ceiling's 1.0 against
+B's 24.8, for 0.5 s of mutator and 1.7 s of collector CPU in 116 s; the
+ceiling pays 7 s of mutator for its last 1.3 MB. On the busy loads the
+timer is B's within the spread in every CPU column and lowers the garbage
+10–13 %. By the rule of design §5g, item 5, the garbage at 1,000 ms is
+wholly below B's, and the collector's median at 1,000 ms leaves B's
+spread upward (13.8 against 11.9–12.8): the rule says not taken. The
+collector's extra CPU there is the freeing of the 22 MB B holds until the
+owner wakes. The runtime's part is `ll_gc_before_blocking` (about 140
+lines in `src/gc.rs`, `src/cycle/offer.rs`); the timer is the embedder's.
+
+---
+
 ## 2026-10-12 — S68.9's offer before a blocking call: garbage 12–15 % lower, the collector 5 % dearer; not taken
 
 **Builds.** B: `gc-window` at `0aa4454` (local branch `before-blocking`,
