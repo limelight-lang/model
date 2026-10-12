@@ -9,6 +9,35 @@ subject is gone or that a later entry replaced whole is deleted; git keeps it
 
 ---
 
+## 2026-10-12 — C's held drops into a proved S are applied by the owner's reclaim as S is freed
+
+**Overturns** the clause of 2026-10-04 that C's drops into a proved S "are
+discarded with S" (`dev/design/recycler-over-counts.md` §5a, S68.6c items 2,
+6, 7 and 9).
+
+**Decided (Edmond, 2026-10-12, by card: «Снять сразу»), over the repair
+that stands them on the record for the next poll.** When the owner frees a
+proved S under `gc-window`, it applies the held drops in
+`reclaim_before_drops`, after the sever and before the guards come off: a
+pre-pass checks that every address the chain names is a member of S, and
+where one is not the whole chain stands unapplied, as at every ending where
+the reclaim does not run (reservation refused, revalidation reading the set
+held from outside, the form over R whole, a block return, the teardown's
+refusal, a commit under pressure).
+
+**Why.** The clause is unsound. C's cells into S are never severed, so the
+count a held drop carries stands on its member; the owner's reclaim severs
+only S's own edges and its guards, and a member a held drop names ended at
+that count with its destructor run and its slot never returned. Found by
+`web-heap-arrays-large` (arrays with 64 KiB bodies left after the teardown)
+and pinned by `the_member_a_held_drop_names_dies_at_its_application`, red on
+main. The rejected repair, the drops stood and applied at the next poll,
+leaves the member a shell until that poll, counts it freed at the commit, and
+refuses the collector's next batch of that thread while the frees stand (the
+Critic and the Sage, 2026-10-12).
+
+---
+
 ## 2026-10-09 — the batch's bound stays 1,024: P2 not built
 
 **Settled by Claude on the measurement, open to Edmond's overturning** (his
